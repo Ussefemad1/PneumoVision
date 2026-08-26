@@ -1,0 +1,25 @@
+# Normalize text files to LF in the repository.
+* text=auto
+
+# Shell scripts (SLURM job scripts) must keep LF endings or bash on the
+# cluster fails with "$'\r': command not found".
+*.sh text eol=lf
+*.py text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.csv text eol=lf
+
+# PowerShell scripts stay CRLF.
+*.ps1 text eol=crlf
+
+# Never touch these.
+*.normalizer -text
+*.pkl binary
+*.pdf binary
+*.png binary
+*.jpg binary
+*.pth binary
+*.pt binary

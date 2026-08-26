@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 *.pyo
+.pytest_cache/
 
 # Virtual environments
 .venv/
@@ -49,6 +50,8 @@ results/*
 # Logs
 *.log
 wandb/
+outlogs/
+errlogs/
 
 # Local tool caches
 .cache/

@@ -10,6 +10,7 @@ import glob
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 import random
+from functools import partial
 
 ETHNICITY = {'WHITE': 0,
  'UNKNOWN': 1,
@@ -221,14 +222,14 @@ def loadmetadata(args, discharge_notes, radiology_reports, cxr_reports):
         
         cxr_merged_icustays_during = cxr_merged_icustays
         if args.task == 'decompensation' or args.task == 'length-of-stay':
-            train_listfile = pd.read_csv(f'/scratch/se1525/mml-ssl/{args.task}/train_listfile.csv')
+            listfile_dir = getattr(args, 'listfile_dir', None) or args.ehr_data_dir
+            train_listfile = pd.read_csv(f'{listfile_dir}/{args.task}/train_listfile.csv')
             train_listfile.columns = ['stay', 'period_length', 'stay_id', 'y_true', 'intime', 'endtime']
-            test_listfile = pd.read_csv(f'/scratch/se1525/mml-ssl/{args.task}/test_listfile.csv')
+            test_listfile = pd.read_csv(f'{listfile_dir}/{args.task}/test_listfile.csv')
             test_listfile.columns = ['stay', 'period_length', 'stay_id', 'y_true', 'intime', 'endtime']
-            val_listfile = pd.read_csv(f'/scratch/se1525/mml-ssl/{args.task}/val_listfile.csv')
+            val_listfile = pd.read_csv(f'{listfile_dir}/{args.task}/val_listfile.csv')
             val_listfile.columns = ['stay', 'period_length', 'stay_id', 'y_true', 'intime', 'endtime']
-            listfile = train_listfile.append(test_listfile)
-            listfile = listfile.append(val_listfile)
+            listfile = pd.concat([train_listfile, test_listfile, val_listfile], ignore_index=True)
             listfile['subject_id'] = listfile['stay'].apply(lambda x: x.split("_")[0])
     
             columns2 = ['subject_id', 'endtime']
@@ -446,9 +447,9 @@ def loadmetadata(args, discharge_notes, radiology_reports, cxr_reports):
 
 
 def load_cxr_ehr_rr_dn(args, ehr_train_ds, ehr_val_ds, cxr_train_ds, cxr_val_ds, ehr_test_ds, cxr_test_ds):
-    discharge_notes=pd.read_csv('/scratch/baj321/MIMIC-Note/physionet.org/files/mimic-iv-note/2.2/note/discharge.csv')
-    radiology_reports=pd.read_csv('/scratch/baj321/MIMIC-Note/physionet.org/files/mimic-iv-note/2.2/note/radiology.csv')
-    #cxr_reports = pd.read_csv("/scratch/baj321/cxr_reports.csv")
+    notes_dir = args.notes_data_dir
+    discharge_notes = pd.read_csv(os.path.join(notes_dir, 'discharge.csv'))
+    radiology_reports = pd.read_csv(os.path.join(notes_dir, 'radiology.csv'))
     cxr_reports= None
 
     cxr_merged_icustays = loadmetadata(args, discharge_notes, radiology_reports, cxr_reports) 
@@ -465,9 +466,11 @@ def load_cxr_ehr_rr_dn(args, ehr_train_ds, ehr_val_ds, cxr_train_ds, cxr_val_ds,
     test_ds = MIMIC_CXR_EHR_RR_DN(args, test_meta_with_labels, ehr_test_ds, cxr_test_ds, split='test')
     
     
-    train_dl = DataLoader(train_ds, args.batch_size, shuffle=True, collate_fn=lambda batch: my_collate(batch, args), pin_memory=True, num_workers=16, drop_last=True)
-    val_dl = DataLoader(val_ds, args.batch_size, shuffle=False, collate_fn=lambda batch: my_collate(batch, args), pin_memory=True, num_workers=16, drop_last=False)
-    test_dl = DataLoader(test_ds, args.batch_size, shuffle=False, collate_fn=lambda batch: my_collate(batch, args), pin_memory=True, num_workers=16, drop_last=False)
+    collate = partial(my_collate, args=args)
+    num_workers = args.num_workers
+    train_dl = DataLoader(train_ds, args.batch_size, shuffle=True, collate_fn=collate, pin_memory=True, num_workers=num_workers, drop_last=True)
+    val_dl = DataLoader(val_ds, args.batch_size, shuffle=False, collate_fn=collate, pin_memory=True, num_workers=num_workers, drop_last=False)
+    test_dl = DataLoader(test_ds, args.batch_size, shuffle=False, collate_fn=collate, pin_memory=True, num_workers=num_workers, drop_last=False)
     
     print(f"Training dataset size: {len(train_ds)}")
     print(f"Validation dataset size: {len(val_ds)}")

@@ -1,9 +1,13 @@
 import importlib
 import os
 import sys
+from pathlib import Path
 
 
-os.environ.setdefault("MPLCONFIGDIR", os.path.abspath(".cache/matplotlib"))
+REPO_ROOT = Path(__file__).resolve().parent.parent
+MEDPATCH_DIR = REPO_ROOT / "medpatch"
+
+os.environ.setdefault("MPLCONFIGDIR", str(REPO_ROOT / ".cache" / "matplotlib"))
 
 
 REQUIRED_PACKAGES = {
@@ -124,7 +128,7 @@ def check_project_imports():
     ]
 
     original_path = list(sys.path)
-    sys.path.insert(0, "medpatch")
+    sys.path.insert(0, str(MEDPATCH_DIR))
 
     try:
         results = []

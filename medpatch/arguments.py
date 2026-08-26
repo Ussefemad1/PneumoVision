@@ -1,4 +1,12 @@
 import argparse
+import sys
+
+
+def _default_num_workers():
+    # Windows uses the spawn start method for DataLoader workers, which re-imports
+    # the entrypoint in every worker. Default to in-process loading there.
+    return 0 if sys.platform == 'win32' else 16
+
 
 def args_parser():
     parser = argparse.ArgumentParser(description='arguments')
@@ -131,6 +139,15 @@ def args_parser():
                         default='/scratch/fs999/shamoutlab/data/physionet.org/files/mimic-cxr-jpg/2.0.0')
     parser.add_argument('--save_dir', type=str, help='Directory relative which all output files are stored',
                     default='checkpoints')
+    parser.add_argument('--notes_data_dir', type=str,
+                        help='Directory containing the MIMIC-IV note CSVs (discharge.csv, radiology.csv)',
+                        default='/scratch/baj321/MIMIC-Note/physionet.org/files/mimic-iv-note/2.2/note')
+    parser.add_argument('--listfile_dir', type=str, default=None,
+                        help='Directory holding the decompensation / length-of-stay listfiles. '
+                             'Defaults to --ehr_data_dir.')
+    parser.add_argument('--num_workers', type=int, default=_default_num_workers(),
+                        help='DataLoader worker processes. Defaults to 0 on Windows, where the '
+                             'spawn start method makes worker processes expensive and fragile.')
 
 
     # args = argParser.parse_args()

@@ -4,7 +4,6 @@ from __future__ import print_function
 import numpy as np
 import argparse
 import os
-import imp
 import re
 from trainers.fusion_trainer import FusionTrainer
 from trainers.frozen_trainer import FrozenTrainer
@@ -84,7 +83,7 @@ cont_channels = [i for (i, x) in enumerate(discretizer_header) if x.find("->") =
 normalizer = Normalizer(fields=cont_channels)  # choose here which columns to standardize
 normalizer_state = args.normalizer_state
 if normalizer_state is None:
-    normalizer_state = 'normalizers/ph_ts{}.input_str:previous.start_time:zero.normalizer'.format(args.timestep)
+    normalizer_state = 'normalizers/ph_ts{}.input_str_previous.start_time_zero.normalizer'.format(args.timestep)
     normalizer_state = os.path.join(os.path.dirname(__file__), normalizer_state)
 normalizer.load_params(normalizer_state)
 
