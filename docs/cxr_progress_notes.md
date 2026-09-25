@@ -282,7 +282,7 @@ Colab.
 
 ---
 
-### 6. `--cxr_encoder` does not select the architecture — PARTIALLY FIXED, MOST SERIOUS
+### 6. `--cxr_encoder` did not select the architecture — FIXED (was the most serious)
 
 **This one does not crash. It silently trains the wrong model and reports a
 real-looking AUROC that means nothing.** Everything else on this list fails
@@ -315,18 +315,61 @@ Consequences:
 Same trainers affected: `MSMA_trainer`, `Calibration`, `retired_trainer` — so
 every CXR fusion type shares this path, not just `unimodal_cxr`.
 
-**What is fixed so far (the crash only):** six call sites in `fusion.py` did
-`cxr_feats = self.cxr_model(img)` and then `cxr_feats[:, 0, :]`, which raised
+**Fix, part 1 — the crash.** Six call sites in `fusion.py` did
+`cxr_feats = self.cxr_model(img)` then `cxr_feats[:, 0, :]`, raising
 `TypeError: tuple indices must be integers or slices, not tuple`. They now go
 through `cxr_pool()`, which normalises both encoder signatures and skips token
-pooling for an already-pooled `[B, D]` output. This unblocks the dry run on
-DenseNet-121; **it does not fix the selection bug.**
+pooling for an already-pooled `[B, D]` output.
 
-**Still to do before training on real labels:** make `--cxr_encoder` build
-`CXRTransformer(model_name=args.cxr_encoder, image_size=args.image_size,
-patch_size=args.patch_size, ...)` when a timm name is passed, falling back to
-`CXRModels` otherwise. `DHF_trainer.py:98` already constructs `CXRTransformer`
-correctly and is the reference for the argument list.
+**Fix, part 2 — the actual selection bug.** `CXR_encoder` is no longer a bare
+alias for `CXRModels`; it is a factory that reads `--cxr_encoder`:
+
+- a **token-based timm name** → `CXRTransformer`, `[B, N, D]` patch tokens
+- anything else → `CXRModels` with `--vision-backbone`, `[B, D]` pooled
+
+Construction mirrors `DHF_trainer.py`, which already did this correctly. All
+four call sites (`MSMA_trainer`, `Calibration`, `retired_trainer`, `fusion.py`)
+go through the factory, so every CXR fusion type is fixed at once.
+
+Two things this required:
+
+- `CXRTransformer` had **no `feats_dim`**, which fusion heads read to size the
+  classifier (`Classifier(self.cxr_model.feats_dim, args)`). It could not be
+  swapped in without an `AttributeError`. Now set from
+  `feature_extractor.num_features` (384 for `vit_small_patch16_384`).
+- `timm.is_model()` alone is **not** a sufficient test: it returns `True` for
+  `densenet121`, whose `forward_features` gives a 4-D feature map, while
+  `CXRTransformer.forward` does `b, n, _ = x.shape` and needs 3-D tokens.
+  Restricted to token families (`vit_`, `deit_`, `beit_`, `eva_`, ...), with an
+  explicit fallback message otherwise.
+
+**Verification — the parameter count settles it:**
+
+    Building CXR encoder: vit_small_patch16_384
+      class          : CXRTransformer
+      parameters     : 27.6M total, 27.6M trainable
+      feats_dim      : 384
+      backbone       : 21.8M
+      tokens/image   : 577 (384/16 = 24, 24^2 + 1 CLS)
+    forward -> v_cxr (2, 577, 384), cls (2, 384)
+
+**27.6M matches the paper's Table C4 exactly**, and 577 tokens matches
+`max_seq_len = 578` in `fusion.py`. Compare what was actually being trained
+before: `CXRModels`, **7.0M** parameters, `[B, 1024]` pooled, no tokens.
+
+The 21.8M/27.6M split also answers whether the unused internal
+`transformer`/`pos_embedding` should be removed: the backbone alone is 21.8M, so
+the paper's reported 27.6M **includes** those dead parameters. Keeping them is
+the faithful choice.
+
+A startup banner now prints the class, parameter count, `feats_dim` and token
+count on every run, so the architecture can be confirmed visually before
+trusting any result.
+
+**Consequence for the confidence paths:** `fusion.py` 876, 1031, 1482, 2029 and
+2479 unpack a 2-tuple and were previously broken against `CXRModels`' 3-tuple.
+With a ViT selected they now receive the 2-tuple they expect, so Round 2's
+`c-unimodal_cxr` should work without further changes.
 
 **Related, deliberately not patched:** five other call sites (`fusion.py` 876,
 1031, 1482, 2029, 2479) unpack a **2**-tuple — `_, full_cxr_feats =
