@@ -1,4 +1,5 @@
 import argparse
+import os
 import sys
 
 
@@ -133,15 +134,21 @@ def args_parser():
                         help='Path to a state file of a normalizer. Leave none if you want to '
                                 'use one of the provided ones.')
 
-    parser.add_argument('--ehr_data_dir', type=str, help='Path to the data of phenotyping fusion_type',
-                        default='/scratch/fs999/shamoutlab/data/mimic-iv-extracted')
-    parser.add_argument('--cxr_data_dir', type=str, help='Path to the data of phenotyping fusion_type',
-                        default='/scratch/fs999/shamoutlab/data/physionet.org/files/mimic-cxr-jpg/2.0.0')
+    parser.add_argument('--ehr_data_dir', type=str, default=None,
+                        help='Directory holding the extracted MIMIC-IV data (the output of '
+                             'mimic4extract): expects <task>/train_listfile.csv, <task>/train/, '
+                             '<task>/test/ and root/all_stays.csv.')
+    parser.add_argument('--cxr_data_dir', type=str, default=None,
+                        help='Directory holding MIMIC-CXR-JPG: expects resized/, '
+                             'mimic-cxr-2.0.0-metadata.csv, mimic-cxr-2.0.0-chexpert.csv '
+                             'and mimic-cxr-ehr-split.csv.')
     parser.add_argument('--save_dir', type=str, help='Directory relative which all output files are stored',
                     default='checkpoints')
     parser.add_argument('--notes_data_dir', type=str,
-                        help='Directory containing the MIMIC-IV note CSVs (discharge.csv, radiology.csv)',
-                        default='/scratch/baj321/MIMIC-Note/physionet.org/files/mimic-iv-note/2.2/note')
+                        help='Directory containing the MIMIC-IV note CSVs (discharge.csv, '
+                             'radiology.csv). Only required when --modalities includes '
+                             'RR, DN or CXRR.',
+                        default=None)
     parser.add_argument('--listfile_dir', type=str, default=None,
                         help='Directory holding the decompensation / length-of-stay listfiles. '
                              'Defaults to --ehr_data_dir.')
@@ -152,3 +159,29 @@ def args_parser():
 
     # args = argParser.parse_args()
     return parser
+
+
+def validate_data_dirs(args):
+    """Fail early and clearly on unset or missing data directories.
+
+    These used to default to the authors' cluster paths
+    (/scratch/fs999/shamoutlab/...), so a missing flag surfaced as a
+    FileNotFoundError deep inside the loaders, naming a machine nobody on this
+    project has ever used. Call this right after parse_args().
+    """
+    required = [
+        ('--ehr_data_dir', args.ehr_data_dir,
+         'the extracted MIMIC-IV data (output of mimic4extract)'),
+        ('--cxr_data_dir', args.cxr_data_dir,
+         'MIMIC-CXR-JPG (the directory containing resized/)'),
+    ]
+
+    for flag, value, description in required:
+        if not value:
+            raise ValueError(
+                f"{flag} is not set. Point it at {description}. "
+                "There is no default -- the authors' original default was a path "
+                "on their own cluster."
+            )
+        if not os.path.isdir(value):
+            raise FileNotFoundError(f"{flag} does not exist: {value}")

@@ -2,19 +2,22 @@
 
 # import thread
 import time
+from pathlib import Path
 from PIL import Image
 import glob
 from tqdm import tqdm
 import os
 
 print('starting')
-data_dir = '/scratch/fs999/shamoutlab/data/physionet.org/files/mimic-cxr-jpg'
-version = '2.0.0'
+REPO_ROOT = Path(__file__).resolve().parent.parent
+data_dir = REPO_ROOT / "data" / "mimic-cxr-jpg" / "2.0.0"
+resized_dir = data_dir / "resized"
+resized_dir.mkdir(parents=True, exist_ok=True)
 
-paths_done = glob.glob(f'{data_dir}/{version}/resized/**/*.jpg', recursive = True)
+paths_done = glob.glob(f'{data_dir}/resized/**/*.jpg', recursive = True)
 print('done', len(paths_done))
 
-paths_all = glob.glob(f'{data_dir}/{version}/files/**/*.jpg', recursive = True)
+paths_all = glob.glob(f'{data_dir}/files/**/*.jpg', recursive = True)
 print('all', len(paths_all))
 
 
@@ -26,15 +29,15 @@ print('left', len(paths))
 
 def resize_images(path):
     basewidth = 512
-    filename = path.split('/')[-1]
+    filename = os.path.basename(path)
     img = Image.open(path)
 
     wpercent = (basewidth/float(img.size[0]))
-    
+
     hsize = int((float(img.size[1])*float(wpercent)))
     img = img.resize((basewidth,hsize))
-    
-    img.save(f'{data_dir}/{version}/resized/{filename}')
+
+    img.save(f'{data_dir}/resized/{filename}')
 
 
 from multiprocessing.dummy import Pool as ThreadPool

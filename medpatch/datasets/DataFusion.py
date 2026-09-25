@@ -446,10 +446,51 @@ def loadmetadata(args, discharge_notes, radiology_reports, cxr_reports):
     return groups
 
 
+NOTE_COLUMNS = ['subject_id', 'hadm_id', 'charttime', 'text']
+
+
+def _empty_notes():
+    """Correctly shaped, empty stand-in for a note table.
+
+    The 'partial' branch of loadmetadata merges the note frames unconditionally
+    (how='left'), so it needs real columns even when no notes were requested;
+    merging against this yields NaN note text, matching the explicit
+    `discharge_text = None` fallback used elsewhere.
+    """
+    return pd.DataFrame({
+        'subject_id': pd.Series(dtype='int64'),
+        'hadm_id': pd.Series(dtype='int64'),
+        'charttime': pd.Series(dtype='object'),
+        'text': pd.Series(dtype='object'),
+    })
+
+
 def load_cxr_ehr_rr_dn(args, ehr_train_ds, ehr_val_ds, cxr_train_ds, cxr_val_ds, ehr_test_ds, cxr_test_ds):
-    notes_dir = args.notes_data_dir
-    discharge_notes = pd.read_csv(os.path.join(notes_dir, 'discharge.csv'))
-    radiology_reports = pd.read_csv(os.path.join(notes_dir, 'radiology.csv'))
+    # Notes used to be read unconditionally, so an EHR-CXR run with no notes
+    # requested still crashed on a FileNotFoundError pointing at the authors'
+    # cluster path. Only touch the disk when a note modality is actually asked
+    # for.
+    wants_notes = any(m in args.modalities for m in ('RR', 'DN', 'CXRR'))
+
+    if wants_notes:
+        notes_dir = args.notes_data_dir
+        if not notes_dir:
+            raise ValueError(
+                f"--modalities {args.modalities} requests note data (RR/DN/CXRR) "
+                "but --notes_data_dir was not set. Point it at the directory "
+                "containing discharge.csv and radiology.csv "
+                "(MIMIC-IV-Note 2.2 'note' folder)."
+            )
+        if not os.path.isdir(notes_dir):
+            raise FileNotFoundError(
+                f"--notes_data_dir does not exist: {notes_dir}"
+            )
+        discharge_notes = pd.read_csv(os.path.join(notes_dir, 'discharge.csv'))
+        radiology_reports = pd.read_csv(os.path.join(notes_dir, 'radiology.csv'))
+    else:
+        discharge_notes = _empty_notes()
+        radiology_reports = _empty_notes()
+
     cxr_reports= None
 
     cxr_merged_icustays = loadmetadata(args, discharge_notes, radiology_reports, cxr_reports) 

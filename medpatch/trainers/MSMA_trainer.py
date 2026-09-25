@@ -73,6 +73,15 @@ class MSMA_Trainer(Trainer):
         else:
             self.best_auroc = float('inf')
         self.best_stats = None
+
+        # --resume existed in arguments.py but nothing read it, so an interrupted
+        # run silently restarted at epoch 0 with a fresh optimizer while printing
+        # "Loaded model checkpoint". Without --resume, behaviour is unchanged.
+        if getattr(self.args, 'resume', False):
+            self.resume_from_checkpoint()
+        else:
+            print(f"[resume] --resume not set: starting fresh from epoch "
+                  f"{self.start_epoch}")
         
                 # Count parameters and exit if requested
         if self.args.inspect_model:
@@ -456,6 +465,12 @@ class MSMA_Trainer(Trainer):
 
             self.model.train()
             self.train_epoch()
+
+            # Save every epoch, not only on improvement. 'best' is still written
+            # separately above and is what you evaluate; this one exists purely so
+            # an interrupted run resumes from the last epoch actually completed
+            # rather than the last epoch that happened to improve.
+            self.save_checkpoint(prefix='last')
 
             if self.patience >= self.args.patience:
                 break
