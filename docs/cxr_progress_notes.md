@@ -282,6 +282,63 @@ Colab.
 
 ---
 
+### 6. `--cxr_encoder` does not select the architecture — PARTIALLY FIXED, MOST SERIOUS
+
+**This one does not crash. It silently trains the wrong model and reports a
+real-looking AUROC that means nothing.** Everything else on this list fails
+loudly; this one succeeds wrongly.
+
+`--cxr_encoder vit_small_patch16_384` is read as a **boolean gate**, never as an
+architecture:
+
+    if 'CXR' in args.modalities and args.cxr_encoder is not None:
+        self.cxr_encoder = CXR_encoder(args)      # always CXRModels
+
+The string is discarded. `CXR_encoder` is an alias for `CXRModels`, which builds
+`getattr(torchvision.models, args.vision_backbone)` — and `--vision-backbone`
+defaults to **densenet121**, a flag the reference script never passes.
+
+| Intended | Actually built |
+|---|---|
+| timm `vit_small_patch16_384` | torchvision `densenet121` |
+| `[B, 577, D]` patch tokens | `[B, 1024]` pooled vector |
+| `CXRTransformer` → `(v_cxr, cls)` | `CXRModels` → `(preds, loss, visual_feats)` |
+
+Consequences:
+
+- `--use_cls_token cls` is meaningless for DenseNet: there is no CLS token, and
+  its output has no token dimension at all.
+- `max_seq_len = 578` in `fusion.py` (24² + 1 CLS, plus one spare) is ViT
+  arithmetic sitting next to an encoder that produces no tokens.
+- **Any AUROC produced this way is not a reproduction of the paper's 0.692.**
+
+Same trainers affected: `MSMA_trainer`, `Calibration`, `retired_trainer` — so
+every CXR fusion type shares this path, not just `unimodal_cxr`.
+
+**What is fixed so far (the crash only):** six call sites in `fusion.py` did
+`cxr_feats = self.cxr_model(img)` and then `cxr_feats[:, 0, :]`, which raised
+`TypeError: tuple indices must be integers or slices, not tuple`. They now go
+through `cxr_pool()`, which normalises both encoder signatures and skips token
+pooling for an already-pooled `[B, D]` output. This unblocks the dry run on
+DenseNet-121; **it does not fix the selection bug.**
+
+**Still to do before training on real labels:** make `--cxr_encoder` build
+`CXRTransformer(model_name=args.cxr_encoder, image_size=args.image_size,
+patch_size=args.patch_size, ...)` when a timm name is passed, falling back to
+`CXRModels` otherwise. `DHF_trainer.py:98` already constructs `CXRTransformer`
+correctly and is the reference for the argument list.
+
+**Related, deliberately not patched:** five other call sites (`fusion.py` 876,
+1031, 1482, 2029, 2479) unpack a **2**-tuple — `_, full_cxr_feats =
+self.cxr_model(img)`. Those are correct for `CXRTransformer` but raise
+`ValueError: too many values to unpack` against `CXRModels`' 3-tuple. They are
+the confidence-predictor paths used by Round 2's `c-unimodal_cxr`. Left as-is on
+purpose: they start working once the encoder selection is fixed, and patching
+them now would hide the real problem. **Youssef: this is why Round 2 will fail
+until defect 6 is fully fixed.**
+
+---
+
 ### Still carrying the authors' cluster paths
 
 `--ehr_data_dir` and `--cxr_data_dir` still default to
