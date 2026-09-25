@@ -339,6 +339,71 @@ until defect 6 is fully fixed.**
 
 ---
 
+### 7. Off-by-one in loss averaging — FIXED
+
+Both training and validation loops used `enumerate(dl)`, which starts at **0**,
+then divided the accumulated loss by `i` — the last *index* rather than the
+batch *count*. Six locations in `MSMA_trainer.py`: 186, 212, 218, 319, 327, 364.
+
+| Batches | Divided by | Should be | Effect |
+|---|---|---|---|
+| 1 | 0 | 1 | **ZeroDivisionError** |
+| 2 | 1 | 2 | loss 100% too high |
+| 31 (our real val set: 490 imgs @ bs 16) | 30 | 31 | loss ~3% too high |
+
+Found when the 50-image dry run gave 10 validation images at `batch_size 16` —
+exactly one batch, so `i` stayed 0 and validation crashed.
+
+Fixed by `enumerate(dl, 1)` in both loops, so `i` counts batches.
+
+**What was and was not affected — this distinction matters:**
+
+- **AUROC and AUPRC were never affected.** They are computed by `computeAUROC`
+  from `outPRED` / `outGT`, tensors accumulated across batches, and never touch
+  `i`. **No number in the results table was ever wrong.**
+- **Printed and wandb-logged loss values were inflated** by `n/(n-1)`. Loss
+  curves from before this fix are slightly too high.
+- **Model selection and early stopping were _not_ misled**, for a reason worth
+  stating precisely. Two paths exist:
+  - most fusion types (including `unimodal_cxr`) select on
+    `ret['auroc_mean']` — untouched by this bug;
+  - `c-unimodal_*` (Round 2 confidence training) selects on
+    `avg_loss = epoch_loss/i`.
+
+  Even in the second case the inflation is a **constant multiplicative factor**
+  within a run — the validation set and batch size do not change between epochs
+  — and scaling all values by a positive constant preserves their ordering. So
+  `if self.best_auroc > avg_loss` picked the same epoch either way, and the
+  patience counter behaved identically. **No previously selected checkpoint was
+  the wrong epoch.**
+- One genuine inconsistency it caused: the LR scheduler at line 316 used
+  `epoch_loss/len(self.val_dl)` — the *correct* divisor — while selection used
+  `epoch_loss/i`. Both are now the same.
+
+**Note on loss comparability:** post-fix loss values are slightly lower than any
+the original authors reported, because theirs carry the off-by-one. That is a
+correction, not a regression, but worth a line in the thesis if loss curves are
+ever compared directly. AUROC/AUPRC remain directly comparable.
+
+**Two things deliberately left alone:**
+
+- `get_eta()` in `trainer.py` does `iter += 1`, which was compensating for the
+  0-indexed `i`. It now double-counts by one iteration out of tens of thousands
+  (negligible). Left as-is because `get_eta` lives in the base class and the
+  other trainers (`DHF`, `daft`, `ensemble_*`, ...) are **still 0-indexed** —
+  removing the compensation would give them a division by zero on their first
+  batch.
+- Line 184 reads `if i % 100 == 9:`, not `== 0`. That offset appears to be the
+  original author's workaround for the very same bug: printing at `i == 0` would
+  have divided by zero. Evidence the off-by-one was known and dodged rather than
+  fixed.
+
+**Only `MSMA_trainer` is fixed.** The same pattern exists in `DHF_trainer`,
+`daft_trainer`, `ensemble_*` and others. They will crash identically on any
+validation set that yields a single batch.
+
+---
+
 ### Still carrying the authors' cluster paths
 
 `--ehr_data_dir` and `--cxr_data_dir` still default to

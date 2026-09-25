@@ -115,7 +115,7 @@ class MSMA_Trainer(Trainer):
             outPRED_combined = torch.FloatTensor().to(self.device)
             outPRED_less_combined = torch.FloatTensor().to(self.device)
         steps = len(self.train_dl)
-        for i, (x, img, dn, rr, y_ehr, y_cxr, seq_lengths, pairs, age, gender, ethnicity, hadm_id) in enumerate (self.train_dl):
+        for i, (x, img, dn, rr, y_ehr, y_cxr, seq_lengths, pairs, age, gender, ethnicity, hadm_id) in enumerate (self.train_dl, 1):
             y = self.get_gt(y_ehr, y_cxr)
             x = torch.from_numpy(x).float()
             x = x.to(self.device)
@@ -240,7 +240,7 @@ class MSMA_Trainer(Trainer):
             outPRED_less_combined = torch.FloatTensor().to(self.device)
 
         with torch.no_grad():
-            for i, (x, img, dn, rr, y_ehr, y_cxr, seq_lengths, pairs, age, gender, ethnicity, hadm_id) in enumerate (dl):
+            for i, (x, img, dn, rr, y_ehr, y_cxr, seq_lengths, pairs, age, gender, ethnicity, hadm_id) in enumerate (dl, 1):
                 y = self.get_gt(y_ehr, y_cxr)
 
                 x = torch.from_numpy(x).float()
