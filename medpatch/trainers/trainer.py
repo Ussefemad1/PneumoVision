@@ -26,9 +26,29 @@ class Trainer():
         self.time_end = time.time()
         self.start_epoch = 1
         self.patience = 0
+        # Names the phenotype columns in metric warnings, so an undefined AUROC
+        # can be traced to a condition rather than a bare index. Populated by
+        # set_class_names() once the dataloaders exist; falls back to indices.
+        self.class_names = None
         self.levels = np.array(['acute', 'acute' ,'acute' ,'mixed' ,'chronic' ,'chronic', 'acute', 'mixed', 'mixed' ,'chronic', 'mixed' ,'chronic', 
         'chronic' ,'chronic' ,'acute', 'acute', 'chronic' ,'mixed', 'acute' ,
         'acute', 'acute' ,'acute' ,'acute', 'acute' ,'acute'])
+
+    def set_class_names(self, dl):
+        """Best-effort lookup of the phenotype column names from a dataloader.
+
+        Purely cosmetic -- it only makes metric warnings readable. Any failure
+        leaves class_names as None and the metrics fall back to 'class 0', etc.
+        """
+        try:
+            ds = dl.dataset
+            names = getattr(ds, 'CLASSES', None)
+            if names is None:
+                names = getattr(getattr(ds, 'ehr_ds', None), 'CLASSES', None)
+            if names:
+                self.class_names = list(names)
+        except Exception:
+            pass
 
     def train(self):
         pass
@@ -143,17 +163,13 @@ class Trainer():
 
         predictions = np.array(predictions)
 
-        auc_scores = metrics.roc_auc_score(y_true, predictions, average=None)
-        ave_auc_micro = metrics.roc_auc_score(y_true, predictions,
-                                            average="micro")
-        ave_auc_macro = metrics.roc_auc_score(y_true, predictions,
-                                            average="macro")
-        ave_auc_weighted = metrics.roc_auc_score(y_true, predictions,
-                                                average="weighted")
+        # Five aggregate sklearn calls used to sit here (roc_auc_score with
+        # average=None/micro/macro/weighted, plus average_precision_score).
+        # Every result was discarded two lines later, where auc_scores and
+        # auprc_scores are reassigned to empty lists. They were pure dead
+        # computation, and the main source of the UndefinedMetricWarning wall on
+        # any batch containing a phenotype with no positives. Removed.
 
-        auprc = metrics.average_precision_score(y_true, predictions, average=None)
-
-        
         auc_scores = []
         auprc_scores = []
         ci_auroc = []
@@ -166,24 +182,49 @@ class Trainer():
         #         print(f'y_true column {i} unique classes: {unique_classes} with counts: {counts}')
         for i in range(y_true.shape[1]):
             df = pd.DataFrame({'y_truth': y_true[:, i], 'y_pred': predictions[:, i]})
-            #print(f'y_truth_{i}:',np.sum(y_true[:, i]))
-            (test_auprc, upper_auprc, lower_auprc), (test_auroc, upper_auroc, lower_auroc) = get_model_performance(df)
+            label = self.class_names[i] if getattr(self, 'class_names', None) \
+                and i < len(self.class_names) else f'class {i}'
+            (test_auprc, upper_auprc, lower_auprc), (test_auroc, upper_auroc, lower_auroc) = \
+                get_model_performance(df, label=label)
             auc_scores.append(test_auroc)
             auprc_scores.append(test_auprc)
             ci_auroc.append((lower_auroc, upper_auroc))
             ci_auprc.append((lower_auprc, upper_auprc))
-        
-        auc_scores = np.array(auc_scores)
-        auprc_scores = np.array(auprc_scores)
-       
+
+        auc_scores = np.array(auc_scores, dtype=float)
+        auprc_scores = np.array(auprc_scores, dtype=float)
+
+        # np.mean propagates NaN, so one phenotype with zero positives turned
+        # auroc_mean into nan for all classes. That poisoned model selection --
+        # `if self.best_auroc < ret['auroc_mean']` is False for nan, so no
+        # checkpoint was ever saved and patience incremented every epoch, giving
+        # a silent early stop with nothing written. nanmean averages the
+        # computable classes instead; n_classes_scored records how many
+        # contributed so a partial mean can never be mistaken for the full one.
+        n_scored = int(np.sum(~np.isnan(auc_scores)))
+        n_total = int(auc_scores.size)
+
+        if n_scored == 0:
+            auroc_mean = float('nan')
+            auprc_mean = float('nan')
+        else:
+            auroc_mean = float(np.nanmean(auc_scores))
+            auprc_mean = float(np.nanmean(auprc_scores))
+
+        suffix = '' if n_scored == n_total else '  <-- PARTIAL, see [metrics] lines above'
+        print(f"  [metrics] auroc_mean {auroc_mean:.4f} over "
+              f"{n_scored}/{n_total} classes{suffix}")
+
         return { "auc_scores": auc_scores,
-            
-            "auroc_mean": np.mean(auc_scores),
-            "auprc_mean": np.mean(auprc_scores),
-            "auprc_scores": auprc_scores, 
+
+            "auroc_mean": auroc_mean,
+            "auprc_mean": auprc_mean,
+            "auprc_scores": auprc_scores,
             'ci_auroc': ci_auroc,
             'ci_auprc': ci_auprc,
-            }  
+            'n_classes_scored': n_scored,
+            'n_classes_total': n_total,
+            }
             
     def compute_unimodal_AUROC(self, y_true, predictions, ages, genders, ethnicities, prefix='', verbose=1):
         

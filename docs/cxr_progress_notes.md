@@ -447,6 +447,103 @@ validation set that yields a single batch.
 
 ---
 
+### 8. Metrics broke on phenotypes with no positives — FIXED
+
+Surfaced as a crash after three clean epochs:
+
+    trainers/utils.py:32  delta = (true_value - list_)
+    TypeError: unsupported operand type(s) for -: 'float' and 'list'
+
+**The causal chain matters more than the fix**, because two of the three links
+fail silently and the last one is the damaging one:
+
+**(a) The crash.** `evaluate_new()` returns `np.nan` when a label column has
+fewer than two classes. `computing_confidence_intervals()` then evaluates
+`true_value - list_` with `list_` a plain Python list. That only ever worked
+because `roc_auc_score` returns a **numpy** scalar, which broadcasts over a
+list; `np.nan` is a **Python** float, which does not. The code silently depended
+on the type sklearn happened to return.
+
+**(b) The filter that never filtered.**
+
+    if auprc != np.nan and auroc != np.nan:     # ALWAYS True
+
+`nan != nan` is True under IEEE 754, so NaNs were appended to the bootstrap
+lists regardless. `np.percentile` over a NaN-containing array returns NaN, so
+rare phenotypes got **confidence intervals that looked computed but were not**,
+and would have reached the results table unnoticed. More dangerous than the
+crash.
+
+**(c) NaN poisoned model selection — the serious one.** The per-class point
+estimate is appended to `auc_scores`, and the aggregate was `np.mean(...)`,
+which propagates NaN. So **one** phenotype with zero positives made
+`auroc_mean` NaN for all 25. That value drives selection:
+
+    if self.best_auroc < ret['auroc_mean']:    # False for nan, always
+
+Any comparison against NaN is False, so **no checkpoint would ever be saved and
+patience would increment every epoch** — training would run to
+`--patience 15`, save nothing, and print `nan` throughout. Fixing only (a)
+would have converted a loud crash into exactly that silent failure.
+
+**The fixes:**
+
+- `computing_confidence_intervals` converts to `np.asarray` and returns
+  `(nan, nan)` when the point estimate is undefined or the bootstrap list is
+  empty.
+- The filter uses `not np.isnan(...)`; discarded draws are counted and reported
+  per column, e.g. `22/200 bootstrap samples discarded (resample had only one
+  class); CI computed from 178 samples`.
+- Undefined columns print a named warning, e.g.
+  `[metrics] Rare condition A: AUROC/AUPRC undefined (0 positives out of 60)`.
+  Column names come from the listfile header via `Trainer.set_class_names()`,
+  falling back to indices.
+- AUPRC is treated as undefined too when there are no positives. sklearn returns
+  0.0 there, which would otherwise drag the reported mean down with a
+  meaningless value.
+- **`auroc_mean` uses `np.nanmean`**, averaging the computable classes, and
+  every epoch prints the contributing count:
+
+      [metrics] auroc_mean 0.4633 over 2/3 classes  <-- PARTIAL
+
+  **Decision and reasoning:** leaving the mean as NaN would be "honest" but
+  makes training impossible via chain (c). `nanmean` keeps checkpointing
+  working while `n_classes_scored` / `n_classes_total` make the gap impossible
+  to miss. The count is printed **every epoch**, not once, so drift is visible
+  during the run — a different phenotype can go empty in a different epoch.
+  Nothing is fabricated; a partial mean can never be mistaken for the full
+  25-class figure.
+
+**Also removed: five dead sklearn calls.** `computeAUROC` computed
+`roc_auc_score` (average=None/micro/macro/weighted) and
+`average_precision_score`, then overwrote `auc_scores`/`auprc_scores` with empty
+lists two lines later. Every result was discarded. They were the main source of
+the `UndefinedMetricWarning` wall on any batch containing an empty phenotype.
+
+#### Which phenotypes are exposed, and what you will see in the results table
+
+Evaluation loops over **all 25 phenotype columns** and computes a CI for each,
+so this is not about pneumonia's 12.7%. With **490 validation images**, a
+condition needs only a handful of positives to be at risk:
+
+- **Zero positives in the split** → that row shows `(nan, nan)` and the epoch
+  line reads `over 24/25 classes`. **Expected, not a bug.**
+- **A few positives** (roughly single digits) → the CI is computed, but from
+  fewer than 1000 bootstrap samples; the discard count is printed.
+- Pneumonia itself (~62 positives at 12.7%) is comfortable.
+
+The benchmark's rarer conditions are the candidates — things like
+*Pleurisy; pneumothorax; pulmonary collapse*, *Other liver diseases*,
+*Conduction disorders* and *Shock* sit well below the common cardiac and renal
+categories. **Check the actual per-column positive counts once Caroll's
+listfile arrives** rather than trusting this ordering.
+
+So a `(nan, nan)` in the results table means "this condition had too few
+positives to measure here", not "something broke". Worth a footnote in the
+thesis rather than an apology.
+
+---
+
 ### Still carrying the authors' cluster paths
 
 `--ehr_data_dir` and `--cxr_data_dir` still default to

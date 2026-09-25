@@ -40,6 +40,7 @@ class MSMA_Trainer(Trainer):
         self.train_dl = train_dl
         self.val_dl = val_dl
         self.test_dl = test_dl
+        self.set_class_names(val_dl)
         
         self.ehr_encoder = None
         self.cxr_encoder = None
