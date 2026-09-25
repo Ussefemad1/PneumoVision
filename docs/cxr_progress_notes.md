@@ -264,12 +264,60 @@ Note this had to cover both branches of `loadmetadata`: the `paired` path
 guards note usage by modality, but the **`partial` path merges notes
 unconditionally** — and `partial` is what Round 3 uses.
 
+### 5. `cxr_dataset.py` path parsing broke on Windows — FIXED
+
+`MIMICCXR.__init__` built its filename lookup with:
+
+    {path.split('/')[-1].split('.')[0]: path for path in paths}
+
+`glob` returns **backslash**-separated paths on Windows, so `split('/')`
+returned the whole path unchanged and every key was a full path rather than a
+`dicom_id`. Every lookup then missed, and the CXR loader could not run locally
+at all. Verified directly: for the same file, the old expression finds the
+`dicom_id` → `False`, the new one → `True`.
+
+Now uses `os.path.basename()`. Behaviour on Linux/Colab is identical; this only
+makes local runs possible, which is useful for quick checks without spinning up
+Colab.
+
+---
+
 ### Still carrying the authors' cluster paths
 
 `--ehr_data_dir` and `--cxr_data_dir` still default to
 `/scratch/fs999/shamoutlab/...`. Same failure mode as defect 4, but the README
 already says to always pass them explicitly, so they are less dangerous. Worth
 changing to `None` with a clear error for consistency.
+
+---
+
+## Where the CXR loader's safety actually comes from — read before debugging it alone
+
+`mimic-cxr-2.0.0-metadata.csv` lists **all 377,110 images**, and it stays that
+way even when `resized/` holds only our cohort. So what stops the loader asking
+for an image we never downloaded?
+
+**The listfile join, not the metadata.** In the fused path the images are
+indexed **by `dicom_id` string**, and those ids come from `metadata_with_labels`
+*after* it has been inner-joined with the EHR listfile on `stay_id`. That join
+is what restricts requests to our cohort.
+
+The practical consequence:
+
+- With `--data_pairs paired` (and `partial`), the join protects you. This is
+  the normal path and it is fine.
+- **Running the CXR loader standalone**, without that join, against a full
+  `metadata.csv` and a partial `resized/`, will raise `KeyError` on the first
+  image present in the metadata but absent from disk.
+
+This bit us on the 50-image dry run: the test folder had 50 images but
+cohort-free metadata and split files, so the standalone loader happily
+requested images that did not exist. Fixed there by filtering all three CSVs in
+`data/test_run/` down to the 50 images actually present.
+
+It will **not** recur on the real data, because the listfile join does the
+restricting — but only as long as you go through the fused path. If you ever
+debug the CXR encoder in isolation, filter the metadata to your cohort first.
 
 ---
 
