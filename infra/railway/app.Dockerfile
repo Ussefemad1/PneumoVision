@@ -17,6 +17,12 @@
 # "no such file or directory", which is a famously unhelpful way to learn this.
 FROM node:22-bookworm-slim AS build
 
+# The pre-cache step below does not just download mongod, it starts it, so the
+# build stage needs the same shared libraries as the runtime stage.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libcurl4 openssl ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /repo
 
 # Workspace manifests first, so dependency installs cache independently of src.
