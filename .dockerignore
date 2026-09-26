@@ -1,0 +1,28 @@
+# Never ship credentialed data, weights, or secrets into an image.
+data/
+checkpoints/
+results/
+.env
+.env.*
+!.env.example
+
+# Build + tooling noise
+node_modules
+**/node_modules
+**/dist
+**/build
+**/coverage
+.venv
+.git
+.github
+.husky
+.cache
+.pytest_cache
+**/__pycache__
+*.log
+wandb/
+outlogs/
+errlogs/
+playwright-report/
+test-results/
+infra/nginx/certs/

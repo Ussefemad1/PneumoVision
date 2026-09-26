@@ -1,0 +1,27 @@
+{
+  "// note": "Lint-only project. The build tsconfigs deliberately exclude tests and config files; this one includes everything so typed linting can see them.",
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "allowJs": true,
+    "checkJs": false,
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "jsx": "react-jsx",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node"]
+  },
+  "include": [
+    "*.js",
+    "*.mjs",
+    "*.ts",
+    "apps/*/src/**/*",
+    "apps/*/tests/**/*",
+    "apps/*/*.config.ts",
+    "packages/*/src/**/*",
+    "packages/*/*.config.ts",
+    "infra/scripts/**/*"
+  ],
+  "exclude": ["node_modules", "**/dist", ".venv", "medpatch", "services"]
+}

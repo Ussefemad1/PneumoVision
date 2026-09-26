@@ -55,3 +55,31 @@ errlogs/
 
 # Local tool caches
 .cache/
+
+# ── Web platform ──────────────────────────────────────────────────────────────
+# Node
+node_modules/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+.eslintcache
+npm-debug.log*
+
+# Vite / Playwright
+.vite/
+playwright-report/
+test-results/
+
+# TLS material — generated locally by infra/scripts/gen-certs.sh, never committed
+infra/nginx/certs/
+*.pem
+*.key
+*.crt
+*.csr
+
+# Local service state (MinIO / Mongo / Redis volumes when bind-mounted)
+.docker-data/
+
+# Secrets (the .env rules above already cover .env and .env.*; keep the example)
+!.env.example

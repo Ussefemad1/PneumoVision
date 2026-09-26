@@ -1,0 +1,181 @@
+# PneumoVision — development stack.
+#
+# Only nginx publishes ports. Everything else talks over the private
+# `pneumonet` bridge, so the API, inference service and datastores are not
+# reachable from the host (Section 7: internal services on a private network).
+#
+#   bash infra/scripts/gen-certs.sh   # once
+#   cp .env.example .env              # then fill in the placeholders
+#   docker compose up --build
+#
+# The app is then at https://localhost (self-signed cert warning is expected).
+
+name: pneumovision
+
+services:
+  # ── MongoDB 7, single-node replica set ─────────────────────────────────────
+  # The replica set is required for transactions and change streams, not for
+  # redundancy. The healthcheck initiates it on first boot.
+  mongo:
+    image: mongo:7
+    command: ['--replSet', 'rs0', '--bind_ip_all']
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: >
+        mongosh --quiet --eval "
+          try { rs.status().ok }
+          catch (e) { rs.initiate({_id:'rs0',members:[{_id:0,host:'mongo:27017'}]}).ok }
+        "
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+    networks: [pneumonet]
+    restart: unless-stopped
+
+  # ── Redis 7 (BullMQ queues + cache) ────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    command: ['redis-server', '--appendonly', 'yes']
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks: [pneumonet]
+    restart: unless-stopped
+
+  # ── MinIO (S3-compatible object storage for chest X-rays) ──────────────────
+  minio:
+    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+    command: ['server', '/data', '--console-address', ':9001']
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:?set S3_ACCESS_KEY in .env}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:?set S3_SECRET_KEY in .env}
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ['CMD', 'mc', 'ready', 'local']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    networks: [pneumonet]
+    restart: unless-stopped
+
+  # Creates the private bucket once, then exits.
+  minio-init:
+    image: minio/mc:RELEASE.2024-11-21T17-21-54Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+        mc alias set pv http://minio:9000 '${S3_ACCESS_KEY}' '${S3_SECRET_KEY}' &&
+        mc mb --ignore-existing pv/${S3_BUCKET:-pneumovision-cxr} &&
+        mc anonymous set none pv/${S3_BUCKET:-pneumovision-cxr} &&
+        echo 'bucket ready (private)'
+      "
+    networks: [pneumonet]
+    restart: 'no'
+
+  # ── Inference service (FastAPI + PyTorch) ──────────────────────────────────
+  # Never routed through nginx. Runs in MOCK_MODE until real checkpoints exist.
+  inference:
+    build:
+      context: .
+      dockerfile: services/inference/Dockerfile
+      args:
+        INSTALL_ML: ${INSTALL_ML:-false}
+    environment:
+      MOCK_MODE: ${MOCK_MODE:-true}
+      TORCH_DEVICE: ${TORCH_DEVICE:-auto}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DEFAULT_THETA: ${DEFAULT_THETA:-0.75}
+      INFERENCE_HMAC_SECRET: ${INFERENCE_HMAC_SECRET:?set INFERENCE_HMAC_SECRET in .env}
+      INFERENCE_HMAC_MAX_SKEW_SECONDS: ${INFERENCE_HMAC_MAX_SKEW_SECONDS:-60}
+      MEDPATCH_ROOT: /app/medpatch
+      CHECKPOINT_DIR: /app/checkpoints
+      NORMALIZER_DIR: /app/medpatch/normalizers
+    volumes:
+      # Weights stay on the host and are gitignored; read-only in the container.
+      - ./checkpoints:/app/checkpoints:ro
+    networks: [pneumonet]
+    restart: unless-stopped
+
+  # ── API gateway (Express) ──────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      API_PORT: 4000
+      WEB_ORIGIN: ${WEB_ORIGIN:-https://localhost}
+      ACCESS_TOKEN_TTL: ${ACCESS_TOKEN_TTL:-15m}
+      REFRESH_TOKEN_TTL: ${REFRESH_TOKEN_TTL:-7d}
+      JWT_PRIVATE_KEY_B64: ${JWT_PRIVATE_KEY_B64:?set JWT_PRIVATE_KEY_B64 in .env}
+      JWT_PUBLIC_KEY_B64: ${JWT_PUBLIC_KEY_B64:?set JWT_PUBLIC_KEY_B64 in .env}
+      JWT_ISSUER: ${JWT_ISSUER:-pneumovision}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-pneumovision-web}
+      FIELD_ENCRYPTION_KEY_HEX: ${FIELD_ENCRYPTION_KEY_HEX:?set FIELD_ENCRYPTION_KEY_HEX in .env}
+      FIELD_ENCRYPTION_KEY_VERSION: ${FIELD_ENCRYPTION_KEY_VERSION:-1}
+      CSRF_SECRET: ${CSRF_SECRET:?set CSRF_SECRET in .env}
+      MONGO_URI: mongodb://mongo:27017/${MONGO_DB:-pneumovision}?replicaSet=rs0&directConnection=true
+      MONGO_DB: ${MONGO_DB:-pneumovision}
+      REDIS_URL: redis://redis:6379
+      S3_ENDPOINT: http://minio:9000
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_BUCKET: ${S3_BUCKET:-pneumovision-cxr}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+      S3_FORCE_PATH_STYLE: 'true'
+      S3_PRESIGN_TTL_SECONDS: ${S3_PRESIGN_TTL_SECONDS:-300}
+      INFERENCE_URL: http://inference:8000
+      INFERENCE_HMAC_SECRET: ${INFERENCE_HMAC_SECRET}
+      INFERENCE_HMAC_MAX_SKEW_SECONDS: ${INFERENCE_HMAC_MAX_SKEW_SECONDS:-60}
+      INFERENCE_TIMEOUT_MS: ${INFERENCE_TIMEOUT_MS:-120000}
+    networks: [pneumonet]
+    restart: unless-stopped
+
+  # ── Web SPA (static build served by its own nginx) ─────────────────────────
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    networks: [pneumonet]
+    restart: unless-stopped
+
+  # ── Edge reverse proxy — the only service exposed to the host ──────────────
+  nginx:
+    image: nginx:1.27-alpine
+    depends_on: [api, web]
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./infra/nginx/proxy_common.conf:/etc/nginx/proxy_common.conf:ro
+      - ./infra/nginx/certs:/etc/nginx/certs:ro
+    networks: [pneumonet]
+    restart: unless-stopped
+
+networks:
+  pneumonet:
+    driver: bridge
+
+volumes:
+  mongo-data:
+  redis-data:
+  minio-data:
