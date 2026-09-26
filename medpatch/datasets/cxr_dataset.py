@@ -20,7 +20,10 @@ class MIMICCXR(Dataset):
        'Enlarged Cardiomediastinum', 'Fracture', 'Lung Lesion',
        'Lung Opacity', 'No Finding', 'Pleural Effusion', 'Pleural Other',
        'Pneumonia', 'Pneumothorax', 'Support Devices']
-        self.filenames_to_path = {path.split('/')[-1].split('.')[0]: path for path in paths}
+        # os.path.basename, not split('/'): glob returns backslash-separated
+        # paths on Windows, so split('/') kept the whole path as the key and
+        # every lookup missed. Identical behaviour on Linux/Colab.
+        self.filenames_to_path = {os.path.basename(path).split('.')[0]: path for path in paths}
 
         metadata = pd.read_csv(f'{self.data_dir}/mimic-cxr-2.0.0-metadata.csv')
         labels = pd.read_csv(f'{self.data_dir}/mimic-cxr-2.0.0-chexpert.csv')

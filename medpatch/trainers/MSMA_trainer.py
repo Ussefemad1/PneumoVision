@@ -40,6 +40,7 @@ class MSMA_Trainer(Trainer):
         self.train_dl = train_dl
         self.val_dl = val_dl
         self.test_dl = test_dl
+        self.set_class_names(val_dl)
         
         self.ehr_encoder = None
         self.cxr_encoder = None
@@ -73,6 +74,15 @@ class MSMA_Trainer(Trainer):
         else:
             self.best_auroc = float('inf')
         self.best_stats = None
+
+        # --resume existed in arguments.py but nothing read it, so an interrupted
+        # run silently restarted at epoch 0 with a fresh optimizer while printing
+        # "Loaded model checkpoint". Without --resume, behaviour is unchanged.
+        if getattr(self.args, 'resume', False):
+            self.resume_from_checkpoint()
+        else:
+            print(f"[resume] --resume not set: starting fresh from epoch "
+                  f"{self.start_epoch}")
         
                 # Count parameters and exit if requested
         if self.args.inspect_model:
@@ -106,7 +116,7 @@ class MSMA_Trainer(Trainer):
             outPRED_combined = torch.FloatTensor().to(self.device)
             outPRED_less_combined = torch.FloatTensor().to(self.device)
         steps = len(self.train_dl)
-        for i, (x, img, dn, rr, y_ehr, y_cxr, seq_lengths, pairs, age, gender, ethnicity, hadm_id) in enumerate (self.train_dl):
+        for i, (x, img, dn, rr, y_ehr, y_cxr, seq_lengths, pairs, age, gender, ethnicity, hadm_id) in enumerate (self.train_dl, 1):
             y = self.get_gt(y_ehr, y_cxr)
             x = torch.from_numpy(x).float()
             x = x.to(self.device)
@@ -231,7 +241,7 @@ class MSMA_Trainer(Trainer):
             outPRED_less_combined = torch.FloatTensor().to(self.device)
 
         with torch.no_grad():
-            for i, (x, img, dn, rr, y_ehr, y_cxr, seq_lengths, pairs, age, gender, ethnicity, hadm_id) in enumerate (dl):
+            for i, (x, img, dn, rr, y_ehr, y_cxr, seq_lengths, pairs, age, gender, ethnicity, hadm_id) in enumerate (dl, 1):
                 y = self.get_gt(y_ehr, y_cxr)
 
                 x = torch.from_numpy(x).float()
@@ -456,6 +466,12 @@ class MSMA_Trainer(Trainer):
 
             self.model.train()
             self.train_epoch()
+
+            # Save every epoch, not only on improvement. 'best' is still written
+            # separately above and is what you evaluate; this one exists purely so
+            # an interrupted run resumes from the last epoch actually completed
+            # rather than the last epoch that happened to improve.
+            self.save_checkpoint(prefix='last')
 
             if self.patience >= self.args.patience:
                 break

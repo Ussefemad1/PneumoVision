@@ -1,0 +1,39 @@
+# Colab install list.
+#
+# Why this file exists: requirements.txt pins torch==2.4.1 / torchvision==0.19.1,
+# and Colab no longer offers those builds. Installing them there either fails or
+# drags in a CPU-only wheel over Colab's CUDA build, which silently costs you the
+# GPU. All three of us train on Colab, so nobody could install as pinned.
+#
+# The rule here: leave anything Colab already ships correctly alone (torch,
+# torchvision, numpy, pandas, scipy, matplotlib, Pillow) and install only what is
+# missing or version-sensitive to our code.
+#
+# Usage in a Colab cell:
+#     !pip install -q -r requirements-colab.txt
+#
+# Then confirm you still have a CUDA build -- if this prints False you have
+# accidentally replaced Colab's torch and training will be unusably slow:
+#     import torch; print(torch.__version__, torch.cuda.is_available())
+#
+# Local development still uses requirements.txt, which stays fully pinned.
+
+# Pinned: these define model behaviour and must match the local environment.
+transformers==4.44.2
+timm==1.0.9
+
+# Pinned: small, no heavy dependencies, unlikely to fight Colab's stack.
+einops==0.8.2
+wandb==0.28.2
+sentencepiece==0.2.2
+
+# Not usually preinstalled on Colab.
+openpyxl==3.1.5
+
+# Deliberately NOT listed, so Colab's own versions are kept:
+#   torch, torchvision  -- Colab's build is CUDA-matched; replacing it loses the GPU
+#   numpy               -- Colab ships numpy 2.x; forcing 1.26.4 breaks preinstalled
+#                          packages compiled against 2.x
+#   pandas, scipy, matplotlib, Pillow, PyYAML, tqdm, regex, psutil, nltk
+#                       -- all present on Colab at compatible versions
+#   pytest              -- tests run locally, not on Colab

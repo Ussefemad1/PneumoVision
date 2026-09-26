@@ -34,12 +34,15 @@ from pathlib import Path
 import torch
 import random
 
-from arguments import args_parser
+from arguments import args_parser, validate_data_dirs
 
 parser = args_parser()
 # add more arguments here ...
 args = parser.parse_args()
 print(args)
+
+# Fail here, with the flag named, rather than deep inside a loader.
+validate_data_dirs(args)
 
 if args.missing_token is not None:
     from trainers.fusion_tokens_trainer import FusionTokensTrainer as FusionTrainer
@@ -60,7 +63,25 @@ torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 
 def read_timeseries(args):
-    path = f'{args.ehr_data_dir}/{args.task}/train/14991576_episode3_timeseries.csv'
+    # This file is read only to discover the discretizer's column layout, which
+    # is identical across every extracted timeseries. The original code named
+    # one specific patient here (14991576_episode3_timeseries.csv), so the run
+    # crashed if that particular subject was absent from the extraction. Prefer
+    # it when present, for byte-identical behaviour on the authors' data, but
+    # fall back to whatever timeseries file exists.
+    train_dir = Path(args.ehr_data_dir) / args.task / 'train'
+    preferred = train_dir / '14991576_episode3_timeseries.csv'
+
+    if preferred.is_file():
+        path = preferred
+    else:
+        candidates = sorted(train_dir.glob('*_timeseries.csv'))
+        if not candidates:
+            raise FileNotFoundError(
+                f'No *_timeseries.csv found in {train_dir}. The EHR extraction '
+                'has not been run, or --ehr_data_dir points somewhere wrong.')
+        path = candidates[0]
+
     ret = []
     with open(path, "r") as tsfile:
         header = tsfile.readline().strip().split(',')

@@ -94,6 +94,13 @@ class CXRTransformer(nn.Module):
             num_classes=0,  # We will use it as a feature extractor
         )
 
+        # Fusion heads read `.feats_dim` to size their classifier
+        # (Classifier(self.cxr_model.feats_dim, args)). CXRModels defines it;
+        # this class did not, so it could not be swapped in without an
+        # AttributeError. timm exposes the embedding width as num_features --
+        # 384 for vit_small_patch16_384.
+        self.feats_dim = self.feature_extractor.num_features
+
         image_height, image_width = pair(image_size)
         patch_height, patch_width = pair(patch_size)
 
