@@ -65,6 +65,15 @@ const baseSchema = z.object({
   /** Where demo artefacts (synthetic X-ray PNGs) are written. */
   DEMO_DATA_DIR: z.string().default('.demo-data'),
 
+  /**
+   * Absolute path to a built SPA to serve from this process.
+   *
+   * Unset in local development and in the Docker Compose stack, where Nginx
+   * serves the static build and proxies the API. Set in single-service
+   * deployments (Railway), where one container has to answer both.
+   */
+  WEB_DIST_DIR: z.string().optional(),
+
   // ── Required only when DEMO_MODE=false ────────────────────────────────────
   REDIS_URL: z.string().optional(),
   S3_ENDPOINT: z.string().url().optional(),

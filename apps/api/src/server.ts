@@ -4,6 +4,7 @@ import { Router } from 'express';
 
 import { API_PREFIX, createApp } from './app.js';
 import { loadEnv, usesMemoryMongo, type Env } from './config/env.js';
+import { MONGO_BINARY_VERSION, MONGO_DOWNLOAD_DIR } from './config/mongoBinary.js';
 import { connectMongo, disconnectMongo, mongoReady, syncIndexes } from './db/connect.js';
 import './db/models.js';
 import { backfillPredictions } from './demo/backfill.js';
@@ -40,11 +41,26 @@ async function main(): Promise<void> {
   let mongoUri = env.MONGO_URI;
 
   if (usesMemoryMongo(env)) {
-    // Imported lazily so the dev dependency is never required in production.
+    // Imported lazily: only demo mode needs it, so a deployment with a real
+    // MONGO_URI never pays the module's startup cost.
     const { MongoMemoryServer } = await import('mongodb-memory-server');
+
+    // A cold start that has to fetch mongod stalls for minutes on a ~600 MB
+    // download. Say so up front rather than let it look like a hang: images
+    // built for deployment pre-cache the binary and set this.
+    const cacheDir = process.env.MONGOMS_DOWNLOAD_DIR;
+    if (cacheDir) {
+      logger.info({ version: MONGO_BINARY_VERSION, cacheDir }, 'using pre-cached mongod');
+    } else {
+      logger.warn(
+        { version: MONGO_BINARY_VERSION, expected: MONGO_DOWNLOAD_DIR },
+        'MONGOMS_DOWNLOAD_DIR is unset — mongod may be downloaded now (~600 MB)',
+      );
+    }
+
     logger.info('starting in-process MongoDB (demo mode)…');
     const server = await MongoMemoryServer.create({
-      binary: { version: '7.0.14' },
+      binary: { version: MONGO_BINARY_VERSION },
       instance: { dbName: env.MONGO_DB },
     });
     mongoUri = server.getUri(env.MONGO_DB);

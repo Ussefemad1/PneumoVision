@@ -1,3 +1,5 @@
+import { join, resolve, sep } from 'node:path';
+
 import cookieParser from 'cookie-parser';
 import express, { type Express, type Router } from 'express';
 import helmet from 'helmet';
@@ -116,6 +118,46 @@ export function createApp({ env, logger, apiRouter, readinessChecks = {} }: AppD
   });
 
   if (apiRouter) app.use(API_PREFIX, apiRouter);
+
+  /**
+   * Single-service mode: serve the built SPA from this process.
+   *
+   * Mounted after the API so a route collision can never shadow an endpoint,
+   * and the history fallback explicitly excludes `/api` so a mistyped
+   * endpoint still returns the JSON error envelope instead of the app shell
+   * with a 200 — which would look like a working page and hide the bug.
+   */
+  if (env.WEB_DIST_DIR) {
+    const webRoot = resolve(env.WEB_DIST_DIR);
+
+    // Hashed build assets are immutable; the entry HTML never is.
+    app.use(
+      express.static(webRoot, {
+        index: false,
+        setHeaders: (res, filePath) => {
+          const isHashedAsset = filePath.includes(`${sep}assets${sep}`);
+          res.setHeader(
+            'Cache-Control',
+            isHashedAsset ? 'public, max-age=31536000, immutable' : 'no-store',
+          );
+        },
+      }),
+    );
+
+    app.get(/^(?!\/api\/).*/, (req, res, next) => {
+      if (req.method !== 'GET') {
+        next();
+        return;
+      }
+      // sendFile does not run express.static's setHeaders, so the shell's
+      // no-store has to be set here too — otherwise the entry HTML is served
+      // cacheable and a deploy can leave clients on a stale bundle.
+      res.setHeader('Cache-Control', 'no-store');
+      res.sendFile(join(webRoot, 'index.html'), (err) => {
+        if (err) next(err);
+      });
+    });
+  }
 
   app.use(notFoundHandler);
   app.use(createErrorHandler(logger));

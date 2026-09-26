@@ -1,6 +1,8 @@
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
 
+import { MONGO_BINARY_VERSION } from '../../src/config/mongoBinary.js';
+
 /**
  * A real mongod, in-process.
  *
@@ -9,7 +11,7 @@ import mongoose from 'mongoose';
  * runs. The first run downloads the binary (cached under node_modules
  * afterwards), so the boot hook allows a long timeout.
  */
-export const MONGO_VERSION = '7.0.14';
+export const MONGO_VERSION = MONGO_BINARY_VERSION;
 
 let server: MongoMemoryServer | undefined;
 
