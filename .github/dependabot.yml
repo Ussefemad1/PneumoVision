@@ -22,6 +22,35 @@ updates:
     schedule:
       interval: monthly
     open-pull-requests-limit: 2
+    # The deep-learning stack is frozen, and the note above was not enough on
+    # its own: dependabot still raised dependabot/pip/torch-2.14.0, which only
+    # a human declining to click merge would have stopped. These entries stop
+    # such PRs being opened at all.
+    #
+    # Why these five specifically:
+    #   torch, torchvision, timm, transformers
+    #     Version drift between the paper's 2021 environment and current
+    #     releases already produced a tensor/tuple mismatch in the CXR forward
+    #     pass (defect 6, docs/cxr_progress_notes.md). The ViT encoder
+    #     selection, checkpoint resume, and the 577/578-token arithmetic were
+    #     all validated against 2.4.1 / 0.19.1 / 1.0.9 specifically.
+    #   numpy
+    #     mimic4extract and the discretizer are sensitive to the 1.x -> 2.x
+    #     change; Colab ships 2.x while training pins 1.26.4 (see
+    #     requirements-colab.txt).
+    #
+    # services/inference deliberately does NOT pin torch -- it inherits this
+    # root pin -- so a bump here changes training and inference together.
+    #
+    # Upgrading is a deliberate, retested decision: re-run scripts/
+    # verify_environment.py and pytest, then confirm the encoder banner still
+    # reports CXRTransformer / 27.6M / 577 tokens before trusting any result.
+    ignore:
+      - dependency-name: torch
+      - dependency-name: torchvision
+      - dependency-name: timm
+      - dependency-name: transformers
+      - dependency-name: numpy
 
   - package-ecosystem: docker
     directory: /
