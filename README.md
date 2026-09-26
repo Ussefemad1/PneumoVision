@@ -1,7 +1,24 @@
 # PneumoVision
 
-Multimodal fusion over MIMIC-IV EHR, MIMIC-CXR chest X-rays, radiology reports (RR),
-and discharge notes (DN), for in-hospital-mortality and phenotyping.
+Multimodal clinical decision support for early respiratory failure detection.
+Fuses MIMIC-IV EHR time-series, MIMIC-CXR chest X-rays, radiology reports (RR)
+and discharge notes (DN) for in-hospital-mortality and phenotyping, using the
+MedPatch confidence-guided multi-stage fusion design.
+
+The repo holds two tracks:
+
+| Track             | Where                                       | What                                       |
+| ----------------- | ------------------------------------------- | ------------------------------------------ |
+| **ML / training** | `medpatch/`, `scripts/`, `tests/`           | the research codebase — Sections 1–4 below |
+| **Web platform**  | `apps/`, `packages/`, `services/`, `infra/` | the clinician-facing app — Section 6 below |
+
+They share one repo but have separate toolchains: Python 3.11 for ML, Node 22+
+for the web platform. See [CLAUDE.md](CLAUDE.md) for architecture ground truth,
+conventions and the data-handling rules.
+
+> **Data rule:** MIMIC-IV / MIMIC-CXR / MIMIC-IV-Note are credentialed PhysioNet
+> data and must never leave your machine or be pasted into third-party services.
+> Nothing under `data/` or `checkpoints/` is ever committed.
 
 ---
 
@@ -57,10 +74,10 @@ Both should end with `ENVIRONMENT READY`.
 give everyone the same build**:
 
 | Platform | What PyPI gives you |
-|---|---|
-| Windows | CPU-only |
-| Linux | CUDA 12.1 build |
-| macOS | CPU / MPS |
+| -------- | ------------------- |
+| Windows  | CPU-only            |
+| Linux    | CUDA 12.1 build     |
+| macOS    | CPU / MPS           |
 
 For a **CPU-only** install on any platform (small, good for development):
 
@@ -97,11 +114,11 @@ pytest                                 # smoke tests, no data required
 None of the datasets are in this repo — they are credentialed PhysioNet data and are
 gitignored. Each person needs their own copy:
 
-| Data | Source | Passed via |
-|---|---|---|
-| MIMIC-IV (extracted per-episode timeseries) | built with `medpatch/mimic4extract/` | `--ehr_data_dir` |
-| MIMIC-CXR-JPG 2.0.0 | PhysioNet | `--cxr_data_dir` |
-| MIMIC-IV-Note 2.2 (`discharge.csv`, `radiology.csv`) | PhysioNet | `--notes_data_dir` |
+| Data                                                 | Source                               | Passed via         |
+| ---------------------------------------------------- | ------------------------------------ | ------------------ |
+| MIMIC-IV (extracted per-episode timeseries)          | built with `medpatch/mimic4extract/` | `--ehr_data_dir`   |
+| MIMIC-CXR-JPG 2.0.0                                  | PhysioNet                            | `--cxr_data_dir`   |
+| MIMIC-IV-Note 2.2 (`discharge.csv`, `radiology.csv`) | PhysioNet                            | `--notes_data_dir` |
 
 `--ehr_data_dir` must contain, per task:
 
@@ -169,6 +186,7 @@ wandb login
 # macOS / Linux
 export WANDB_MODE=offline
 ```
+
 ```powershell
 # Windows PowerShell
 $env:WANDB_MODE = "offline"
@@ -189,7 +207,7 @@ one cache if you have limited home-directory quota.
 - **Line endings:** [.gitattributes](.gitattributes) forces LF on `*.sh`. Do not disable
   it — CRLF in a SLURM script makes bash fail with `$'\r': command not found`.
 - **`medpatch/mimic4extract/`** is vendored from the MIMIC-III benchmark repo. It targets
-  Python 3.11 and Keras/TensorFlow that is *not* in `requirements.txt`; the Keras paths
+  Python 3.11 and Keras/TensorFlow that is _not_ in `requirements.txt`; the Keras paths
   there are not runnable in this environment.
 - Before pushing: `python scripts/verify_environment.py && pytest`.
 
@@ -212,4 +230,74 @@ scripts/
   verify_environment.py
 tests/                 smoke tests (no data required)
 data/ checkpoints/ results/    gitignored
+```
+
+---
+
+## 6. Web Platform
+
+The clinician-facing application: a React SPA, an Express API gateway, and a
+FastAPI inference service that imports its preprocessing from `medpatch/` so
+inputs match training exactly.
+
+### Requirements
+
+- **Node.js 22+** (verified on 24.x)
+- **Docker + Docker Compose** for the full stack
+- The Python 3.11 venv from Section 1 (the inference service reuses it locally)
+
+### One-command demo
+
+```bash
+bash infra/scripts/gen-certs.sh     # self-signed dev TLS, once
+cp .env.example .env                # then replace every placeholder
+docker compose up --build
+```
+
+Then open <https://localhost> and accept the self-signed certificate warning.
+Only Nginx publishes ports — the API, inference service, MongoDB, Redis and
+MinIO stay on a private Docker network.
+
+Generate the secrets `.env` needs with:
+
+```bash
+openssl rand -hex 32                                  # each *_SECRET / *_KEY_HEX
+openssl genpkey -algorithm ed25519 -out jwt.key       # then base64 -w0 jwt.key
+openssl pkey -in jwt.key -pubout -out jwt.pub         # then base64 -w0 jwt.pub
+```
+
+### Local development (no Docker)
+
+```bash
+npm install
+npm run dev          # api on :4000, web on :5173
+```
+
+### Checks
+
+```bash
+npm run typecheck
+npm run lint
+npm test                                    # shared + api + web
+cd services/inference && python -m pytest   # inference service
+```
+
+### Model status
+
+`checkpoints/` is empty — no trained weights exist in this repo yet, so the
+inference service runs in `MOCK_MODE=true`, returning deterministic,
+schema-valid synthetic predictions seeded per stay. This lets the API and UI be
+built and tested end to end before weights land. `MOCK_MODE=false` deliberately
+refuses to start until real checkpoints are wired in; see
+[CLAUDE.md](CLAUDE.md) § Model status for the two known upstream gaps.
+
+### Layout
+
+```
+apps/api/            Express + TypeScript gateway (auth, RBAC, audit, orchestration)
+apps/web/            React 18 + Vite SPA
+packages/shared/     zod schemas, types and constants shared by api and web
+services/inference/  FastAPI service wrapping the MedPatch forward pass
+infra/nginx/         edge reverse proxy (TLS) + SPA static config
+infra/scripts/       gen-certs.sh, gen-ehr-constants.mjs
 ```

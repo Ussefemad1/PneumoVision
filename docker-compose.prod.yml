@@ -1,0 +1,106 @@
+# Production overlay. Apply on top of the base stack:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# Differences from dev: no bind-mounted config, hardened container settings,
+# resource limits, JSON log rotation, and a real certificate expected at
+# infra/nginx/certs (replace the self-signed dev pair before deploying).
+
+name: pneumovision
+
+x-hardening: &hardening
+  restart: always
+  security_opt:
+    - no-new-privileges:true
+  logging:
+    driver: json-file
+    options:
+      max-size: '10m'
+      max-file: '3'
+
+services:
+  mongo:
+    <<: *hardening
+    command: ['--replSet', 'rs0', '--bind_ip_all', '--auth', '--keyFile', '/etc/mongo-keyfile']
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:?set MONGO_ROOT_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?set MONGO_ROOT_PASSWORD}
+    volumes:
+      - mongo-data:/data/db
+      # Shared secret authenticating replica set members. Create with:
+      #   openssl rand -base64 756 > infra/mongo/keyfile && chmod 400 infra/mongo/keyfile
+      - ./infra/mongo/keyfile:/etc/mongo-keyfile:ro
+    deploy:
+      resources:
+        limits: { memory: 2g }
+
+  redis:
+    <<: *hardening
+    command:
+      [
+        'redis-server',
+        '--appendonly',
+        'yes',
+        '--requirepass',
+        '${REDIS_PASSWORD:?set REDIS_PASSWORD}',
+      ]
+    healthcheck:
+      test: ['CMD', 'redis-cli', '-a', '${REDIS_PASSWORD}', 'ping']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits: { memory: 512m }
+
+  minio:
+    <<: *hardening
+    deploy:
+      resources:
+        limits: { memory: 1g }
+
+  inference:
+    <<: *hardening
+    build:
+      context: .
+      dockerfile: services/inference/Dockerfile
+      args:
+        # Production is expected to serve real weights, not mock output.
+        INSTALL_ML: 'true'
+    environment:
+      MOCK_MODE: ${MOCK_MODE:-false}
+      LOG_LEVEL: ${LOG_LEVEL:-warn}
+    read_only: true
+    tmpfs:
+      - /tmp
+    deploy:
+      resources:
+        limits: { memory: 6g }
+
+  api:
+    <<: *hardening
+    environment:
+      NODE_ENV: production
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      MONGO_URI: mongodb://${MONGO_ROOT_USER}:${MONGO_ROOT_PASSWORD}@mongo:27017/${MONGO_DB:-pneumovision}?replicaSet=rs0&authSource=admin&directConnection=true
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+    read_only: true
+    tmpfs:
+      - /tmp
+    deploy:
+      resources:
+        limits: { memory: 1g }
+
+  web:
+    <<: *hardening
+
+  nginx:
+    <<: *hardening
+    ports:
+      - '80:80'
+      - '443:443'
+
+volumes:
+  mongo-data:
+  redis-data:
+  minio-data:
