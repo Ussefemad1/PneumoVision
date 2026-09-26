@@ -22,6 +22,45 @@ from typing import List, Dict, Tuple, Optional
 def pair(t):
     return t if isinstance(t, tuple) else (t, t)
 
+
+def cxr_features(out):
+    """Normalise whatever the CXR encoder returned into a feature tensor.
+
+    The repo ships two CXR encoders with incompatible signatures, and several
+    forward() methods assumed a bare tensor:
+
+      CXRModels     (models/cxr_models.py) -> (preds, loss, visual_feats)
+                    visual_feats is [B, D] -- a torchvision backbone's pooled
+                    output, with no token dimension.
+      CXRTransformer(models/cxr_encoder.py) -> (v_cxr, cls)
+                    v_cxr is [B, N, D] -- timm ViT patch tokens plus CLS.
+
+    See defect 6 in docs/cxr_progress_notes.md: --cxr_encoder is currently only
+    read as a boolean gate, so MSMA_trainer always builds CXRModels
+    (DenseNet-121) regardless of the timm name passed on the command line.
+    This helper keeps both shapes working; it does NOT fix that selection bug.
+    """
+    if isinstance(out, (tuple, list)):
+        if len(out) == 3:
+            return out[2]        # CXRModels: visual_feats
+        return out[0]            # CXRTransformer: token sequence
+    return out
+
+
+def cxr_pool(feats, use_cls_token):
+    """Reduce CXR features to one vector per image.
+
+    Token pooling ('cls' takes token 0, otherwise mean over tokens) only means
+    anything for a ViT-style [B, N, D] output. A torchvision backbone already
+    returns [B, D], which is pooled by construction, so it is passed through.
+    """
+    feats = cxr_features(feats)
+    if feats.dim() == 2:
+        return feats
+    if use_cls_token == 'cls':
+        return feats[:, 0, :]
+    return feats.mean(dim=1)
+
 class Fusion(nn.Module):
     def __init__(self, args, ehr_model=None, cxr_model=None, text_model=None):
         super(Fusion, self).__init__()
@@ -243,13 +282,7 @@ class EarlyFusion(nn.Module):
 
         # Get CXR features
         if self.cxr_model and img is not None:
-            cxr_feats = self.cxr_model(img)
-            if self.args.use_cls_token == 'cls':
-                # Use the first token (CLS token)
-                cxr_feats = cxr_feats[:, 0, :]
-            else:
-                # Use mean pooling
-                cxr_feats = cxr_feats.mean(dim=1)
+            cxr_feats = cxr_pool(self.cxr_model(img), self.args.use_cls_token)
             features.append(cxr_feats)
 
         # Get text features
@@ -321,13 +354,7 @@ class JointFusion(nn.Module):
 
         # Get CXR features
         if self.cxr_model and img is not None:
-            cxr_feats = self.cxr_model(img)
-            if self.args.use_cls_token == 'cls':
-                # Use the first token (CLS token)
-                cxr_feats = cxr_feats[:, 0, :]
-            else:
-                # Use mean pooling
-                cxr_feats = cxr_feats.mean(dim=1)
+            cxr_feats = cxr_pool(self.cxr_model(img), self.args.use_cls_token)
             features.append(cxr_feats)
 
         # Get text features
@@ -384,13 +411,7 @@ class LateFusion(nn.Module):
 
         # Get CXR predictions
         if self.cxr_model and img is not None:
-            cxr_feats = self.cxr_model(img)
-            if self.args.use_cls_token == 'cls':
-                # Use the first token (CLS token)
-                cxr_feats = cxr_feats[:, 0, :]
-            else:
-                # Use mean pooling
-                cxr_feats = cxr_feats.mean(dim=1)
+            cxr_feats = cxr_pool(self.cxr_model(img), self.args.use_cls_token)
             cxr_pred = self.cxr_classifier(cxr_feats)
             preds.append(cxr_pred)
 
@@ -458,7 +479,7 @@ class LSTMFusion(nn.Module):
 
         # Get CXR features
         if self.cxr_model and img is not None:
-            cxr_feats = self.cxr_model(img)
+            cxr_feats = cxr_pool(self.cxr_model(img), self.args.use_cls_token)
             features.append(cxr_feats)
 
         # Get text features
@@ -538,13 +559,9 @@ class UnimodalCXR(nn.Module):
             raise ValueError("CXR data (img) must be provided for UnimodalCXR!")
         
         # Pass data through the encoder
-        cxr_feats = self.cxr_model(img)  # Shape: [B, 577, feats_dim]
-        if self.args.use_cls_token == 'cls':
-            # Use the first token (CLS token)
-            cxr_feats = cxr_feats[:, 0, :]
-        else:
-            # Use mean pooling
-            cxr_feats = cxr_feats.mean(dim=1)
+        # [B, 577, D] for a ViT encoder, [B, D] for a torchvision backbone --
+        # see defect 6: --cxr_encoder does not currently select the architecture.
+        cxr_feats = cxr_pool(self.cxr_model(img), self.args.use_cls_token)
         
         output = self.cxr_classifier(cxr_feats)
         return {'unimodal_cxr': output, 'unified': output}
@@ -742,7 +759,7 @@ class MeTraTransformer(nn.Module):
 
         # Get CXR features
         if 'CXR' in self.args.modalities:
-            cxr_feats = self.cxr_model(img)
+            cxr_feats = cxr_pool(self.cxr_model(img), self.args.use_cls_token)
             features.append(cxr_feats)
 
         # Get text features

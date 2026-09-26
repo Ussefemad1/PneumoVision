@@ -26,9 +26,29 @@ class Trainer():
         self.time_end = time.time()
         self.start_epoch = 1
         self.patience = 0
+        # Names the phenotype columns in metric warnings, so an undefined AUROC
+        # can be traced to a condition rather than a bare index. Populated by
+        # set_class_names() once the dataloaders exist; falls back to indices.
+        self.class_names = None
         self.levels = np.array(['acute', 'acute' ,'acute' ,'mixed' ,'chronic' ,'chronic', 'acute', 'mixed', 'mixed' ,'chronic', 'mixed' ,'chronic', 
         'chronic' ,'chronic' ,'acute', 'acute', 'chronic' ,'mixed', 'acute' ,
         'acute', 'acute' ,'acute' ,'acute', 'acute' ,'acute'])
+
+    def set_class_names(self, dl):
+        """Best-effort lookup of the phenotype column names from a dataloader.
+
+        Purely cosmetic -- it only makes metric warnings readable. Any failure
+        leaves class_names as None and the metrics fall back to 'class 0', etc.
+        """
+        try:
+            ds = dl.dataset
+            names = getattr(ds, 'CLASSES', None)
+            if names is None:
+                names = getattr(getattr(ds, 'ehr_ds', None), 'CLASSES', None)
+            if names:
+                self.class_names = list(names)
+        except Exception:
+            pass
 
     def train(self):
         pass
@@ -143,17 +163,13 @@ class Trainer():
 
         predictions = np.array(predictions)
 
-        auc_scores = metrics.roc_auc_score(y_true, predictions, average=None)
-        ave_auc_micro = metrics.roc_auc_score(y_true, predictions,
-                                            average="micro")
-        ave_auc_macro = metrics.roc_auc_score(y_true, predictions,
-                                            average="macro")
-        ave_auc_weighted = metrics.roc_auc_score(y_true, predictions,
-                                                average="weighted")
+        # Five aggregate sklearn calls used to sit here (roc_auc_score with
+        # average=None/micro/macro/weighted, plus average_precision_score).
+        # Every result was discarded two lines later, where auc_scores and
+        # auprc_scores are reassigned to empty lists. They were pure dead
+        # computation, and the main source of the UndefinedMetricWarning wall on
+        # any batch containing a phenotype with no positives. Removed.
 
-        auprc = metrics.average_precision_score(y_true, predictions, average=None)
-
-        
         auc_scores = []
         auprc_scores = []
         ci_auroc = []
@@ -166,24 +182,49 @@ class Trainer():
         #         print(f'y_true column {i} unique classes: {unique_classes} with counts: {counts}')
         for i in range(y_true.shape[1]):
             df = pd.DataFrame({'y_truth': y_true[:, i], 'y_pred': predictions[:, i]})
-            #print(f'y_truth_{i}:',np.sum(y_true[:, i]))
-            (test_auprc, upper_auprc, lower_auprc), (test_auroc, upper_auroc, lower_auroc) = get_model_performance(df)
+            label = self.class_names[i] if getattr(self, 'class_names', None) \
+                and i < len(self.class_names) else f'class {i}'
+            (test_auprc, upper_auprc, lower_auprc), (test_auroc, upper_auroc, lower_auroc) = \
+                get_model_performance(df, label=label)
             auc_scores.append(test_auroc)
             auprc_scores.append(test_auprc)
             ci_auroc.append((lower_auroc, upper_auroc))
             ci_auprc.append((lower_auprc, upper_auprc))
-        
-        auc_scores = np.array(auc_scores)
-        auprc_scores = np.array(auprc_scores)
-       
+
+        auc_scores = np.array(auc_scores, dtype=float)
+        auprc_scores = np.array(auprc_scores, dtype=float)
+
+        # np.mean propagates NaN, so one phenotype with zero positives turned
+        # auroc_mean into nan for all classes. That poisoned model selection --
+        # `if self.best_auroc < ret['auroc_mean']` is False for nan, so no
+        # checkpoint was ever saved and patience incremented every epoch, giving
+        # a silent early stop with nothing written. nanmean averages the
+        # computable classes instead; n_classes_scored records how many
+        # contributed so a partial mean can never be mistaken for the full one.
+        n_scored = int(np.sum(~np.isnan(auc_scores)))
+        n_total = int(auc_scores.size)
+
+        if n_scored == 0:
+            auroc_mean = float('nan')
+            auprc_mean = float('nan')
+        else:
+            auroc_mean = float(np.nanmean(auc_scores))
+            auprc_mean = float(np.nanmean(auprc_scores))
+
+        suffix = '' if n_scored == n_total else '  <-- PARTIAL, see [metrics] lines above'
+        print(f"  [metrics] auroc_mean {auroc_mean:.4f} over "
+              f"{n_scored}/{n_total} classes{suffix}")
+
         return { "auc_scores": auc_scores,
-            
-            "auroc_mean": np.mean(auc_scores),
-            "auprc_mean": np.mean(auprc_scores),
-            "auprc_scores": auprc_scores, 
+
+            "auroc_mean": auroc_mean,
+            "auprc_mean": auprc_mean,
+            "auprc_scores": auprc_scores,
             'ci_auroc': ci_auroc,
             'ci_auprc': ci_auprc,
-            }  
+            'n_classes_scored': n_scored,
+            'n_classes_total': n_total,
+            }
             
     def compute_unimodal_AUROC(self, y_true, predictions, ages, genders, ethnicities, prefix='', verbose=1):
         
@@ -291,23 +332,83 @@ class Trainer():
         else:
             return torch.from_numpy(y_ehr).float()
 
-    def save_checkpoint(self, prefix='best'):
+    def checkpoint_path(self, prefix='best'):
+        """Path for a checkpoint of the given kind.
+
+        `prefix` used to be accepted but ignored -- the filename was always
+        'best_checkpoint_...', so saving a 'last' checkpoint would silently
+        overwrite the best one. It now selects the file.
+        """
         save_dir = f'{self.args.save_dir}/{self.args.task}/{self.args.fusion_type}'
-        path = f'{save_dir}/best_checkpoint_{self.args.lr}_{self.args.task}_{self.args.fusion_type}_{self.args.modalities}_{self.args.data_pairs}.pth.tar'
-        os.makedirs(save_dir, exist_ok=True)
+        return (f'{save_dir}/{prefix}_checkpoint_{self.args.lr}_{self.args.task}'
+                f'_{self.args.fusion_type}_{self.args.modalities}_{self.args.data_pairs}.pth.tar')
+
+    def save_checkpoint(self, prefix='best'):
+        path = self.checkpoint_path(prefix)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         checkpoint_data = {
             'epoch': self.epoch,
             'state_dict': self.model.state_dict(),
             'best_auroc': self.best_auroc,
             'optimizer': self.optimizer.state_dict(),
+            'patience': self.patience,
         }
-    
+
         # Save weights only if fusion type is 'c-msma'
         if self.args.fusion_type == 'c-msma' or self.args.fusion_type == 'c-e-msma':
             checkpoint_data['weights'] = self.weights.detach().cpu()
-    
+
         torch.save(checkpoint_data, path)
-        print(f"saving {prefix} checkpoint at epoch {self.epoch}")
+        print(f"saving {prefix} checkpoint at epoch {self.epoch} -> {path}")
+
+    def resume_from_checkpoint(self):
+        """Restore full training state so a killed run continues where it left off.
+
+        load_state() deliberately restores weights only -- it is also used to
+        warm-start from someone else's checkpoint, where carrying over the epoch
+        counter and optimizer state would be wrong. This is the other case:
+        continuing *our own* interrupted run.
+
+        Prefers the per-epoch 'last' checkpoint, falling back to 'best'.
+        Returns True if training state was restored.
+        """
+        candidates = [self.checkpoint_path('last'), self.checkpoint_path('best')]
+        path = next((p for p in candidates if os.path.isfile(p)), None)
+
+        if path is None:
+            print(f"[resume] no checkpoint found in "
+                  f"{os.path.dirname(candidates[0])} -- starting fresh from epoch 0")
+            return False
+
+        checkpoint = torch.load(path, map_location=self.device)
+
+        own_state = self.model.state_dict()
+        for name, param in checkpoint['state_dict'].items():
+            if name not in own_state:
+                continue
+            if isinstance(param, torch.nn.Parameter):
+                param = param.data
+            own_state[name].copy_(param)
+
+        if 'optimizer' in checkpoint:
+            self.optimizer.load_state_dict(checkpoint['optimizer'])
+        if 'weights' in checkpoint and hasattr(self, 'weights'):
+            self.weights = nn.Parameter(checkpoint['weights'].to(self.device))
+
+        self.best_auroc = checkpoint.get('best_auroc', self.best_auroc)
+        self.patience = checkpoint.get('patience', 0)
+        self.start_epoch = checkpoint['epoch'] + 1
+
+        print("=" * 62)
+        print("[resume] RESUMING an interrupted run")
+        print(f"[resume]   checkpoint   : {path}")
+        print(f"[resume]   saved at epoch: {checkpoint['epoch']}")
+        print(f"[resume]   starting from epoch: {self.start_epoch}")
+        print(f"[resume]   restored best_auroc: {self.best_auroc}")
+        print(f"[resume]   restored patience  : {self.patience}")
+        print(f"[resume]   optimizer state restored: {'optimizer' in checkpoint}")
+        print("=" * 62)
+        return True
 
     # def plot_stats(self, key='loss', filename='training_stats.pdf'):
     #     for loss in self.epochs_stats:
