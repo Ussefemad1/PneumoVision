@@ -11,7 +11,7 @@ scipy==1.17.1
 matplotlib==3.11.1
 Pillow==12.3.0
 PyYAML==6.0.3
-tqdm==4.70.0
+tqdm==4.70.1
 einops==0.8.2
 nltk==3.10.3
 openpyxl==3.1.5
