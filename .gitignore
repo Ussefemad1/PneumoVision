@@ -81,5 +81,18 @@ infra/nginx/certs/
 # Local service state (MinIO / Mongo / Redis volumes when bind-mounted)
 .docker-data/
 
-# Secrets (the .env rules above already cover .env and .env.*; keep the example)
+# Secrets: the .env rules above cover .env and .env.* — re-admit the
+# placeholder templates, which are meant to be committed.
 !.env.example
+!.env.demo.example
+
+# Demo env (generated, contains real secrets)
+.env.demo
+
+# Demo artefacts (synthetic X-ray PNGs). Matched at any depth: the API
+# writes them relative to its working directory, which is the repo root when
+# launched by `npm run dev:demo`.
+.demo-data/
+
+# Scratch space for local API probing (cookie jars, response dumps).
+.scratch/

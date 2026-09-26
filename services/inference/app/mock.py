@@ -6,8 +6,10 @@ schema-valid and reproducible: the same seed and the same available modalities
 always produce the same numbers, which keeps the API, the UI and the e2e tests
 deterministic while the real weights are still training.
 
-Nothing in this module reads real patient content — only which modalities are
-present, and the caller-supplied seed string.
+Inputs are read only to the extent a stand-in model must: the availability
+vector, the caller-supplied seed, note *lengths* (never their text), and a
+handful of numeric vitals used by the severity heuristic below. Nothing here
+logs any of it.
 """
 
 from __future__ import annotations
@@ -52,6 +54,65 @@ def _jitter(rng: random.Random, base: float, spread: float) -> float:
     return min(0.999, max(0.001, base + rng.uniform(-spread, spread)))
 
 
+# Columns the severity heuristic looks at, and the range over which each one
+# is mapped to 0..1. Chosen because they are the variables a clinician reads
+# first off a deteriorating chart.
+_SEVERITY_BANDS: dict[str, tuple[float, float, bool]] = {
+    # variable: (normal, extreme, higher_is_worse)
+    "Heart Rate": (80.0, 150.0, True),
+    "Respiratory rate": (16.0, 40.0, True),
+    "Oxygen saturation": (98.0, 82.0, False),
+    "Fraction inspired oxygen": (0.21, 0.9, True),
+    "Systolic blood pressure": (120.0, 80.0, False),
+}
+
+
+def _ehr_severity(ehr: object) -> float | None:
+    """A crude 0..1 severity read off the most recent charted vitals.
+
+    This is not a model — it is a stand-in that makes mock risk *respond to
+    the data it was given*, so a deteriorating stay produces a rising risk
+    trajectory instead of a flat line. Without it, seeding by stay id alone
+    would return an identical probability at every cutoff and the trajectory
+    chart would be meaningless.
+
+    Only numeric vitals are inspected; note text is never read.
+    """
+    if ehr is None:
+        return None
+    variables = getattr(ehr, "variables", None)
+    values = getattr(ehr, "values", None)
+    if not variables or not values:
+        return None
+
+    index = {name: i for i, name in enumerate(variables)}
+    scores: list[float] = []
+
+    for name, (normal, extreme, _higher_worse) in _SEVERITY_BANDS.items():
+        col = index.get(name)
+        if col is None:
+            continue
+        # Walk backwards to the most recent hour this variable was charted.
+        latest: float | None = None
+        for row in reversed(values):
+            if col >= len(row):
+                continue
+            raw = row[col]
+            if isinstance(raw, (int, float)):
+                latest = float(raw)
+                break
+        if latest is None:
+            continue
+        span = extreme - normal
+        if span == 0:
+            continue
+        scores.append(min(1.0, max(0.0, (latest - normal) / span)))
+
+    if not scores:
+        return None
+    return sum(scores) / len(scores)
+
+
 def build_mock_result(req: PredictRequest) -> PredictionResult:
     """Produce a complete, internally consistent MedPatch-shaped result."""
     notes = req.notes or []
@@ -67,9 +128,12 @@ def build_mock_result(req: PredictRequest) -> PredictionResult:
         "".join(k for k, v in sorted(availability.items()) if v),
     )
 
-    # A per-stay baseline risk, so the same stay keeps a coherent risk level
-    # across repeated scorings while still varying between stays.
-    base = rng.uniform(0.08, 0.72)
+    # A per-stay baseline, so two stays with identical vitals still differ,
+    # blended with a severity signal read off the EHR window actually sent.
+    # The blend is what makes the risk trajectory track deterioration.
+    baseline = rng.uniform(0.06, 0.34)
+    severity = _ehr_severity(req.ehr)
+    base = baseline if severity is None else min(0.94, 0.25 * baseline + 0.85 * severity)
 
     unimodal = UnimodalScores(
         ehr=_jitter(rng, base, 0.12) if has_ehr else None,

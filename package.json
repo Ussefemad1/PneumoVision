@@ -19,7 +19,9 @@
     "format:check": "prettier --check .",
     "test": "npm run test --workspaces --if-present",
     "dev": "npm run dev --workspaces --if-present",
+    "dev:demo": "node infra/scripts/dev-demo.mjs",
     "gen:ehr": "node infra/scripts/gen-ehr-constants.mjs",
+    "gen:secrets": "node infra/scripts/gen-secrets.mjs",
     "audit:js": "npm audit --audit-level=high",
     "audit:py": "pip-audit -r services/inference/requirements.txt",
     "prepare": "husky"

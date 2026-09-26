@@ -1,4 +1,5 @@
-import express, { type Express } from 'express';
+import cookieParser from 'cookie-parser';
+import express, { type Express, type Router } from 'express';
 import helmet from 'helmet';
 import { pinoHttp } from 'pino-http';
 
@@ -10,14 +11,15 @@ import { requestId } from './middleware/requestId.js';
 export interface AppDeps {
   env: Env;
   logger: Logger;
-  /** Liveness/readiness probes for the backing services. Phase 1 has none
-   *  wired yet; each is added as its client lands in a later phase. */
+  /** Mounted under `/api/v1`. */
+  apiRouter?: Router;
+  /** Liveness/readiness probes for the backing services. */
   readinessChecks?: Record<string, () => Promise<boolean>>;
 }
 
 export const API_PREFIX = '/api/v1';
 
-export function createApp({ env, logger, readinessChecks = {} }: AppDeps): Express {
+export function createApp({ env, logger, apiRouter, readinessChecks = {} }: AppDeps): Express {
   const app = express();
 
   // Nginx terminates TLS, so trust its X-Forwarded-* for client IPs and
@@ -31,6 +33,8 @@ export function createApp({ env, logger, readinessChecks = {} }: AppDeps): Expre
       logger,
       genReqId: (req) => (req as express.Request).requestId,
       customProps: (req) => ({ requestId: (req as express.Request).requestId }),
+      // Health probes every few seconds would otherwise dominate the log.
+      autoLogging: { ignore: (req) => req.url === '/health' || req.url === '/ready' },
     }),
   );
 
@@ -50,12 +54,38 @@ export function createApp({ env, logger, readinessChecks = {} }: AppDeps): Expre
         },
       },
       hsts: env.NODE_ENV === 'production' ? { maxAge: 31_536_000, includeSubDomains: true } : false,
-      crossOriginResourcePolicy: { policy: 'same-site' },
+      // The demo serves images cross-origin to the Vite dev server.
+      crossOriginResourcePolicy: { policy: env.DEMO_MODE ? 'cross-origin' : 'same-site' },
       referrerPolicy: { policy: 'no-referrer' },
     }),
   );
 
+  /**
+   * CORS for the Vite dev server, which runs on a different port in DEMO_MODE.
+   * Locked to the single configured origin and credentialed, so the auth
+   * cookie is sent. In the Docker stack everything is same-origin behind
+   * Nginx and this never applies.
+   */
+  if (env.DEMO_MODE) {
+    app.use((req, res, next) => {
+      const origin = req.headers.origin;
+      if (origin === env.WEB_ORIGIN) {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+        res.setHeader('Access-Control-Allow-Credentials', 'true');
+        res.setHeader('Access-Control-Allow-Headers', 'content-type,x-request-id');
+        res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
+        res.setHeader('Vary', 'Origin');
+      }
+      if (req.method === 'OPTIONS') {
+        res.sendStatus(204);
+        return;
+      }
+      next();
+    });
+  }
+
   app.use(express.json({ limit: '1mb' }));
+  app.use(cookieParser());
 
   // Liveness: the process is up. Never touches a dependency.
   app.get('/health', (_req, res) => {
@@ -84,6 +114,8 @@ export function createApp({ env, logger, readinessChecks = {} }: AppDeps): Expre
       }
     })();
   });
+
+  if (apiRouter) app.use(API_PREFIX, apiRouter);
 
   app.use(notFoundHandler);
   app.use(createErrorHandler(logger));
