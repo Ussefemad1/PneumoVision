@@ -164,6 +164,31 @@ After download, all 6,683 Task A images were decoded individually:
 
 ---
 
+## Known PhysioNet data gap — one image is unavailable
+
+One study on our download list returns **HTTP 404** from PhysioNet while being
+**listed in `IMAGE_FILENAMES.txt`**. Their manifest and their served files
+disagree; this is upstream, not a fault in our pipeline, and it is **not
+retriable** (confirmed a genuine 404 rather than a transient failure).
+
+    dicom_id   09e5d1be-9c17d28b-ca19988b-47e76494-ac4eb1e7
+    subject_id 18860233
+    study_id   58466825
+    stay_id    30007216
+    needed_for Task B only
+
+**Task A is unaffected and complete at 6,683.**
+
+**For the thesis:** Task B's true available count is **11,236 of 11,237**
+listed studies (0.009% loss), and the combined download is **15,180 of 15,181**.
+Use those figures rather than the listed ones so the counts reconcile.
+
+`scripts/verify_resized_complete.py` carries this dicom_id in `KNOWN_MISSING`,
+so it reports complete rather than flagging a permanent one-image gap on every
+run.
+
+---
+
 ## Resize
 
 `medpatch/resize.py` had the authors' cluster paths hardcoded

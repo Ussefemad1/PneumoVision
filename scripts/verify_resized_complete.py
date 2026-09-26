@@ -17,21 +17,39 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 CXR_DIR = REPO_ROOT / "data" / "mimic-cxr-jpg" / "2.0.0"
 LIST_DIR = REPO_ROOT / "data" / "cxr_download_lists"
 
+# Images listed in IMAGE_FILENAMES.txt that PhysioNet does not actually serve.
+# Not retriable -- the manifest and the served files disagree upstream, so these
+# are permanently unavailable and should not be reported as a gap in our work.
+KNOWN_MISSING = {
+    # subject 18860233 / study 58466825, Task B only. HTTP 404 at v2.1.0 while
+    # being present in IMAGE_FILENAMES.txt. Confirmed not transient.
+    "09e5d1be-9c17d28b-ca19988b-47e76494-ac4eb1e7",
+}
+
 
 def main():
-    wanted = set(pd.read_csv(LIST_DIR / "cxr_download_list.csv")["dicom_id"])
+    listed = set(pd.read_csv(LIST_DIR / "cxr_download_list.csv")["dicom_id"])
     task_a = set(pd.read_csv(LIST_DIR / "task_a_studies.csv")["dicom_id"])
     task_b = set(pd.read_csv(LIST_DIR / "task_b_studies.csv")["dicom_id"])
+
+    # what we can actually obtain, after upstream gaps
+    unavailable = listed & KNOWN_MISSING
+    wanted = listed - KNOWN_MISSING
+    task_a = task_a - KNOWN_MISSING
+    task_b = task_b - KNOWN_MISSING
 
     originals = {p.stem for p in (CXR_DIR / "files").rglob("*.jpg")}
     resized = {p.stem for p in (CXR_DIR / "resized").glob("*.jpg")}
 
     print("=" * 62)
-    print(f"  expected (cxr_download_list.csv) : {len(wanted):>6}")
+    print(f"  listed (cxr_download_list.csv)   : {len(listed):>6}")
+    if unavailable:
+        print(f"  unavailable upstream (404)       : {len(unavailable):>6}  "
+              "-- see KNOWN_MISSING")
+    print(f"  expected to have                 : {len(wanted):>6}")
     print(f"    task A                         : {len(task_a):>6}")
     print(f"    task B                         : {len(task_b):>6}")
     print(f"    serving both (counted once)    : {len(task_a & task_b):>6}")
-    print(f"    naive sum, should NOT match    : {len(task_a) + len(task_b):>6}")
     print("-" * 62)
     print(f"  downloaded (files/)              : {len(originals):>6}")
     print(f"  resized    (resized/)            : {len(resized):>6}")
@@ -52,7 +70,7 @@ def main():
     if missing_from_resized:
         problems.append(f"{len(missing_from_resized)} wanted images are missing from resized/")
 
-    unexpected = resized - wanted
+    unexpected = resized - listed
     if unexpected:
         problems.append(f"{len(unexpected)} images in resized/ are not on the download list")
 
@@ -68,7 +86,8 @@ def main():
         print("NOT COMPLETE")
         return 1
 
-    print("COMPLETE -- resized/ holds exactly the 15,181 expected images.")
+    print(f"COMPLETE -- resized/ holds all {len(wanted)} obtainable images"
+          + (f" ({len(unavailable)} unavailable upstream)." if unavailable else "."))
     return 0
 
 
