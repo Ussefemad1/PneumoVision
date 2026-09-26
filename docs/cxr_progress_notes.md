@@ -7,6 +7,71 @@ project. Kept in version control so the rest of the team can see it.
 
 ---
 
+## DECISION: two-phase task structure (authoritative)
+
+Settled 2026-09-27. Supersedes any earlier assumption that a combined
+48-hour pneumonia task was needed immediately.
+
+### Phase 1 (now) — reproduce the paper's tasks exactly, unmodified
+
+**No code changes.** Both task flags already exist and behave correctly; the
+reference scripts under `medpatch/scripts/*/Unimodal/CXR.sh` run as-is once the
+data-dir flags are filled in.
+
+| | `--task in-hospital-mortality` | `--task phenotyping` |
+|---|---|---|
+| Window | `intime + 48h` (`DataFusion.py:251`) | `outtime`, whole stay (`DataFusion.py:276`) |
+| Predicts | death | all 25 conditions |
+| `--num_classes` | 1 | 25 |
+| `--labels_set` | `mortality` | `pheno` |
+| We report | the task score | **the pneumonia column only**, of the 25 |
+| Images | **6,683** | **11,236** |
+
+**Purpose:** confirm the pipeline reproduces the paper before building anything
+new. If both match the published numbers, the cohort, data pipeline and
+training setup are all verified at once.
+
+**Do not build the Phase 2 task until Phase 1 is confirmed against the paper.**
+
+### Phase 2 (later) — our own extension
+
+Add a new task (working name `--task pneumonia-48h`) combining:
+
+- the 48-hour window logic, currently reached only under `in-hospital-mortality`
+- the pneumonia label, currently reached only under `phenotyping`
+
+Roughly 15 lines: a new task branch following the existing pattern, reusing both
+pieces of logic unchanged.
+
+**Framing — this matters for the thesis.** This is an **extension**, not a fix
+and not "completing" something the authors left unfinished. MedPatch pairs the
+48-hour window with mortality, and phenotyping labels with the whole stay. It
+never evaluates pneumonia within 48 hours. That combination is a setting the
+original work did not study, and adding it extends their benchmark to **early
+pneumonia detection**. Describe it as an extension in all documentation and
+thesis text — never as a fix, a gap, or a missing feature.
+
+### Why the flags cannot be mixed today
+
+There is no existing flag combination giving 48-hour window + pneumonia label.
+Running `--task phenotyping` expecting a 48-hour result **silently yields the
+whole-stay window** — no error, and a plausible-looking AUROC. Until Phase 2
+exists, `--task phenotyping` is the whole-stay task, full stop.
+
+### Image assignment — no re-download needed
+
+Both sets are already downloaded, resized, verified and on Drive. This is only
+about which count feeds which task.
+
+    6,683   48h window, latest CXR per stay before 48h
+            -> Phase 1 mortality now; reused unchanged for Phase 2
+
+    11,236  whole-stay window, latest CXR per stay
+            -> Phase 1 phenotyping (pneumonia column)
+            -> 11,237 listed minus 1 permanently unavailable at PhysioNet
+
+---
+
 ## Cohort rule — correction worth knowing
 
 The repo does **not** "keep the first ICU stay per admission".
