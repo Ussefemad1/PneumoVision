@@ -229,6 +229,54 @@ After download, all 6,683 Task A images were decoded individually:
 
 ---
 
+## OPEN — RR chest filter vs 512-token truncation (raised 2026-09-27)
+
+Owned by Farida (RR modality), recorded here because it **affects fusion, not
+only the text side**.
+
+`DataFusion.py:270` concatenates every in-window radiology report for a stay
+into one string with `' '.join`, and `text_models.py:45` truncates at
+**512 tokens** (`truncation=True, max_length=512`).
+
+The part that makes this more than a counting question: **there is no
+`sort_values` before that groupby.** The only sort in the file is line 441, for
+CXR study selection. Concatenation order is therefore arbitrary — deterministic
+for a given input, but neither chronological nor semantic. Truncation keeps an
+**arbitrary** slice of the text, not the earliest, latest or most relevant.
+
+Both options below cover the same **36,648** Task A stays. They differ only in
+how much text each stay carries — these are **report** counts, not stay counts:
+
+| | Reports | Per stay | Est. tokens | Under the 512 cap? |
+|---|---|---|---|---|
+| Chest-filtered | 52,930 | ~1.44 | ~430 | probably fits |
+| Unfiltered | 179,003 | ~4.88 | ~1,460 | ~35% survives, arbitrarily chosen |
+
+**Token figures assume ~300 tokens/report and are unmeasured estimates.**
+
+The trade is not what it first looked like. "Faithful to the repo" means
+unfiltered, since the repo applies **no body-region filter at all** — reports
+are merged on `subject_id`+`hadm_id` (line 215) and filtered only by charttime
+(lines 247, 258). But with arbitrary ordering, faithful-to-the-code collapses
+into faithful-to-an-arbitrary-slice, which is hard to defend in a thesis.
+
+**Not** at issue: modality breadth. The paper defines RR as interpretations of
+CXR, CT, MRI and ultrasound, so including non-x-ray reports is correct. Only
+body region is in question.
+
+**Pending:** Farida to tokenise both sets with the BioBERT tokeniser and report
+median, p90, and the fraction of stays exceeding 512. If chest-only mostly fits
+and unfiltered mostly does not, the decision follows from the measurement
+rather than a judgment call. **No decision has been taken yet.**
+
+Related open asks to Farida, still outstanding: the diff for the chest-filter
+change (was the 48h windowing already in place, or did it change too?), and the
+exact line setting her window end — `intime` or `admittime`. `all_stays.csv`
+carries both, differing by over an hour on the first row, so this is an easy
+one to get wrong silently.
+
+---
+
 ## Known PhysioNet data gap — one image is unavailable
 
 One study on our download list returns **HTTP 404** from PhysioNet while being
