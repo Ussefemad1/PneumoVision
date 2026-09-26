@@ -1,6 +1,6 @@
 # PneumoVision active PyTorch environment.
 # Python: 3.11.x
-torch==2.4.1
+torch==2.14.0
 torchvision==0.19.1
 transformers==4.44.2
 timm==1.0.9
