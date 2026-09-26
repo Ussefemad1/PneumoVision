@@ -4,7 +4,7 @@
 # preprocessing and model classes from medpatch/, which pins them in the repo
 # root requirements.txt. Install both when running the real pipeline:
 #   pip install -r requirements.txt -r services/inference/requirements.txt
-fastapi==0.115.6
+fastapi==0.141.1
 uvicorn[standard]==0.34.0
 pydantic==2.10.4
 pydantic-settings==2.7.0
