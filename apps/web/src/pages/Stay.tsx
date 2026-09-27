@@ -130,8 +130,10 @@ function StayHeader({ stay }: { stay: StayDetail }) {
             </span>
           </div>
           <p className="mt-0.5 text-sm text-ink-muted">
-            {stay.patient.demographics.age}y · {stay.patient.demographics.sex} · {stay.ward} · bed{' '}
-            {stay.bedLabel}
+            {stay.patient.demographics
+              ? `${stay.patient.demographics.age}y · ${stay.patient.demographics.sex}`
+              : 'Demographics unknown'}{' '}
+            · {stay.ward} · bed {stay.bedLabel}
           </p>
         </div>
 
