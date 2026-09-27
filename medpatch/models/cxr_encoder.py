@@ -100,6 +100,12 @@ class CXRTransformer(nn.Module):
         # AttributeError. timm exposes the embedding width as num_features --
         # 384 for vit_small_patch16_384.
         self.feats_dim = self.feature_extractor.num_features
+        # UnimodalCXRConfidence (c-unimodal_cxr, Round 2) sizes its token-level
+        # confidence head from `.full_feats_dim`, which only the EHR/text encoders
+        # defined -- so c-unimodal_cxr raised AttributeError at construction.
+        # Patch tokens have the same width as the pooled feature. See
+        # docs/model_track_notes.md, "c-unimodal_cxr".
+        self.full_feats_dim = self.feats_dim
 
         image_height, image_width = pair(image_size)
         patch_height, patch_width = pair(patch_size)

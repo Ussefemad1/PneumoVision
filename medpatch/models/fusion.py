@@ -873,7 +873,12 @@ class UnimodalCXRConfidence(nn.Module):
         if img is None:
             return None
 
-        _, full_cxr_feats = self.cxr_model(img)
+        # CXRTransformer returns (tokens [B, 577, D], cls [B, D]). Unpacking
+        # `_, full = ...` took the CLS vector, so the "token-level" confidence
+        # was one score per image. cxr_features() picks the token sequence (and
+        # the pooled vector for the torchvision fallback). See
+        # docs/model_track_notes.md, "c-unimodal_cxr".
+        full_cxr_feats = cxr_features(self.cxr_model(img))
         cxr_confidences = self.cxr_confidence_predictor(full_cxr_feats)  # [batch_size, seq_length]
         return {
             'c-unimodal_cxr': cxr_confidences

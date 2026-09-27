@@ -77,7 +77,10 @@ class Trainer():
     def load_state(self, state_path=None):
         if state_path is None:
             return
-        checkpoint = torch.load(state_path)
+        # map_location: a checkpoint saved on a GPU (Colab/cluster) failed to load
+        # on a CPU-only machine. On the device it was saved from, this is the
+        # same as before. Trainers without a `device` keep torch's default.
+        checkpoint = torch.load(state_path, map_location=getattr(self, 'device', None))
 
 
         own_state = self.model.state_dict()
@@ -185,7 +188,8 @@ class Trainer():
             label = self.class_names[i] if getattr(self, 'class_names', None) \
                 and i < len(self.class_names) else f'class {i}'
             (test_auprc, upper_auprc, lower_auprc), (test_auroc, upper_auroc, lower_auroc) = \
-                get_model_performance(df, label=label)
+                get_model_performance(df, label=label,
+                                      num_iter=getattr(self.args, 'bootstrap_iters', 1000))
             auc_scores.append(test_auroc)
             auprc_scores.append(test_auprc)
             ci_auroc.append((lower_auroc, upper_auroc))

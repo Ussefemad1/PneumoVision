@@ -155,6 +155,10 @@ def args_parser():
     parser.add_argument('--num_workers', type=int, default=_default_num_workers(),
                         help='DataLoader worker processes. Defaults to 0 on Windows, where the '
                              'spawn start method makes worker processes expensive and fragile.')
+    parser.add_argument('--bootstrap_iters', type=int, default=1000,
+                        help='Bootstrap resamples per class for the AUROC/AUPRC confidence '
+                             'intervals (Trainer.computeAUROC). 1000 is the paper setting; '
+                             'lower it only for smoke tests on synthetic data.')
 
 
     # args = argParser.parse_args()
