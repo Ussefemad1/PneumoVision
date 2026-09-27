@@ -16,9 +16,17 @@ const patientSchema = new Schema(
       unique: true,
       match: /^PV-\d{6}$/,
     },
+    // Null for ad-hoc Analyze patients: nothing is known, so nothing is stored
+    // (never a placeholder age of 0).
     demographics: {
-      age: { type: Number, required: true, min: 0, max: 120 },
-      sex: { type: String, required: true, enum: ['M', 'F'] },
+      type: new Schema(
+        {
+          age: { type: Number, required: true, min: 0, max: 120 },
+          sex: { type: String, required: true, enum: ['M', 'F'] },
+        },
+        { _id: false },
+      ),
+      default: null,
     },
     createdBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
   },

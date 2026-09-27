@@ -20,6 +20,8 @@ EHR_WINDOW_HOURS = 48
 EHR_DISCRETIZED_WIDTH = 76
 # timm vit_small_patch16_384 -> 24x24 spatial patches (+1 CLS, excluded here).
 CXR_PATCH_GRID = 24
+# Upload ceiling for a radiograph, raw bytes. Mirrors ANALYZE_LIMITS in packages/shared.
+CXR_MAX_BYTES = 20 * 1024 * 1024
 
 
 #: A calibrated probability in [0, 1].
@@ -47,11 +49,24 @@ class EhrInput(BaseModel):
 
 
 class CxrInput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    """The radiograph, carried as bytes inside the HMAC-signed body.
 
-    # A short-lived presigned URL; the service fetches the bytes itself so the
-    # image never transits the API's JSON payload.
-    presigned_url: str = Field(alias="presignedUrl")
+    ``presignedUrl`` is kept for a future object-storage path but is not used:
+    a request without ``dataB64`` is rejected (see ``cxr.decode_cxr``).
+    """
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    image_id: str | None = Field(default=None, alias="imageId", max_length=64)
+    content_type: Literal["image/png", "image/jpeg"] = Field(
+        default="image/png", alias="contentType"
+    )
+    sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    # 4/3 of the raw ceiling, rounded up to a whole base64 quantum.
+    data_b64: str | None = Field(
+        default=None, alias="dataB64", max_length=-(-CXR_MAX_BYTES // 3) * 4
+    )
+    presigned_url: str | None = Field(default=None, alias="presignedUrl")
 
 
 class NoteInput(BaseModel):
@@ -154,6 +169,42 @@ class ConfidenceMaps(BaseModel):
     note_spans: list[NoteSpan] | None = Field(default=None, alias="noteSpans")
 
 
+class ReceivedEhr(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    # Hourly bins (of 48) with at least one charted value.
+    hours: int
+    variables_present: list[str] = Field(alias="variablesPresent")
+
+
+class ReceivedCxr(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    sha256: str
+    width: int
+    height: int
+
+
+class ReceivedNote(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    type: Literal["radiology", "progress", "nursing", "discharge"]
+    tokens: int
+    chunks: int
+
+
+class Received(BaseModel):
+    """Proof of what reached the model, derived from the decoded request."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ehr: ReceivedEhr | None
+    cxr: ReceivedCxr | None
+    notes: list[ReceivedNote]
+    mode: Literal["mock", "model"]
+
+
 class PredictionResult(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
@@ -164,6 +215,7 @@ class PredictionResult(BaseModel):
     missingness: Missingness
     alphas: Alphas
     confidence: ConfidenceMaps
+    received: Received
 
 
 class PredictResponse(BaseModel):

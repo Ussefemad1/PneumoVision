@@ -56,17 +56,23 @@ export function alertRoutes(bus: RealtimeBus): Router {
         ]),
       );
 
+      // Ad-hoc Analyze stays belong to no admitted patient; the alert engine
+      // skips them, and this keeps any older ones off the alerts centre too.
+      const adhoc = new Set(stays.filter((s) => s.status === 'adhoc').map((s) => String(s._id)));
+
       ok(
         res,
-        alerts.map((a) => ({
-          ...serializeAlert(a),
-          stay: stayById.get(String(a.stayId)) ?? {
-            id: String(a.stayId),
-            ward: '—',
-            bedLabel: '—',
-            pseudoId: 'unknown',
-          },
-        })),
+        alerts
+          .filter((a) => !adhoc.has(String(a.stayId)))
+          .map((a) => ({
+            ...serializeAlert(a),
+            stay: stayById.get(String(a.stayId)) ?? {
+              id: String(a.stayId),
+              ward: '—',
+              bedLabel: '—',
+              pseudoId: 'unknown',
+            },
+          })),
       );
     }),
   );

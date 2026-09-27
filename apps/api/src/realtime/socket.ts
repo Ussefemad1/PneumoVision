@@ -5,7 +5,7 @@ import { Server as SocketServer } from 'socket.io';
 import type { Env } from '../config/env.js';
 import { ACCESS_COOKIE, verifyAccessToken, type TokenKeys } from '../lib/tokens.js';
 import type { Logger } from '../lib/logger.js';
-import { stayRoom, wardRoom } from './bus.js';
+import { stayRoom, userRoom, wardRoom } from './bus.js';
 
 /** What we attach to each authenticated socket. */
 interface SocketData {
@@ -60,6 +60,10 @@ export function createSocketServer(
 
   io.on('connection', (socket) => {
     logger.debug({ socketId: socket.id, userId: socket.data.userId }, 'socket connected');
+
+    // Server-side, from the verified token — a client cannot pick someone
+    // else's user room.
+    void socket.join(userRoom(socket.data.userId));
 
     // Clients subscribe to the stay they are viewing and the ward they are
     // watching; everything else is filtered server-side by room.

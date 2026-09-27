@@ -1,4 +1,4 @@
-import { MODALITIES, PREDICTION_STATUSES, TASKS } from '@pneumovision/shared';
+import { MODALITIES, NOTE_TYPES, PREDICTION_STATUSES, TASKS } from '@pneumovision/shared';
 import { Schema, model, type HydratedDocument, type InferSchemaType } from 'mongoose';
 
 const probability = { type: Number, min: 0, max: 1 } as const;
@@ -29,6 +29,50 @@ const confidenceSchema = new Schema(
       ],
       default: null,
     },
+  },
+  { _id: false },
+);
+
+/** Proof of what reached the model: counts and hashes, never note text. */
+const receivedSchema = new Schema(
+  {
+    ehr: {
+      type: new Schema(
+        {
+          hours: { type: Number, required: true, min: 0 },
+          variablesPresent: { type: [String], default: [] },
+        },
+        { _id: false },
+      ),
+      default: null,
+    },
+    cxr: {
+      type: new Schema(
+        {
+          sha256: { type: String, required: true, match: /^[0-9a-f]{64}$/ },
+          width: { type: Number, required: true, min: 1 },
+          height: { type: Number, required: true, min: 1 },
+        },
+        { _id: false },
+      ),
+      default: null,
+    },
+    notes: {
+      type: [
+        new Schema(
+          {
+            id: { type: String, required: true },
+            type: { type: String, required: true, enum: NOTE_TYPES },
+            tokens: { type: Number, required: true, min: 0 },
+            chunks: { type: Number, required: true, min: 0 },
+          },
+          // `id` is a real field here, not Mongoose's virtual.
+          { _id: false, id: false },
+        ),
+      ],
+      default: [],
+    },
+    mode: { type: String, required: true, enum: ['mock', 'model'] },
   },
   { _id: false },
 );
@@ -74,6 +118,9 @@ const resultSchema = new Schema(
       dn: { type: Number, default: null },
     },
     confidence: { type: confidenceSchema, required: true },
+    // What the inference service reports it actually received. Null only on
+    // predictions stored before the service reported it.
+    received: { type: receivedSchema, default: null },
   },
   { _id: false },
 );
@@ -98,6 +145,20 @@ const predictionSchema = new Schema(
     inputsUsed: {
       type: [String],
       enum: MODALITIES,
+      default: [],
+    },
+    /** Inputs withheld by F8 leakage control, surfaced on the report. */
+    excludedInputs: {
+      type: [
+        new Schema(
+          {
+            source: { type: String, required: true, enum: ['upload', 'stay'] },
+            type: { type: String, required: true, enum: NOTE_TYPES },
+            reason: { type: String, required: true, enum: ['outcome-leakage'] },
+          },
+          { _id: false },
+        ),
+      ],
       default: [],
     },
     result: { type: resultSchema, default: null },

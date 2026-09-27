@@ -25,19 +25,31 @@ export function wardRoom(ward: string): string {
   return `ward:${ward}`;
 }
 
+/** Every socket joins its own user's room on connect. */
+export function userRoom(userId: string): string {
+  return `user:${userId}`;
+}
+
 export class SocketBus implements RealtimeBus {
   constructor(private readonly io: SocketServer) {}
 
   predictionStatus(prediction: PredictionDoc, status: string): void {
     const stayId = String(prediction.stayId);
-    this.io.to(stayRoom(stayId)).emit(`prediction:${status}`, {
+    const event = `prediction:${status}`;
+    const payload = {
       predictionId: String(prediction._id),
       stayId,
       task: prediction.task,
       status,
       probability: prediction.result?.probability ?? null,
       cutoffTime: prediction.cutoffTime.toISOString(),
-    });
+    };
+    this.io.to(stayRoom(stayId)).emit(event, payload);
+    // The requester's own room, so a page that does not know the stay yet
+    // (the Analyze page, once predictions are queued) can follow the run.
+    if (prediction.requestedBy) {
+      this.io.to(userRoom(String(prediction.requestedBy))).emit(event, payload);
+    }
   }
 
   alertCreated(alert: AlertDoc): void {

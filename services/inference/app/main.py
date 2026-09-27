@@ -17,6 +17,7 @@ from typing import Annotated, AsyncIterator
 from fastapi import Depends, FastAPI, Request
 
 from .config import Settings, get_settings
+from .cxr import decode_cxr
 from .mock import MOCK_MODEL_VERSION, build_mock_result
 from .schemas import (
     CXR_PATCH_GRID,
@@ -132,8 +133,12 @@ async def model_info(request: Request, settings: SettingsDep) -> ModelInfo:
 async def predict(body: PredictRequest, request: Request, settings: SettingsDep) -> PredictResponse:
     started = time.perf_counter()
 
+    # Decode and verify the radiograph before anything else: a hash mismatch
+    # or unreadable image is a 400, never a silently image-less prediction.
+    cxr = decode_cxr(body.cxr) if body.cxr is not None else None
+
     if settings.mock_mode:
-        result = build_mock_result(body)
+        result = build_mock_result(body, cxr)
         version = MOCK_MODEL_VERSION
     else:  # pragma: no cover — unreachable until checkpoints exist
         raise RuntimeError("real pipeline not wired yet")

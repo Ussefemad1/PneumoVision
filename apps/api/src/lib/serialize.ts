@@ -26,11 +26,11 @@ const iso = (v: unknown): string =>
 const isoOrNull = (v: unknown): string | null => (v === null || v === undefined ? null : iso(v));
 
 export function serializePatient(doc: Lean): Patient {
-  const demographics = doc.demographics as { age: number; sex: 'M' | 'F' };
+  const demographics = doc.demographics as { age: number; sex: 'M' | 'F' } | null | undefined;
   return {
     id: id(doc._id),
     pseudoId: String(doc.pseudoId),
-    demographics: { age: demographics.age, sex: demographics.sex },
+    demographics: demographics ? { age: demographics.age, sex: demographics.sex } : null,
     createdAt: iso(doc.createdAt),
   };
 }
@@ -81,6 +81,13 @@ export function serializeNote(doc: Lean): Note {
   };
 }
 
+/** Older stored results predate `received`; normalise it to an explicit null. */
+function resultOrNull(result: unknown): Prediction['result'] {
+  if (!result) return null;
+  const r = result as NonNullable<Prediction['result']>;
+  return { ...r, received: r.received ?? null };
+}
+
 export function serializePrediction(doc: Lean): Prediction {
   return {
     id: id(doc._id),
@@ -92,7 +99,13 @@ export function serializePrediction(doc: Lean): Prediction {
     inputHash: str(doc.inputHash),
     latencyMs: doc.latencyMs === null || doc.latencyMs === undefined ? null : Number(doc.latencyMs),
     requestedBy: doc.requestedBy ? id(doc.requestedBy) : null,
-    result: (doc.result ?? null) as Prediction['result'],
+    inputsUsed: (doc.inputsUsed ?? []) as Prediction['inputsUsed'],
+    excludedInputs: ((doc.excludedInputs ?? []) as Prediction['excludedInputs']).map((e) => ({
+      source: e.source,
+      type: e.type,
+      reason: e.reason,
+    })),
+    result: resultOrNull(doc.result),
     error: (doc.error ?? null) as string | null,
     createdAt: iso(doc.createdAt),
   };

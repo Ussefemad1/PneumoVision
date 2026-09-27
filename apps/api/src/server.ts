@@ -27,7 +27,10 @@ import { requireAuth } from './middleware/auth.js';
 
 async function main(): Promise<void> {
   const env = loadEnv();
-  const logger = createLogger({ level: env.LOG_LEVEL, isProduction: env.NODE_ENV === 'production' });
+  const logger = createLogger({
+    level: env.LOG_LEVEL,
+    isProduction: env.NODE_ENV === 'production',
+  });
 
   let stopMemoryServer: (() => Promise<void>) | undefined;
   let mongoUri = env.MONGO_URI;
@@ -35,15 +38,22 @@ async function main(): Promise<void> {
   if (usesMemoryMongo(env)) {
     const { MongoMemoryServer } = await import('mongodb-memory-server');
     const cacheDir = process.env.MONGOMS_DOWNLOAD_DIR;
-    if (cacheDir) logger.info({ version: MONGO_BINARY_VERSION, cacheDir }, 'using pre-cached mongod');
-    else logger.warn({ version: MONGO_BINARY_VERSION, expected: MONGO_DOWNLOAD_DIR }, 'MONGOMS_DOWNLOAD_DIR is unset — mongod may be downloaded now (~600 MB)');
+    if (cacheDir)
+      logger.info({ version: MONGO_BINARY_VERSION, cacheDir }, 'using pre-cached mongod');
+    else
+      logger.warn(
+        { version: MONGO_BINARY_VERSION, expected: MONGO_DOWNLOAD_DIR },
+        'MONGOMS_DOWNLOAD_DIR is unset — mongod may be downloaded now (~600 MB)',
+      );
     logger.info('starting in-process MongoDB (demo mode)…');
     const server = await MongoMemoryServer.create({
       binary: { version: MONGO_BINARY_VERSION },
       instance: { dbName: env.MONGO_DB },
     });
     mongoUri = server.getUri(env.MONGO_DB);
-    stopMemoryServer = async () => { await server.stop(); };
+    stopMemoryServer = async () => {
+      await server.stop();
+    };
   }
 
   await connectMongo(mongoUri, logger);
@@ -58,15 +68,20 @@ async function main(): Promise<void> {
     env,
     logger,
     apiRouter,
-    readinessChecks: { mongo: () => Promise.resolve(mongoReady()), inference: () => inference.healthy() },
+    readinessChecks: {
+      mongo: () => Promise.resolve(mongoReady()),
+      inference: () => inference.healthy(),
+    },
   });
 
   const http = createHttpServer(app);
   const io = createSocketServer(http, env, keys, logger);
   const bus = new SocketBus(io);
-  const imageUrlFor = (imageId: string) => `${publicApiBase(env)}${API_PREFIX}/images/${imageId}/file`;
+  // Where the SPA fetches image pixels from (cookie-authenticated). The
+  // inference service never uses this — it receives the bytes directly.
+  const imageUrlFor = (imageId: string) => `${API_PREFIX}/images/${imageId}/file`;
 
-  const predictions = new InProcessPredictionService({ env, logger, inference, bus, imageUrlFor });
+  const predictions = new InProcessPredictionService({ env, logger, inference, bus });
   const simulation = new SimulationService(bus, predictions, logger);
 
   if (env.DEMO_MODE) {
@@ -107,10 +122,6 @@ async function main(): Promise<void> {
 
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
-}
-
-function publicApiBase(env: { API_PORT: number }): string {
-  return `http://127.0.0.1:${env.API_PORT}`;
 }
 
 main().catch((err: unknown) => {
