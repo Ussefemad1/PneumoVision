@@ -96,3 +96,7 @@ infra/nginx/certs/
 
 # Scratch space for local API probing (cookie jars, response dumps).
 .scratch/
+
+# Virtual (synthetic) training runs and their manifest -- generated, never committed.
+# data/virtual/ is already covered by data/*.
+runs/
