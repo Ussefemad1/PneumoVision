@@ -1,8 +1,9 @@
-import { predictionResult, type Task } from '@pneumovision/shared';
+import { predictionResult, type ExcludedInput, type Task } from '@pneumovision/shared';
 import type { Types } from 'mongoose';
 
 import type { Env } from '../config/env.js';
 import { PredictionModel, StayModel, type PredictionDoc } from '../db/models.js';
+import { readStoredImage } from '../lib/imageStore.js';
 import type { InferenceClient } from '../lib/inferenceClient.js';
 import type { Logger } from '../lib/logger.js';
 import type { RealtimeBus } from '../realtime/bus.js';
@@ -35,6 +36,8 @@ export interface RequestArgs {
   cutoffTime: Date;
   requestedBy: Types.ObjectId | null;
   requestId: string;
+  /** Inputs the caller withheld before storing anything (ad-hoc uploads). */
+  excluded?: ExcludedInput[];
 }
 
 export interface PredictionDeps {
@@ -42,8 +45,6 @@ export interface PredictionDeps {
   logger: Logger;
   inference: InferenceClient;
   bus: RealtimeBus;
-  /** Resolves an image id to a URL the inference service can fetch. */
-  imageUrlFor: (imageId: string) => string;
 }
 
 /**
@@ -66,6 +67,12 @@ export async function runPrediction(
     const inputs = await gatherInputs(stayId, prediction.task, prediction.cutoffTime);
     prediction.inputHash = inputs.inputHash;
     prediction.inputsUsed = inputs.used;
+    prediction.excludedInputs.push(...inputs.excluded);
+
+    // The bytes travel inside the signed body. A URL would need a clinician
+    // cookie the service does not have, and on a single-container deploy the
+    // file only exists on this container's disk.
+    const image = inputs.cxr ? await readStoredImage(env, inputs.cxr) : null;
 
     const output = await inference.predict(
       {
@@ -74,7 +81,15 @@ export async function runPrediction(
         // while the service is in mock mode.
         seed: String(stayId),
         ehr: inputs.ehr,
-        cxr: inputs.cxr ? { presignedUrl: deps.imageUrlFor(inputs.cxr.imageId) } : null,
+        cxr:
+          inputs.cxr && image
+            ? {
+                imageId: inputs.cxr.imageId,
+                contentType: image.contentType,
+                sha256: image.sha256,
+                dataB64: image.bytes.toString('base64'),
+              }
+            : null,
         notes: inputs.notes.length > 0 ? inputs.notes : null,
         theta: env.DEFAULT_THETA,
         returnExplanations: true,
@@ -97,6 +112,11 @@ export async function runPrediction(
     await prediction.save();
 
     bus.predictionStatus(prediction, 'done');
+
+    // Ad-hoc analyses belong to no admitted patient: nobody is on the ward to
+    // be alerted about.
+    const stay = await StayModel.findById(stayId).select({ status: 1 }).lean();
+    if (stay?.status === 'adhoc') return prediction;
 
     const alert = await evaluatePrediction({
       stayId,
@@ -143,6 +163,7 @@ export class InProcessPredictionService implements PredictionService {
       status: 'queued',
       requestedBy: args.requestedBy,
       modelVersion: 'pending',
+      excludedInputs: args.excluded ?? [],
     });
     this.deps.bus.predictionStatus(prediction, 'queued');
 

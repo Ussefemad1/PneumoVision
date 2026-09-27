@@ -44,7 +44,8 @@ export type Demographics = z.infer<typeof demographics>;
 export const patient = z.object({
   id: objectId,
   pseudoId,
-  demographics,
+  /** Null for ad-hoc Analyze patients: nothing is known, and nothing is invented. */
+  demographics: demographics.nullable(),
   createdAt: isoDateTime,
 });
 export type Patient = z.infer<typeof patient>;

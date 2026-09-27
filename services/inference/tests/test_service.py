@@ -75,6 +75,34 @@ def synthetic_ehr() -> dict:
     return {"variables": variables, "values": rows}
 
 
+def synthetic_png(width: int = 20, height: int = 12) -> bytes:
+    """A small synthetic greyscale gradient. Never a real radiograph."""
+    import io
+
+    from PIL import Image
+
+    img = Image.new("L", (width, height))
+    img.putdata([(x * 13 + y * 7) % 256 for y in range(height) for x in range(width)])
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def synthetic_cxr(data: bytes | None = None, **overrides: object) -> dict:
+    import base64
+    import hashlib
+
+    data = synthetic_png() if data is None else data
+    payload = {
+        "imageId": "img-1",
+        "contentType": "image/png",
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "dataB64": base64.b64encode(data).decode("ascii"),
+    }
+    payload.update(overrides)
+    return payload
+
+
 # ── health / model-info ──────────────────────────────────────────────────────
 
 
@@ -157,7 +185,7 @@ def test_predict_returns_every_medpatch_intermediate(client: TestClient):
             "task": "mortality",
             "seed": "stay-001",
             "ehr": synthetic_ehr(),
-            "cxr": {"presignedUrl": "http://minio:9000/fake"},
+            "cxr": synthetic_cxr(),
             "notes": [{"id": "n1", "text": "Synthetic radiology report. " * 40, "type": "radiology"}],
         },
     )
@@ -262,3 +290,106 @@ def test_mock_never_sees_note_text():
         )
     )
     assert a == b
+
+
+# ── CXR bytes in the signed body (the image never travels as a URL) ─────────
+
+
+def test_cxr_bytes_are_decoded_and_verified(client: TestClient):
+    import hashlib
+
+    png = synthetic_png(20, 12)
+    res = post_predict(client, {"task": "pneumonia", "seed": "s", "cxr": synthetic_cxr(png)})
+    assert res.status_code == 200, res.text
+    got = res.json()["result"]["received"]["cxr"]
+    assert got == {"sha256": hashlib.sha256(png).hexdigest(), "width": 20, "height": 12}
+
+
+def test_cxr_sha256_mismatch_is_rejected(client: TestClient):
+    res = post_predict(
+        client, {"task": "pneumonia", "seed": "s", "cxr": synthetic_cxr(sha256="0" * 64)}
+    )
+    assert res.status_code == 400
+    assert "sha256" in res.json()["detail"]
+
+
+def test_cxr_that_is_not_an_image_is_rejected(client: TestClient):
+    res = post_predict(
+        client, {"task": "pneumonia", "seed": "s", "cxr": synthetic_cxr(b"not an image at all")}
+    )
+    assert res.status_code == 400
+
+
+def test_cxr_content_type_must_match_the_bytes(client: TestClient):
+    res = post_predict(
+        client,
+        {"task": "pneumonia", "seed": "s", "cxr": synthetic_cxr(contentType="image/jpeg")},
+    )
+    assert res.status_code == 400
+
+
+def test_cxr_invalid_base64_is_rejected(client: TestClient):
+    res = post_predict(
+        client, {"task": "pneumonia", "seed": "s", "cxr": synthetic_cxr(dataB64="@@not-base64@@")}
+    )
+    assert res.status_code == 400
+
+
+def test_cxr_presigned_url_alone_is_not_accepted_yet(client: TestClient):
+    res = post_predict(
+        client,
+        {"task": "pneumonia", "seed": "s", "cxr": {"presignedUrl": "http://minio:9000/fake"}},
+    )
+    assert res.status_code == 400
+    assert "dataB64" in res.json()["detail"]
+
+
+# ── Bug C: proof of what the model received ──────────────────────────────────
+
+
+def test_received_reports_the_actual_request(client: TestClient):
+    ehr = synthetic_ehr()
+    res = post_predict(
+        client,
+        {
+            "task": "pneumonia",
+            "seed": "s",
+            "ehr": ehr,
+            "notes": [
+                {"id": "n1", "text": "Bibasilar opacities, worse on the right.", "type": "radiology"},
+                {"id": "n2", "text": "word " * 600, "type": "discharge"},
+            ],
+        },
+    )
+    assert res.status_code == 200, res.text
+    got = res.json()["result"]["received"]
+    assert got["mode"] == "mock"
+    assert got["cxr"] is None
+    assert got["ehr"] == {
+        "hours": EHR_WINDOW_HOURS,
+        "variablesPresent": ["Heart Rate", "Oxygen saturation", "Respiratory rate"],
+    }
+    assert got["notes"] == [
+        {"id": "n1", "type": "radiology", "tokens": 10, "chunks": 1},
+        {"id": "n2", "type": "discharge", "tokens": 600, "chunks": 2},
+    ]
+
+
+def test_received_is_empty_for_absent_modalities(client: TestClient):
+    res = post_predict(client, {"task": "mortality", "seed": "s", "notes": [{"id": "a", "text": "ok"}]})
+    got = res.json()["result"]["received"]
+    assert got["ehr"] is None and got["cxr"] is None
+    assert got["notes"] == [{"id": "a", "type": "radiology", "tokens": 1, "chunks": 1}]
+
+
+def test_token_estimate_matches_the_typescript_vectors():
+    """Same vectors as packages/shared/src/text.test.ts — the two must agree."""
+    from app.text import chunk_count, estimate_tokens
+
+    assert estimate_tokens("") == 0
+    assert estimate_tokens("Bibasilar opacities, worse on the right.") == 10
+    assert estimate_tokens("pneumothorax") == 2
+    assert estimate_tokens("SpO2 88% on 4L") == 5
+    assert chunk_count(0) == 0
+    assert chunk_count(512) == 1
+    assert chunk_count(513) == 2

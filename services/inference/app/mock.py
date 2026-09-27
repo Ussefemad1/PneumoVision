@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import random
 
+from .cxr import DecodedCxr, decode_cxr
 from .schemas import (
     CXR_PATCH_GRID,
     EHR_WINDOW_HOURS,
@@ -28,8 +29,13 @@ from .schemas import (
     NoteSpan,
     PredictRequest,
     PredictionResult,
+    Received,
+    ReceivedCxr,
+    ReceivedEhr,
+    ReceivedNote,
     UnimodalScores,
 )
+from .text import chunk_count, estimate_tokens
 
 MOCK_MODEL_VERSION = "mock-0.1.0"
 
@@ -113,8 +119,45 @@ def _ehr_severity(ehr: object) -> float | None:
     return sum(scores) / len(scores)
 
 
-def build_mock_result(req: PredictRequest) -> PredictionResult:
-    """Produce a complete, internally consistent MedPatch-shaped result."""
+def build_received(req: PredictRequest, cxr: DecodedCxr | None) -> Received:
+    """Summarise what this request actually carried.
+
+    Counts and hashes only — note text is measured, never copied, so the
+    summary can be stored and displayed without holding clinical content.
+    """
+    ehr: ReceivedEhr | None = None
+    if req.ehr is not None:
+        rows = req.ehr.values
+        ehr = ReceivedEhr(
+            hours=sum(1 for row in rows if any(v is not None for v in row)),
+            variables_present=[
+                name
+                for col, name in enumerate(req.ehr.variables)
+                if any(col < len(row) and row[col] is not None for row in rows)
+            ],
+        )
+
+    notes: list[ReceivedNote] = []
+    for note in req.notes or []:
+        tokens = estimate_tokens(note.text)
+        notes.append(ReceivedNote(id=note.id, type=note.type, tokens=tokens, chunks=chunk_count(tokens)))
+
+    return Received(
+        ehr=ehr,
+        cxr=ReceivedCxr(sha256=cxr.sha256, width=cxr.width, height=cxr.height) if cxr else None,
+        notes=notes,
+        mode="mock",
+    )
+
+
+def build_mock_result(req: PredictRequest, cxr: DecodedCxr | None = None) -> PredictionResult:
+    """Produce a complete, internally consistent MedPatch-shaped result.
+
+    ``cxr`` is the already-decoded radiograph; when omitted it is decoded here,
+    so a malformed image fails the same way whichever caller builds the result.
+    """
+    if req.cxr is not None and cxr is None:
+        cxr = decode_cxr(req.cxr)
     notes = req.notes or []
     has_ehr = req.ehr is not None
     has_cxr = req.cxr is not None
@@ -185,6 +228,7 @@ def build_mock_result(req: PredictRequest) -> PredictionResult:
         missingness=missingness,
         alphas=alphas,
         confidence=confidence,
+        received=build_received(req, cxr),
     )
 
 

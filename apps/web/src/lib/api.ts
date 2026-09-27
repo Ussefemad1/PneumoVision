@@ -28,6 +28,15 @@ export function apiErrorMessage(err: unknown, fallback = 'Something went wrong')
   return fallback;
 }
 
+/** The API's machine-readable error code, when the failure carries one. */
+export function apiErrorCode(err: unknown): string | null {
+  if (err instanceof AxiosError) {
+    const body = err.response?.data as ErrorBody | undefined;
+    return body?.error?.code ?? null;
+  }
+  return null;
+}
+
 export function isUnauthorized(err: unknown): boolean {
   return err instanceof AxiosError && err.response?.status === 401;
 }

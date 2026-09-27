@@ -1,5 +1,5 @@
-import type { Prediction, StayDetail } from '@pneumovision/shared';
-import { MEDPATCH_REFERENCE_METRICS } from '@pneumovision/shared';
+import type { Modality, Prediction, StayDetail } from '@pneumovision/shared';
+import { MEDPATCH_REFERENCE_METRICS, TASK_SPEC } from '@pneumovision/shared';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router-dom';
 
@@ -9,6 +9,7 @@ import { durationMs, percent, shortDateTime } from '../lib/format.js';
 import { riskBand } from '../lib/risk.js';
 import { AlphaContributionChart } from '../components/charts.jsx';
 import { Disclaimer } from '../components/Disclaimer.jsx';
+import { ReceivedInputs } from '../features/analyze/ReceivedInputs.jsx';
 import { RiskGauge } from '../components/risk.jsx';
 import { Button, Card, ErrorState, Field, Skeleton } from '../components/ui.jsx';
 
@@ -57,9 +58,12 @@ export function PredictionReportPage() {
   }
 
   const result = data.result;
-  const missing = Object.entries(result.missingness.vector)
-    .filter(([, present]) => !present)
-    .map(([key]) => MODALITY_LABELS[key] ?? key);
+  // Only the modalities this task's model takes: mortality never uses
+  // discharge notes (F8), so their absence is not a "reduced input".
+  const taskModalities = TASK_SPEC[data.task].modalities.map((m) => m.toLowerCase() as Modality);
+  const missing = taskModalities
+    .filter((key) => !result.missingness.vector[key])
+    .map((key) => MODALITY_LABELS[key] ?? key);
 
   const band = riskBand(result.probability);
 
@@ -109,7 +113,7 @@ export function PredictionReportPage() {
         {/* F1 */}
         <Card title="1 · Evidence by source" subtitle="What each modality predicts on its own">
           <ul className="space-y-2">
-            {(['ehr', 'cxr', 'rr', 'dn'] as const).map((key) => {
+            {taskModalities.map((key) => {
               const value = result.unimodal[key];
               const present = result.missingness.vector[key];
               const itemBand = riskBand(value ?? null);
@@ -182,7 +186,7 @@ export function PredictionReportPage() {
               Share of tokens above θ
             </div>
             <ul className="space-y-1.5">
-              {(['ehr', 'cxr', 'rr', 'dn'] as const).map((key) => {
+              {taskModalities.map((key) => {
                 const fraction = result.confidence.fractionAbove[key];
                 if (typeof fraction !== 'number') return null;
                 return (
@@ -242,6 +246,8 @@ export function PredictionReportPage() {
           </Card>
         </div>
       </div>
+
+      <ReceivedInputs prediction={data} />
 
       {/* Provenance */}
       <Card title="Provenance">

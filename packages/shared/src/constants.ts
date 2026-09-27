@@ -143,8 +143,33 @@ export type AlertSeverity = (typeof ALERT_SEVERITIES)[number];
 export const ALERT_STATUSES = ['open', 'acknowledged', 'resolved'] as const;
 export type AlertStatus = (typeof ALERT_STATUSES)[number];
 
-export const STAY_STATUSES = ['active', 'discharged'] as const;
+/**
+ * `adhoc` stays are created by the Analyze page for inputs that belong to no
+ * admitted patient. They never appear on the ward dashboard, in the replay
+ * picker, or in the alerts centre.
+ */
+export const STAY_STATUSES = ['active', 'discharged', 'adhoc'] as const;
 export type StayStatus = (typeof STAY_STATUSES)[number];
+
+/** Ward label given to ad-hoc stays. */
+export const ADHOC_WARD = 'ADHOC';
+
+/**
+ * Upload limits for `POST /analyze`. The API enforces them (413 on excess);
+ * the page checks the same numbers client-side so a user learns early.
+ */
+export const ANALYZE_LIMITS = {
+  cxrBytes: 20 * 1024 * 1024,
+  ehrCsvBytes: 1024 * 1024,
+  ehrRows: 48,
+  noteFiles: 32,
+  noteFileBytes: 200 * 1024,
+  fieldBytes: 1024 * 1024,
+} as const;
+
+/** Image types the CXR encoder path accepts. */
+export const CXR_CONTENT_TYPES = ['image/png', 'image/jpeg'] as const;
+export type CxrContentType = (typeof CXR_CONTENT_TYPES)[number];
 
 export const CXR_VIEWS = ['AP', 'PA', 'LAT'] as const;
 export type CxrView = (typeof CXR_VIEWS)[number];

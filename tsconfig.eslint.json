@@ -18,6 +18,7 @@
     "*.ts",
     "apps/*/src/**/*",
     "apps/*/tests/**/*",
+    "apps/*/e2e/**/*",
     "apps/*/*.config.ts",
     "packages/*/src/**/*",
     "packages/*/*.config.ts",

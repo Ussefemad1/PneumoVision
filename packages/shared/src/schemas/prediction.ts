@@ -1,6 +1,13 @@
 import { z } from 'zod';
 
-import { MODALITIES, PREDICTION_STATUSES, TASKS } from '../constants.js';
+import {
+  CXR_CONTENT_TYPES,
+  MODALITIES,
+  NOTE_TYPES,
+  PREDICTION_STATUSES,
+  STAY_STATUSES,
+  TASKS,
+} from '../constants.js';
 import { EHR_WINDOW_HOURS } from '../generated/ehr-variables.js';
 import { isoDateTime, objectId } from './common.js';
 
@@ -108,6 +115,66 @@ export const confidenceMaps = z.object({
 });
 export type ConfidenceMaps = z.infer<typeof confidenceMaps>;
 
+// ── Inference request: the radiograph ────────────────────────────────────────
+
+/**
+ * The CXR as sent to the inference service: the bytes themselves, base64 in
+ * the HMAC-signed body, so the signature covers the pixels and the service
+ * never needs to reach back into the API. `presignedUrl` is reserved for a
+ * future object-storage path and is not sent today.
+ */
+export const inferenceCxrInput = z.object({
+  imageId: z.string(),
+  contentType: z.enum(CXR_CONTENT_TYPES),
+  sha256: z.string().regex(/^[0-9a-f]{64}$/),
+  dataB64: z.string(),
+  presignedUrl: z.string().url().optional(),
+});
+export type InferenceCxrInput = z.infer<typeof inferenceCxrInput>;
+
+// ── What the model received ──────────────────────────────────────────────────
+
+/**
+ * Proof of what reached the model, computed by the inference service from the
+ * decoded request — not what the API believes it sent. Counts and hashes
+ * only; never note text.
+ */
+export const receivedInputs = z.object({
+  ehr: z
+    .object({
+      /** Hourly bins (of 48) with at least one charted value. */
+      hours: z.number().int().min(0),
+      variablesPresent: z.array(z.string()),
+    })
+    .nullable(),
+  cxr: z
+    .object({
+      sha256: z.string().regex(/^[0-9a-f]{64}$/),
+      width: z.number().int().positive(),
+      height: z.number().int().positive(),
+    })
+    .nullable(),
+  notes: z.array(
+    z.object({
+      id: z.string(),
+      type: z.enum(NOTE_TYPES),
+      tokens: z.number().int().min(0),
+      chunks: z.number().int().min(0),
+    }),
+  ),
+  mode: z.enum(['mock', 'model']),
+});
+export type ReceivedInputs = z.infer<typeof receivedInputs>;
+
+/** An input withheld from the model by F8 leakage control. */
+export const excludedInput = z.object({
+  /** `upload`: submitted to /analyze and never stored. `stay`: on record, filtered out. */
+  source: z.enum(['upload', 'stay']),
+  type: z.enum(NOTE_TYPES),
+  reason: z.literal('outcome-leakage'),
+});
+export type ExcludedInput = z.infer<typeof excludedInput>;
+
 // ── The full result ──────────────────────────────────────────────────────────
 
 export const predictionResult = z.object({
@@ -118,6 +185,8 @@ export const predictionResult = z.object({
   missingness,
   alphas,
   confidence: confidenceMaps,
+  /** Null only on predictions stored before the service reported it. */
+  received: receivedInputs.nullish().transform((v) => v ?? null),
 });
 export type PredictionResult = z.infer<typeof predictionResult>;
 
@@ -134,6 +203,10 @@ export const prediction = z.object({
   inputHash: z.string(),
   latencyMs: z.number().int().min(0).nullable(),
   requestedBy: objectId.nullable(),
+  /** Modalities that actually carried data into the model. */
+  inputsUsed: z.array(modalitySchema),
+  /** Inputs withheld by F8, shown on the report so the omission is visible. */
+  excludedInputs: z.array(excludedInput),
   result: predictionResult.nullable(),
   error: z.string().nullable(),
   createdAt: isoDateTime,
@@ -146,6 +219,47 @@ export const createPredictionRequest = z.object({
   cutoffTime: isoDateTime.optional(),
 });
 export type CreatePredictionRequest = z.infer<typeof createPredictionRequest>;
+
+// ── Ad-hoc analysis ──────────────────────────────────────────────────────────
+
+/** Fields of the `POST /analyze` multipart body (files travel separately). */
+export const analyzeFields = z.object({
+  task: taskSchema,
+  /** Attach to this stay; omitted means a fresh ad-hoc stay. */
+  stayId: objectId.optional(),
+});
+
+/** One entry of `ehrJson.rows`: an hour offset (0 = submission) or a timestamp. */
+export const analyzeEhrRow = z.union([
+  z.object({ hour: z.number(), values: z.record(z.unknown()) }).strict(),
+  z.object({ ts: isoDateTime, values: z.record(z.unknown()) }).strict(),
+]);
+export const analyzeEhrJson = z.object({ rows: z.array(analyzeEhrRow) }).strict();
+
+export const analyzeNote = z
+  .object({
+    type: z.enum(NOTE_TYPES),
+    text: z.string().trim().min(1).max(100_000),
+  })
+  .strict();
+
+export const analyzeExcluded = z.object({
+  source: z.enum(['notesJson', 'notes']),
+  /** Position within its source (the notesJson array, or the note files). */
+  index: z.number().int().min(0),
+  type: z.enum(NOTE_TYPES),
+  reason: z.literal('outcome-leakage'),
+});
+export type AnalyzeExcluded = z.infer<typeof analyzeExcluded>;
+
+export const analyzeResponse = z.object({
+  predictionId: objectId,
+  stayId: objectId,
+  stayStatus: z.enum(STAY_STATUSES),
+  status: predictionStatus,
+  excluded: z.array(analyzeExcluded),
+});
+export type AnalyzeResponse = z.infer<typeof analyzeResponse>;
 
 export const predictionsQuery = z.object({
   task: taskSchema.optional(),

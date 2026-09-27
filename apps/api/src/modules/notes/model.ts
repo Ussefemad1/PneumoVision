@@ -17,7 +17,8 @@ const noteSchema = new Schema(
     stayId: { type: Schema.Types.ObjectId, ref: 'Stay', required: true, index: true },
     type: { type: String, required: true, enum: NOTE_TYPES },
     authoredAt: { type: Date, required: true },
-    text: { type: String, required: true, maxlength: 100_000 },
+    // Sized to the 200 KB Analyze note-file limit.
+    text: { type: String, required: true, maxlength: 204_800 },
     // F9: surfaced so the notes UI can warn when BioBERT will chunk the text.
     tokenCount: { type: Number, required: true, min: 0 },
   },

@@ -1,198 +1,448 @@
-import { createHash } from 'node:crypto';
-import { mkdir, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
-import type { Request } from 'express';
-import { z } from 'zod';
-import { Router } from 'express';
-import { Types } from 'mongoose';
+import { randomInt } from 'node:crypto';
 
 import {
-  EHR_VARIABLES, EHR_CATEGORICAL_VARIABLES, EHR_CATEGORICAL_VALUES,
-  NOTE_TYPES, TASKS, type NoteType, type Task,
+  ADHOC_WARD,
+  ANALYZE_LIMITS,
+  EHR_WINDOW_HOURS,
+  NOTE_TYPES,
+  NOTE_TYPES_BY_TASK,
+  analyzeEhrJson,
+  analyzeFields,
+  analyzeNote,
+  estimateTokens,
+  parseEhrCsv,
+  validateEhrHour,
+  validateVitalsValues,
+  type AnalyzeExcluded,
+  type AnalyzeResponse,
+  type EhrIssue,
+  type NoteType,
+  type Task,
+  type VitalsInput,
 } from '@pneumovision/shared';
+import { Router, type Request, type Response } from 'express';
+import { rateLimit } from 'express-rate-limit';
+import { Types } from 'mongoose';
+import { z } from 'zod';
+
 import type { Env } from '../../config/env.js';
 import { ImageModel, NoteModel, PatientModel, StayModel, VitalsModel } from '../../db/models.js';
 import { asyncHandler, ok } from '../../lib/http.js';
+import { sha256Hex, sniffImage, writeImage, type SniffedImage } from '../../lib/imageStore.js';
+import { readMultipart, type MultipartFile, type MultipartSpec } from '../../lib/multipart.js';
 import { requireRole } from '../../middleware/auth.js';
 import { ApiError } from '../../middleware/errorHandler.js';
 import type { PredictionService } from '../../services/predictionService.js';
 
-const analyzeRequest = z.object({
-  task: z.enum(TASKS),
-  stayId: z.string().refine(Types.ObjectId.isValid, 'stayId must be a valid ObjectId').optional(),
-});
-const ehrPayload = z.object({
-  rows: z.array(z.object({
-    ts: z.string().datetime(),
-    values: z.record(z.union([z.number(), z.string(), z.null(), z.undefined()])),
-  })).max(48),
-}).optional();
-const notePayload = z.object({
-  type: z.enum(NOTE_TYPES),
-  text: z.string().trim().min(1).max(100_000),
-  authoredAt: z.string().datetime().optional(),
-});
+/**
+ * `POST /analyze` — score whatever evidence a clinician has to hand.
+ *
+ * Accepts any combination of a chest X-ray, EHR rows (JSON or CSV) and notes
+ * (JSON or .txt files), stores them against an existing stay or a fresh
+ * ad-hoc one, and requests a prediction through the same `PredictionService`
+ * the stay page uses — so F8 filtering, missingness handling and the report
+ * are identical.
+ *
+ * Timing: the submission instant T is captured once. Uploaded images and
+ * notes are stamped T, EHR rows after T are rejected, and the cutoff is
+ * T + 1 ms, so everything submitted satisfies `gatherInputs`' strictly-before
+ * rule without loosening it.
+ */
 
-interface MultipartFile { fieldName: string; fileName: string; contentType: string; buffer: Buffer }
-interface MultipartBody { fields: Record<string, string>; files: MultipartFile[] }
+const MULTIPART: MultipartSpec = {
+  files: {
+    cxr: {
+      maxBytes: ANALYZE_LIMITS.cxrBytes,
+      maxCount: 1,
+      tooLargeCode: 'CXR_TOO_LARGE',
+      tooManyCode: 'TOO_MANY_CXR',
+    },
+    ehr: {
+      maxBytes: ANALYZE_LIMITS.ehrCsvBytes,
+      maxCount: 1,
+      tooLargeCode: 'EHR_CSV_TOO_LARGE',
+      tooManyCode: 'TOO_MANY_EHR_FILES',
+    },
+    notes: {
+      maxBytes: ANALYZE_LIMITS.noteFileBytes,
+      maxCount: ANALYZE_LIMITS.noteFiles,
+      tooLargeCode: 'NOTE_FILE_TOO_LARGE',
+      tooManyCode: 'TOO_MANY_NOTES',
+    },
+  },
+  fieldBytes: ANALYZE_LIMITS.fieldBytes,
+  maxFields: 8,
+  totalBytes:
+    ANALYZE_LIMITS.cxrBytes +
+    ANALYZE_LIMITS.ehrCsvBytes +
+    ANALYZE_LIMITS.noteFiles * ANALYZE_LIMITS.noteFileBytes +
+    4 * ANALYZE_LIMITS.fieldBytes,
+};
 
-async function parseMultipart(req: Request): Promise<MultipartBody> {
-  const contentType = req.headers['content-type'] ?? '';
-  const match = /^multipart\/form-data;\s*boundary=(?:"([^"]+)|([^;]+))/i.exec(contentType);
-  if (!match) throw ApiError.badRequest('INVALID_CONTENT_TYPE', 'Use multipart/form-data');
-  const boundary = Buffer.from(`--${match[1] ?? match[2]}`);
-  const chunks: Buffer[] = [];
-  let total = 0;
-  for await (const chunk of req) {
-    const part = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    total += part.length;
-    if (total > 25 * 1024 * 1024) throw ApiError.badRequest('PAYLOAD_TOO_LARGE', 'Analyze payload exceeds 25 MB');
-    chunks.push(part);
-  }
-  const body = Buffer.concat(chunks);
-  const fields: Record<string, string> = {};
-  const files: MultipartFile[] = [];
-  let cursor = 0;
-  while (true) {
-    const start = body.indexOf(boundary, cursor);
-    if (start < 0) break;
-    const headerStart = start + boundary.length;
-    if (body.subarray(headerStart, headerStart + 2).equals(Buffer.from('--'))) break;
-    const contentStart = body.indexOf(Buffer.from('\r\n\r\n'), headerStart);
-    if (contentStart < 0) break;
-    const headers = body.subarray(headerStart + 2, contentStart).toString('utf8');
-    const next = body.indexOf(boundary, contentStart + 4);
-    if (next < 0) break;
-    const contentEnd = next - 2;
-    const content = body.subarray(contentStart + 4, contentEnd);
-    const disposition = /content-disposition:\s*form-data;\s*name="([^"]+)"(?:;\s*filename="([^"]*)")?/i.exec(headers);
-    if (!disposition) { cursor = next; continue; }
-    const fieldName = disposition[1]!;
-    const fileName = disposition[2];
-    const typeMatch = /content-type:\s*([^\r\n]+)/i.exec(headers);
-    if (fileName !== undefined) files.push({ fieldName, fileName, contentType: typeMatch?.[1]?.trim() ?? 'application/octet-stream', buffer: Buffer.from(content) });
-    else fields[fieldName] = content.toString('utf8');
-    cursor = next;
-  }
-  return { fields, files };
-}
+const HOUR_MS = 3_600_000;
 
-function isPng(buffer: Buffer): boolean {
-  return buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a]));
-}
-function isJpeg(buffer: Buffer): boolean {
-  return buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
-}
-function parseJsonField<T>(raw: string | undefined, schema: z.ZodType<T>, field: string): T | undefined {
-  if (!raw) return undefined;
+// ── Field parsing ────────────────────────────────────────────────────────────
+
+function parseJsonField<T>(raw: string | undefined, schema: z.ZodType<T>, field: string) {
+  if (raw === undefined || raw.trim() === '') return undefined;
   let parsed: unknown;
-  try { parsed = JSON.parse(raw); } catch { throw ApiError.badRequest('INVALID_JSON', field + ' must contain valid JSON'); }
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw ApiError.badRequest('INVALID_JSON', `${field} must contain valid JSON`);
+  }
   const result = schema.safeParse(parsed);
-  if (!result.success) throw ApiError.badRequest('INVALID_INPUT', field + ' is invalid');
+  if (!result.success) {
+    const issue = result.error.issues[0];
+    throw ApiError.badRequest(
+      'INVALID_INPUT',
+      `${field} is invalid${issue ? ` at ${issue.path.join('.') || '(root)'}: ${issue.message}` : ''}`,
+    );
+  }
   return result.data;
 }
-function nextPseudoId() { return 'PV-' + Math.floor(100000 + Math.random() * 900000); }
-function estimateTokens(text: string) { return Math.ceil(text.length / 4); }
 
-function normalizeVitalsValues(values: Record<string, unknown>) {
-  const out: Record<string, unknown> = {};
-  for (const variable of EHR_VARIABLES) {
-    const value = values[variable];
-    if (value === undefined || value === null || value === '') { out[variable] = null; continue; }
-    if (EHR_CATEGORICAL_VARIABLES.includes(variable)) {
-      const allowed = EHR_CATEGORICAL_VALUES[variable] ?? [];
-      if (typeof value !== 'string' || !allowed.includes(value)) throw ApiError.badRequest('INVALID_EHR', 'Invalid value for ' + variable);
-      out[variable] = value;
-    } else {
-      const number = typeof value === 'number' ? value : Number(value);
-      if (!Number.isFinite(number)) throw ApiError.badRequest('INVALID_EHR', 'Invalid numeric value for ' + variable);
-      out[variable] = number;
-    }
-  }
-  return out;
+const ehrError = (issue: EhrIssue, where: string) =>
+  ApiError.badRequest(issue.code, `${where}: ${issue.message}`);
+
+// ── EHR ──────────────────────────────────────────────────────────────────────
+
+interface EhrRow {
+  ts: Date;
+  values: VitalsInput;
 }
 
-async function ensureAdhocStay(requestedBy: Types.ObjectId) {
-  const patient = await PatientModel.create({ pseudoId: nextPseudoId(), demographics: { age: 0, sex: 'M' }, createdBy: requestedBy });
+/**
+ * Resolves JSON and CSV rows to timestamps against T, validating each with
+ * the shared validator the page's CSV preview also uses.
+ */
+function collectEhrRows(
+  fields: Record<string, string>,
+  file: MultipartFile | undefined,
+  submittedAt: Date,
+): EhrRow[] {
+  const rows: EhrRow[] = [];
+  const t = submittedAt.getTime();
+
+  const place = (time: { hour: number } | { ts: string }, values: VitalsInput, where: string) => {
+    let ts: Date;
+    if ('hour' in time) {
+      const issue = validateEhrHour(time.hour);
+      if (issue) throw ehrError(issue, where);
+      ts = new Date(t + time.hour * HOUR_MS);
+    } else {
+      ts = new Date(time.ts);
+      if (ts.getTime() > t) {
+        throw ehrError(
+          { code: 'EHR_FUTURE_TIMESTAMP', message: `${time.ts} is after submission` },
+          where,
+        );
+      }
+      if (ts.getTime() <= t - EHR_WINDOW_HOURS * HOUR_MS) {
+        throw ehrError(
+          {
+            code: 'EHR_OUTSIDE_WINDOW',
+            message: `${time.ts} is outside the ${EHR_WINDOW_HOURS}-hour window`,
+          },
+          where,
+        );
+      }
+    }
+    rows.push({ ts, values });
+  };
+
+  const json = parseJsonField(fields.ehrJson, analyzeEhrJson, 'ehrJson');
+  const parsed = file ? parseEhrCsv(file.buffer.toString('utf8')) : null;
+  if (parsed?.headerError) throw ehrError(parsed.headerError, 'EHR CSV header');
+
+  // Count first, so an over-long file gets the limit error, not a window
+  // error from its 49th row.
+  if ((json?.rows.length ?? 0) + (parsed?.rows.length ?? 0) > ANALYZE_LIMITS.ehrRows) {
+    throw ApiError.badRequest(
+      'EHR_TOO_MANY_ROWS',
+      `At most ${ANALYZE_LIMITS.ehrRows} hourly EHR rows are accepted`,
+    );
+  }
+
+  json?.rows.forEach((row, i) => {
+    const validated = validateVitalsValues(row.values);
+    if (!validated.ok) throw ehrError(validated.errors[0]!, `ehrJson row ${i + 1}`);
+    place(
+      'hour' in row ? { hour: row.hour } : { ts: row.ts },
+      validated.values,
+      `ehrJson row ${i + 1}`,
+    );
+  });
+
+  if (parsed) {
+    for (const row of parsed.rows) {
+      if (row.errors.length > 0) throw ehrError(row.errors[0]!, `EHR CSV line ${row.line}`);
+      place(row.time!, row.values, `EHR CSV line ${row.line}`);
+    }
+  }
+
+  // Two rows in one hourly bin would silently overwrite each other.
+  const windowStart = t + 1 - EHR_WINDOW_HOURS * HOUR_MS;
+  const bins = new Set<number>();
+  for (const row of rows) {
+    const bin = Math.floor((row.ts.getTime() - windowStart) / HOUR_MS);
+    if (bins.has(bin)) {
+      throw ApiError.badRequest(
+        'EHR_DUPLICATE_HOUR',
+        `Two EHR rows fall in the same hour (${row.ts.toISOString()})`,
+      );
+    }
+    bins.add(bin);
+  }
+
+  // A row with every cell blank is a gap, not data.
+  return rows.filter((r) => Object.keys(r.values).length > 0);
+}
+
+// ── Notes ────────────────────────────────────────────────────────────────────
+
+interface IncomingNote {
+  type: NoteType;
+  text: string;
+}
+
+const NOTE_MAX_CHARS = ANALYZE_LIMITS.noteFileBytes;
+
+function collectNotes(
+  task: Task,
+  fields: Record<string, string>,
+  files: MultipartFile[],
+): { accepted: IncomingNote[]; excluded: AnalyzeExcluded[] } {
+  const fromJson =
+    parseJsonField(
+      fields.notesJson,
+      z
+        .array(analyzeNote.extend({ text: z.string().trim().min(1).max(NOTE_MAX_CHARS) }))
+        .max(ANALYZE_LIMITS.noteFiles),
+      'notesJson',
+    ) ?? [];
+
+  const types = parseJsonField(fields.noteTypes, z.array(z.enum(NOTE_TYPES)), 'noteTypes') ?? [];
+  if (types.length !== files.length) {
+    throw ApiError.badRequest(
+      'NOTE_TYPES_MISMATCH',
+      `noteTypes has ${types.length} entr${types.length === 1 ? 'y' : 'ies'} for ${files.length} note file(s)`,
+    );
+  }
+  const fromFiles = files.map((file, i): IncomingNote => {
+    const text = file.buffer.toString('utf8').trim();
+    if (!text) throw ApiError.badRequest('NOTE_EMPTY', `Note file "${file.fileName}" is empty`);
+    return { type: types[i]!, text };
+  });
+
+  // F8: discharge notes describe the outcome; for mortality they are neither
+  // stored nor sent. gatherInputs would drop them anyway — not storing them
+  // keeps a leak from ever being one query away.
+  const permitted = NOTE_TYPES_BY_TASK[task];
+  const accepted: IncomingNote[] = [];
+  const excluded: AnalyzeExcluded[] = [];
+  const sort = (note: IncomingNote, source: AnalyzeExcluded['source'], index: number) => {
+    if (permitted.includes(note.type)) accepted.push(note);
+    else excluded.push({ source, index, type: note.type, reason: 'outcome-leakage' });
+  };
+  fromJson.forEach((note, i) => sort(note, 'notesJson', i));
+  fromFiles.forEach((note, i) => sort(note, 'notes', i));
+  return { accepted, excluded };
+}
+
+// ── Ad-hoc stays ─────────────────────────────────────────────────────────────
+
+const randomPseudoId = () => `PV-${randomInt(100_000, 1_000_000)}`;
+
+function isDuplicateKey(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { code?: unknown }).code === 11000;
+}
+
+/**
+ * A patient for inputs that belong to no admitted stay. No demographics:
+ * nothing is known, so nothing is invented. The pseudoId relies on the unique
+ * index and retries on collision rather than hoping randomness suffices.
+ */
+export async function createAdhocPatient(
+  createdBy: Types.ObjectId | null,
+  nextPseudoId: () => string = randomPseudoId,
+) {
+  await PatientModel.init(); // the unique index must exist for the retry to mean anything
+  for (let attempt = 0; attempt < 8; attempt++) {
+    try {
+      return await PatientModel.create({ pseudoId: nextPseudoId(), createdBy });
+    } catch (err) {
+      if (!isDuplicateKey(err)) throw err;
+    }
+  }
+  throw new Error('could not allocate a unique pseudoId');
+}
+
+async function createAdhocStay(createdBy: Types.ObjectId, admittedAt: Date) {
+  const patient = await createAdhocPatient(createdBy);
   return StayModel.create({
-    patientId: patient._id, ward: 'ADHOC', bedLabel: 'ANALYZE', admittedAt: new Date(),
-    status: 'active', availability: { ehr: false, cxr: false, notes: false },
+    patientId: patient._id,
+    ward: ADHOC_WARD,
+    bedLabel: 'ANALYZE',
+    admittedAt,
+    status: 'adhoc',
+    availability: { ehr: false, cxr: false, notes: false },
   });
 }
 
-export function analyzeRoutes(env: Env, service: PredictionService): Router {
+// ── Route ────────────────────────────────────────────────────────────────────
+
+export interface AnalyzeOptions {
+  /** Analyze requests per user per minute. */
+  rateLimitPerMinute?: number;
+}
+
+export function analyzeRoutes(
+  env: Env,
+  service: PredictionService,
+  { rateLimitPerMinute = 10 }: AnalyzeOptions = {},
+): Router {
   const router = Router();
   const clinical = requireRole('clinician', 'radiologist', 'admin');
 
-  router.post('/analyze', clinical, asyncHandler(async (req, res) => {
-    const multipart = await parseMultipart(req);
-    const bodyResult = analyzeRequest.safeParse(multipart.fields);
-    if (!bodyResult.success) throw ApiError.badRequest('INVALID_INPUT', 'task is required and must be mortality or pneumonia');
-
-    const task: Task = bodyResult.data.task;
-    const requestedBy = new Types.ObjectId(req.user!.id);
-    const cxr = multipart.files.find((f) => f.fieldName === 'cxr');
-    const ehrFile = multipart.files.find((f) => f.fieldName === 'ehr');
-    const noteFiles = multipart.files.filter((f) => f.fieldName === 'notes');
-    if (cxr && !isPng(cxr.buffer) && !isJpeg(cxr.buffer)) throw ApiError.badRequest('INVALID_IMAGE', 'CXR must be a JPEG or PNG image');
-
-    const ehrFromField = parseJsonField(multipart.fields.ehrJson, ehrPayload, 'ehrJson');
-    const noteField = parseJsonField(multipart.fields.notesJson, z.array(notePayload).max(32), 'notesJson') ?? [];
-    if (!cxr && !ehrFile && !ehrFromField && noteFiles.length === 0 && noteField.length === 0) {
-      throw ApiError.badRequest('NO_MODALITY', 'At least one modality is required');
-    }
-
-    let stay = bodyResult.data.stayId ? await StayModel.findById(bodyResult.data.stayId) : null;
-    if (!stay) stay = await ensureAdhocStay(requestedBy);
-    const cutoff = new Date();
-    // Ensure availability exists (always initialized by schema, but TypeScript needs explicit guard)
-    if (!stay.availability) stay.availability = { ehr: false, cxr: false, notes: false };
-
-    if (ehrFromField?.rows) {
-      const docs = ehrFromField.rows.map((row) => ({ ts: new Date(row.ts), meta: { stayId: stay._id, source: 'analyze' }, values: normalizeVitalsValues(row.values) }));
-      if (docs.length) { await VitalsModel.insertMany(docs, { ordered: true }); stay.availability.ehr = true; }
-    }
-    if (ehrFile) {
-      const lines = ehrFile.buffer.toString('utf8').split(/\r?\n/).filter(Boolean);
-      if (lines.length > 49) throw ApiError.badRequest('INVALID_EHR', 'EHR CSV may contain at most 48 data rows');
-      const header = lines[0]?.split(',').map((v) => v.trim()) ?? [];
-      const timestampColumn = header.findIndex((v) => v === 'ts' || v === 'timestamp');
-      if (timestampColumn < 0) throw ApiError.badRequest('INVALID_EHR', 'CSV must include ts or timestamp');
-      const docs = lines.slice(1).map((line) => {
-        const cells = line.split(',');
-        const ts = new Date(cells[timestampColumn]!);
-        if (Number.isNaN(ts.getTime())) throw ApiError.badRequest('INVALID_EHR', 'CSV contains an invalid timestamp');
-        const values: Record<string, unknown> = {};
-        for (let i = 0; i < header.length; i++) if (i !== timestampColumn) values[header[i]!] = cells[i] ?? null;
-        return { ts, meta: { stayId: stay._id, source: 'analyze' }, values: normalizeVitalsValues(values) };
+  // Per user, not per IP: clinicians behind one hospital NAT share an IP.
+  const limiter = rateLimit({
+    windowMs: 60_000,
+    limit: rateLimitPerMinute,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+    keyGenerator: (req: Request) => req.user?.id ?? 'anonymous',
+    handler: (req: Request, res: Response) => {
+      res.status(429).json({
+        error: {
+          code: 'RATE_LIMITED',
+          message: `At most ${rateLimitPerMinute} analyses per minute — try again shortly`,
+          requestId: req.requestId,
+        },
       });
-      if (docs.length) { await VitalsModel.insertMany(docs, { ordered: true }); stay.availability.ehr = true; }
-    }
-    if (cxr) {
-      const ext = isJpeg(cxr.buffer) ? 'jpg' : 'png';
-      const hash = createHash('sha256').update(cxr.buffer).digest('hex');
-      const dir = join(process.cwd(), env.DEMO_DATA_DIR, 'images');
-      await mkdir(dir, { recursive: true });
-      const fileName = `analyze-${String(stay._id)}-${hash}.${ext}`;
-      await writeFile(join(dir, fileName), cxr.buffer);
-      await ImageModel.create({ stayId: stay._id, filePath: fileName, takenAt: new Date(), view: 'AP', width: 384, height: 384, sha256: hash, uploadedBy: requestedBy });
-      stay.availability.cxr = true;
-    }
+    },
+  });
 
-    const notes = [
-      ...noteField,
-      ...noteFiles.map((file) => ({ type: (multipart.fields.noteType as NoteType) || 'radiology', text: file.buffer.toString('utf8'), authoredAt: new Date().toISOString() })),
-    ];
-    for (const note of notes) {
-      if (task === 'mortality' && note.type === 'discharge') continue;
-      await NoteModel.create({ stayId: stay._id, type: note.type, authoredAt: note.authoredAt ? new Date(note.authoredAt) : new Date(), text: note.text, tokenCount: estimateTokens(note.text) });
-      stay.availability.notes = true;
-    }
-    await stay.save();
+  router.post(
+    '/analyze',
+    clinical,
+    limiter,
+    asyncHandler(async (req, res) => {
+      const submittedAt = new Date();
+      const { fields, files } = await readMultipart(req, MULTIPART);
 
-    const prediction = await service.request({ stayId: stay._id, task, cutoffTime: cutoff, requestedBy, requestId: req.requestId });
-    res.status(prediction.status === 'done' ? 201 : 202);
-    ok(res, { predictionId: String(prediction._id), stayId: String(stay._id), status: prediction.status });
-  }));
+      const parsedFields = analyzeFields.safeParse(fields);
+      if (!parsedFields.success) {
+        throw ApiError.badRequest(
+          'INVALID_INPUT',
+          'task must be mortality or pneumonia, and stayId (if given) a valid id',
+        );
+      }
+      const { task, stayId } = parsedFields.data;
+      const requestedBy = new Types.ObjectId(req.user!.id);
+
+      // ── Validate everything before storing anything ──────────────────────
+      const cxrFile = files.find((f) => f.fieldName === 'cxr');
+      let image: SniffedImage | null = null;
+      if (cxrFile) {
+        image = sniffImage(cxrFile.buffer);
+        if (!image) {
+          throw ApiError.badRequest('INVALID_IMAGE', 'The chest X-ray must be a valid PNG or JPEG');
+        }
+      }
+
+      const ehrRows = collectEhrRows(
+        fields,
+        files.find((f) => f.fieldName === 'ehr'),
+        submittedAt,
+      );
+      const { accepted: notes, excluded } = collectNotes(
+        task,
+        fields,
+        files.filter((f) => f.fieldName === 'notes'),
+      );
+
+      if (!image && ehrRows.length === 0 && notes.length === 0) {
+        throw ApiError.badRequest(
+          'NO_MODALITY',
+          excluded.length > 0
+            ? 'Nothing left to analyze: discharge notes are excluded from mortality predictions'
+            : 'Provide at least one of: chest X-ray, EHR rows, or a clinical note',
+        );
+      }
+
+      const existing = stayId ? await StayModel.findById(stayId) : null;
+      if (stayId && !existing) throw ApiError.notFound('Stay');
+      const stay = existing ?? (await createAdhocStay(requestedBy, submittedAt));
+
+      // ── Persist, all stamped at T ────────────────────────────────────────
+      if (ehrRows.length > 0) {
+        await VitalsModel.insertMany(
+          ehrRows.map((row) => ({
+            ts: row.ts,
+            meta: { stayId: stay._id, source: 'analyze' },
+            values: row.values,
+          })),
+          { ordered: true },
+        );
+        stay.set('availability.ehr', true);
+      }
+
+      if (cxrFile && image) {
+        const sha256 = sha256Hex(cxrFile.buffer);
+        const ext = image.contentType === 'image/jpeg' ? 'jpg' : 'png';
+        const filePath = `analyze-${String(stay._id)}-${sha256}.${ext}`;
+        await writeImage(env, filePath, cxrFile.buffer);
+        await ImageModel.create({
+          stayId: stay._id,
+          filePath,
+          takenAt: submittedAt,
+          // Unknown for an upload; AP is the usual ICU portable view.
+          view: 'AP',
+          width: image.width,
+          height: image.height,
+          sha256,
+          uploadedBy: requestedBy,
+        });
+        stay.set('availability.cxr', true);
+      }
+
+      if (notes.length > 0) {
+        await NoteModel.insertMany(
+          notes.map((note) => ({
+            stayId: stay._id,
+            type: note.type,
+            authoredAt: submittedAt,
+            text: note.text,
+            tokenCount: estimateTokens(note.text),
+          })),
+        );
+        stay.set('availability.notes', true);
+      }
+      await stay.save();
+
+      // T + 1 ms: everything stamped T is strictly before the cutoff.
+      const cutoffTime = new Date(submittedAt.getTime() + 1);
+      const prediction = await service.request({
+        stayId: stay._id,
+        task,
+        cutoffTime,
+        requestedBy,
+        requestId: req.requestId,
+        excluded: excluded.map((e) => ({ source: 'upload', type: e.type, reason: e.reason })),
+      });
+
+      const body: AnalyzeResponse = {
+        predictionId: String(prediction._id),
+        stayId: String(stay._id),
+        stayStatus: stay.status,
+        status: prediction.status,
+        excluded,
+      };
+      res.status(202);
+      ok(res, body);
+    }),
+  );
+
   return router;
 }

@@ -1,6 +1,6 @@
 import { createHmac } from 'node:crypto';
 
-import type { PredictionResult, Task } from '@pneumovision/shared';
+import type { InferenceCxrInput, PredictionResult, Task } from '@pneumovision/shared';
 
 import type { Env } from '../config/env.js';
 import type { Logger } from './logger.js';
@@ -31,7 +31,8 @@ export interface PredictInput {
   /** Seeds the deterministic mock so a stay keeps a coherent risk level. */
   seed: string;
   ehr: EhrPayload | null;
-  cxr: { presignedUrl: string } | null;
+  /** The radiograph's bytes, base64, inside the signed body. */
+  cxr: InferenceCxrInput | null;
   notes: NotePayload[] | null;
   theta: number;
   returnExplanations?: boolean;

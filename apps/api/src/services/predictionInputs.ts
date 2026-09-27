@@ -3,7 +3,9 @@ import { createHash } from 'node:crypto';
 import {
   EHR_VARIABLES,
   EHR_WINDOW_HOURS,
+  NOTE_TYPES,
   NOTE_TYPES_BY_TASK,
+  type ExcludedInput,
   type Modality,
   type NoteType,
   type Task,
@@ -30,10 +32,13 @@ import type { EhrPayload, NotePayload } from '../lib/inferenceClient.js';
 
 export interface GatheredInputs {
   ehr: EhrPayload | null;
-  cxr: { imageId: string } | null;
+  /** The stored image record; the caller loads and verifies the bytes. */
+  cxr: { imageId: string; filePath: string; sha256: string } | null;
   notes: NotePayload[];
   /** Which modalities actually carried data, for the reduced-input banner. */
   used: Modality[];
+  /** On-record notes rule 2 withheld, so the report can say so. */
+  excluded: ExcludedInput[];
   /** Stable hash of the inputs, so a stored prediction stays reproducible. */
   inputHash: string;
 }
@@ -87,8 +92,9 @@ export async function gatherInputs(
   cutoffTime: Date,
 ): Promise<GatheredInputs> {
   const permitted = allowedNoteTypes(task);
+  const withheld = NOTE_TYPES.filter((t) => !permitted.includes(t));
 
-  const [vitalsRows, latestImage, notes] = await Promise.all([
+  const [vitalsRows, latestImage, notes, withheldNotes] = await Promise.all([
     // Rule 1: strictly before the cutoff.
     VitalsModel.find({
       'meta.stayId': stayId,
@@ -109,6 +115,13 @@ export async function gatherInputs(
     })
       .sort({ authoredAt: 1 })
       .lean(),
+
+    // Counted, never read: what rule 2 kept from the model.
+    withheld.length > 0
+      ? NoteModel.find({ stayId, authoredAt: { $lt: cutoffTime }, type: { $in: withheld } })
+          .select({ type: 1 })
+          .lean()
+      : Promise.resolve([]),
   ]);
 
   const ehr = buildEhrWindow(
@@ -137,7 +150,7 @@ export async function gatherInputs(
         task,
         cutoff: cutoffTime.toISOString(),
         hours: vitalsRows.length,
-        image: latestImage ? String(latestImage._id) : null,
+        image: latestImage ? [String(latestImage._id), latestImage.sha256] : null,
         notes: notePayloads.map((n) => [n.id, n.text.length, n.type]),
       }),
     )
@@ -145,9 +158,20 @@ export async function gatherInputs(
 
   return {
     ehr,
-    cxr: latestImage ? { imageId: String(latestImage._id) } : null,
+    cxr: latestImage
+      ? {
+          imageId: String(latestImage._id),
+          filePath: latestImage.filePath,
+          sha256: latestImage.sha256,
+        }
+      : null,
     notes: notePayloads,
     used,
+    excluded: withheldNotes.map((n) => ({
+      source: 'stay' as const,
+      type: n.type,
+      reason: 'outcome-leakage' as const,
+    })),
     inputHash,
   };
 }

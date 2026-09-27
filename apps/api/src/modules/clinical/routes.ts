@@ -1,6 +1,5 @@
 import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
-import { isAbsolute, join, normalize } from 'node:path';
 
 import { CLINICAL_ROLES, paginationQuery, vitalsQuery } from '@pneumovision/shared';
 import { Router } from 'express';
@@ -16,6 +15,7 @@ import {
   VitalsModel,
 } from '../../db/models.js';
 import { asyncHandler, objectIdParam, ok } from '../../lib/http.js';
+import { resolveImagePath } from '../../lib/imageStore.js';
 import {
   serializeImage,
   serializeNote,
@@ -155,9 +155,10 @@ export function clinicalRoutes(env: Env, imageUrlFor: (id: string) => string): R
       const image = await ImageModel.findById(imageId).lean();
       if (!image) throw ApiError.notFound('Image');
 
-      const root = join(process.cwd(), env.DEMO_DATA_DIR, 'images');
-      const resolved = normalize(join(root, image.filePath));
-      if (!resolved.startsWith(root) || isAbsolute(image.filePath)) {
+      let resolved: string;
+      try {
+        resolved = resolveImagePath(env, image.filePath);
+      } catch {
         throw ApiError.badRequest('INVALID_PATH', 'Image path escapes the demo directory');
       }
 
@@ -167,7 +168,8 @@ export function clinicalRoutes(env: Env, imageUrlFor: (id: string) => string): R
         throw ApiError.notFound('Image file');
       }
 
-      res.setHeader('Content-Type', 'image/png');
+      // Uploads may be JPEG; the extension was chosen from the sniffed bytes.
+      res.setHeader('Content-Type', /\.jpe?g$/i.test(image.filePath) ? 'image/jpeg' : 'image/png');
       res.setHeader('Cache-Control', 'private, max-age=300');
       createReadStream(resolved).pipe(res);
     }),
