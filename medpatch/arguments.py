@@ -159,6 +159,11 @@ def args_parser():
                         help='Bootstrap resamples per class for the AUROC/AUPRC confidence '
                              'intervals (Trainer.computeAUROC). 1000 is the paper setting; '
                              'lower it only for smoke tests on synthetic data.')
+    parser.add_argument('--cxr_token_confidence', action='store_true',
+                        help='Feed the CXR confidence predictor the ViT patch tokens (one '
+                             'confidence per patch) instead of the CLS vector (one per image, '
+                             'the released code). Applies to Round 2, 2b and 3 together. '
+                             'Off by default; a planned ablation.')
 
 
     # args = argParser.parse_args()

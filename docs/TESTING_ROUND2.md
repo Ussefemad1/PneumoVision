@@ -149,16 +149,55 @@ python -m tools.pv.smoke_round2
 On Colab: `!python -m tools.pv.smoke_round2`
 
 It generates the smoke data (if missing), trains the 4 Round 1 stand-ins, runs
-Round 2 for all 4 readers, then runs the checks. Expect roughly **SMOKE_TIME**
-on a laptop CPU after the one-time downloads (it is dominated by BERT and the
-ViT running on CPU). It ends with a summary like:
+Round 2 for all 4 readers, then runs the checks. Expect roughly **25 minutes**
+on a laptop CPU after the one-time downloads. It is dominated by BERT (RR, DN)
+and the ViT (CXR) running on CPU.
+
+Where that number comes from: our full from-scratch run on 2026-09-27 (Windows
+laptop, CPU only, torch 2.4.1) took **24 min 13 s**. Its timing table:
 
 ```
-SMOKE_SUMMARY
+    0m00s  generate virtual smoke dataset
+    0m35s  r1 stand-in: ehr
+    1m18s  r1 stand-in: cxr
+    2m44s  r1 stand-in: rr
+    3m00s  r1 stand-in: dn
+    0m30s  r2: ehr
+    3m06s  r2: cxr
+    5m50s  r2: rr
+    4m43s  r2: dn
+    2m22s  checks: pytest -m round2
+  total time 24m13s
 ```
 
-`checks PASSED` is what you want. The AUROC values will differ slightly on your
-machine — anything above 0.55 passes.
+That run used the earlier patch-token CXR input, and its CXR check e) failed
+(AUROC 0.417). CXR was then switched back to the released default (CLS, one
+confidence per image) and rerun on its own with
+`python -m tools.pv.smoke_round2 --skip-r1 --readers cxr`. That rerun took
+6 min 29 s and printed:
+
+```
+=== summary (SYNTHETIC -- not a scientific result) ===
+  r2-cxr-002   parent r1-cxr-001   val AUROC 0.5833  AUPRC 0.6429
+    2m57s  r2: cxr
+    3m31s  checks: pytest -m round2
+  total time 6m29s   checks PASSED   manifest: C:\Users\DELL\PneumoVision\runs\manifest.csv
+```
+
+Its checks covered all four readers: **17 passed**. On a full run you get one
+summary row per reader, like these (EHR, RR and DN from the full run, CXR from
+the rerun):
+
+```
+  r2-ehr-001   parent r1-ehr-001   val AUROC 1.0000  AUPRC 1.0000
+  r2-cxr-002   parent r1-cxr-001   val AUROC 0.5833  AUPRC 0.6429
+  r2-rr-001    parent r1-rr-001    val AUROC 0.8462  AUPRC 0.6667
+  r2-dn-001    parent r1-dn-001    val AUROC 1.0000  AUPRC 1.0000
+```
+
+`checks PASSED` is what you want. The AUROC values can differ on your machine —
+anything above 0.55 passes. They rest on 2 pneumonia stays per validation
+split, so they are plumbing checks, not results.
 
 Useful variations:
 
@@ -176,7 +215,9 @@ python -m tools.pv.run r2 --reader cxr --data virtual     # Round 2 for CXR
 python -m tools.pv.run r2 --reader cxr --data virtual --dry-run   # show the command only
 ```
 
-`--dry-run` prints the exact `fusion_main.py` arguments. They come straight
+`--dry-run` prints the exact `fusion_main.py` arguments. CXR uses the released
+default input (the CLS vector, one confidence per image). The per-patch variant
+is the `--cxr_token_confidence` ablation (see `docs/model_track_notes.md`). They come straight
 from `medpatch/scripts/phenotyping/Confidence/Confidence-CXR.sh`; only paths,
 `--resume`, and the recorded smoke overrides differ (virtual data only:
 `batch_size 4`; r2 epochs 20 for EHR/CXR and 5 for RR/DN; r1 epochs 2 and
@@ -214,10 +255,30 @@ python -m pytest -m round2 -s -k "test_a and cxr" # one check, one reader
 | Check                    | What it proves                                                                                                              | Pass looks like                                                                                                                                                                                                                              |
 | ------------------------ | --------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **a) frozen reader**     | Every reader weight in the Round 2 file is bit-identical to the Round 1 parent; only `confidence_predictor` weights changed | A list of trainable parameters that contains only `…_confidence_predictor.confidence_layer.weight/bias` and the unused `…_classifier…`, then `N reader tensors bit-identical to r1 parent r1-cxr-001; changed: [...confidence_predictor...]` |
-| **b) confidence values** | `γ = max(σ(l), 1−σ(l))` is always in [0.5, 1]                                                                               | `min 0.5… mean 0.9… max 0.99… fraction >= 0.75: 0.9…`                                                                                                                                                                                        |
-| **c) round-trip**        | The saved file reloads and gives _identical_ outputs                                                                        | `reload x2 -> identical outputs, shape (4, 577, 25)`                                                                                                                                                                                         |
+| **b) confidence values** | `γ = max(σ(l), 1−σ(l))` is always in [0.5, 1]                                                                               | `min 0.5000  mean 0.8224  max 0.9981  fraction >= 0.75: 0.713` (the EHR line of our run)                                                                                                                                                     |
+| **c) round-trip**        | The saved file reloads and gives _identical_ outputs                                                                        | `reload x2 -> identical outputs, shape (4, 1, 25)` for CXR (one confidence per image), `(4, 512, 25)` for RR/DN, `(4, <hours>, 25)` for EHR                                                                                                  |
 | **d) lineage**           | Every r2 row's parent is an r1 row of the same reader whose file still matches its sha256                                   | `r2-cxr-001 <- r1-cxr-001 (cxr, sha256 ok)` per row                                                                                                                                                                                          |
 | **e) signal sanity**     | The confidence heads pick up the planted pneumonia signal: val AUROC > 0.55                                                 | `SYNTHETIC -- not a scientific result: val pneumonia AUROC 0.8… AUPRC 0.5…`                                                                                                                                                                  |
+
+**How confident the heads are (b), per reader, from our run** — the fraction of
+token-class values with γ ≥ 0.75, the "sure" pile Round 3 uses (θ = 0.75):
+
+| Reader | tokens × classes              | mean γ | fraction γ ≥ 0.75 |
+| ------ | ----------------------------- | ------ | ----------------- |
+| EHR    | 21,175                        | 0.822  | 0.713             |
+| CXR    | 200 (8 images × 1 token × 25) | 0.826  | 0.800             |
+| RR     | 192,000                       | 0.822  | 0.782             |
+| DN     | 192,000                       | 0.825  | 0.781             |
+
+Read these carefully. Most of that confidence is about the 24 random labels
+(the heads learn their base rates: "almost certainly not this condition"), not
+about pneumonia. And a head can be nearly _empty_ on the sure side: an earlier
+EHR run with 5 Round 2 epochs gave γ in [0.50, 0.65] — **0% of tokens ≥ 0.75**
+— so Round 3 would have had nothing in its high-confidence group. EHR and CXR
+now train for 20 epochs on virtual data partly for that reason. If you run
+Round 3 on virtual data, check these fractions first: an empty or near-empty
+sure pile makes the high/low split meaningless. That would be a property of the
+virtual stand-ins, not a MedPatch result.
 
 The trainable list in a) includes `…_classifier…`. That's expected: medpatch
 leaves the Round 1 classifier with `requires_grad=True`, but Round 2 never

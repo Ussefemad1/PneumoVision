@@ -47,6 +47,27 @@ def cxr_features(out):
     return out
 
 
+def cxr_confidence_input(out, args):
+    """What the CXR confidence predictor sees, in every stage (Round 2, 2b, 3).
+
+    Default -- the released code's choice: the second element of the CXR
+    encoder's output, which for CXRTransformer is the CLS vector, so there is
+    one confidence per image. It is returned as a length-1 token sequence
+    [B, 1, D]: every consumer treats confidence as per-token ([B, L, classes] --
+    the trainer's target repeat, Round 2b's temperature slice, Round 3's
+    `B, L, D = feats.shape`), and a bare [B, D] crashed all three.
+    With --cxr_token_confidence: the patch-token sequence [B, 577, D].
+
+    Every call site goes through here so a stage can never be trained on one
+    representation and used on the other (same width, so a mismatch would not
+    crash). See docs/model_track_notes.md, "CXR confidence input".
+    """
+    if getattr(args, 'cxr_token_confidence', False):
+        return cxr_features(out)
+    cls = out[1]
+    return cls.unsqueeze(1) if cls.dim() == 2 else cls
+
+
 def cxr_pool(feats, use_cls_token):
     """Reduce CXR features to one vector per image.
 
@@ -873,12 +894,9 @@ class UnimodalCXRConfidence(nn.Module):
         if img is None:
             return None
 
-        # CXRTransformer returns (tokens [B, 577, D], cls [B, D]). Unpacking
-        # `_, full = ...` took the CLS vector, so the "token-level" confidence
-        # was one score per image. cxr_features() picks the token sequence (and
-        # the pooled vector for the torchvision fallback). See
-        # docs/model_track_notes.md, "c-unimodal_cxr".
-        full_cxr_feats = cxr_features(self.cxr_model(img))
+        # CLS vector by default (released code); patch tokens with
+        # --cxr_token_confidence. Same helper as Round 2b and 3.
+        full_cxr_feats = cxr_confidence_input(self.cxr_model(img), self.args)
         cxr_confidences = self.cxr_confidence_predictor(full_cxr_feats)  # [batch_size, seq_length]
         return {
             'c-unimodal_cxr': cxr_confidences
@@ -1032,8 +1050,9 @@ class TempCUnimodalCXR(nn.Module):
         if img is None:
             raise ValueError("CXR data (img) must be provided for TempCUnimodalCXR!")
 
-        # Full token embeddings from the model
-        _, full_cxr_feats = self.cxr_model(img)
+        # CLS vector by default (released code); patch tokens with
+        # --cxr_token_confidence. Same helper as Round 2 and 3.
+        full_cxr_feats = cxr_confidence_input(self.cxr_model(img), self.args)
 
         # Raw confidence logits
         cxr_confidences = self.cxr_confidence_predictor(full_cxr_feats)
@@ -1484,8 +1503,13 @@ class CMSMAFusion(nn.Module):
             
         if 'CXR' in self.modalities:
             # Get features and predictions
-            cxr_feats, full_cxr_feats = self.cxr_model(img)
-            _, full_cxr_conf_feats = self.cxr_model_fixed(img)
+            # Confidence and the high/low projections read the same features:
+            # the CLS vector by default (released code), patch tokens with
+            # --cxr_token_confidence. Same helper as Round 2 and 2b.
+            cxr_out = self.cxr_model(img)
+            cxr_feats = cxr_out[0]
+            full_cxr_feats = cxr_confidence_input(cxr_out, self.args)
+            full_cxr_conf_feats = cxr_confidence_input(self.cxr_model_fixed(img), self.args)
             cxr_feats = cxr_feats[:, 0, :]  # [B, feat_dim]
             features.append(cxr_feats)
             cxr_pred = self.cxr_classifier(cxr_feats)
@@ -2481,8 +2505,13 @@ class EMSMAFusion(nn.Module):
             
         if 'CXR' in self.modalities:
             # Get features and predictions
-            cxr_feats, full_cxr_feats = self.cxr_model(img)
-            _, full_cxr_conf_feats = self.cxr_model_fixed(img)
+            # Confidence and the high/low projections read the same features:
+            # the CLS vector by default (released code), patch tokens with
+            # --cxr_token_confidence. Same helper as Round 2 and 2b.
+            cxr_out = self.cxr_model(img)
+            cxr_feats = cxr_out[0]
+            full_cxr_feats = cxr_confidence_input(cxr_out, self.args)
+            full_cxr_conf_feats = cxr_confidence_input(self.cxr_model_fixed(img), self.args)
             cxr_feats = cxr_feats[:, 0, :]  # [B, feat_dim]
             features.append(cxr_feats)
             cxr_pred = self.cxr_classifier(cxr_feats)

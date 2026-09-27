@@ -100,6 +100,19 @@ class MSMA_Trainer(Trainer):
             sys.exit(0)
 
     
+    def confidence_logits(self, output):
+        """A c-unimodal output as [batch, tokens, classes], class axis dropped when 1.
+
+        This used to be a bare `.squeeze()`, which also removed the token axis
+        when there is one token -- the CXR confidence input by default is the
+        CLS vector as a length-1 sequence ([B, 1, D] -> [B, 1, 25]), so the
+        target was then repeated over the class axis and the loss failed on
+        shape. Wherever the old squeeze worked (batch and tokens > 1) the result
+        is identical. See docs/model_track_notes.md, "CXR confidence input".
+        """
+        pred = output[self.args.fusion_type]
+        return pred.squeeze(-1) if pred.shape[-1] == 1 else pred
+
     def train_epoch(self):
         print(f'starting train epoch {self.epoch}')
         epoch_loss = 0
@@ -158,7 +171,10 @@ class MSMA_Trainer(Trainer):
                 outPRED_less_combined = torch.cat((outPRED_less_combined, pred_less_combined), 0)
                 outGT = torch.cat((outGT, y), 0)
             else:
-                pred = output[self.args.fusion_type].squeeze()
+                if 'c-unimodal' in self.args.fusion_type:
+                    pred = self.confidence_logits(output)
+                else:
+                    pred = output[self.args.fusion_type].squeeze()
                 if 'c-unimodal' in self.args.fusion_type:
                     if self.args.task == 'phenotyping':
                         y = y.unsqueeze(1).repeat(1, pred.shape[1], 1)
@@ -291,7 +307,9 @@ class MSMA_Trainer(Trainer):
                     outGT = torch.cat((outGT, y), 0)
                 else:
                     pred = output[self.args.fusion_type]
-                    if self.args.fusion_type != 'uni_cxr':
+                    if 'c-unimodal' in self.args.fusion_type:
+                        pred = self.confidence_logits(output)
+                    elif self.args.fusion_type != 'uni_cxr':
                         if len(pred.shape) > 1:
                              pred = pred.squeeze()
                     if 'c-unimodal' in self.args.fusion_type:

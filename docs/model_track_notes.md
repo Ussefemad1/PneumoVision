@@ -47,12 +47,30 @@ checkpoint is the untrained model. Stand-ins use at least 2 epochs.
    `self.full_feats_dim = self.feats_dim` (patch tokens and pooled feature have
    the same width, 384). Additive; no other code reads it.
 
-2. **`c-unimodal_cxr` scored the CLS vector, not the tokens** (`models/fusion.py`,
-   `UnimodalCXRConfidence.forward`). `CXRTransformer` returns
-   `(tokens [B,577,D], cls [B,D])`; `_, full = …` took the CLS vector, giving one
-   "token" per image. Now `cxr_features(...)` (the existing helper) selects the
-   token sequence, which is the paper's per-patch confidence. This path
-   previously crashed (item 1), so no working behaviour changed.
+2. **CXR confidence input: one helper for Round 2, 2b and 3** (`models/fusion.py`,
+   `cxr_confidence_input`; flag `--cxr_token_confidence` in `arguments.py`).
+   The four sites that feed `cxr_confidence_predictor` — `UnimodalCXRConfidence`
+   (Round 2), `TempCUnimodalCXR` (Round 2b), `CMSMAFusion` and `EMSMAFusion`
+   (Round 3) — now all go through one function, so a head can never be trained
+   on one representation and used on another (CLS and patch tokens are both
+   384 wide, so a mismatch would not crash).
+   - **Default (flag off) = the released code's choice**: the second element of
+     the encoder output, i.e. the **CLS vector, one confidence per image**, as
+     the reproduction gate requires.
+   - It is passed as a length-1 sequence `[B, 1, D]`, not a bare `[B, D]`. The
+     released code cannot run with a bare CLS vector anywhere: Round 2's trainer
+     repeats the target over `pred.shape[1]` (giving `[B, 25, 25]` against a
+     `[B, 25]` prediction), Round 2b slices its temperature by `shape[1]`
+     (the class axis), and Round 3 unpacks `B, L, D = feats.shape`. `[B, 1, D]`
+     keeps "one confidence per image" and is the smallest change that runs.
+   - In Round 3 the high/low projections read the same features as the
+     confidence (their token masks are built from it).
+   - `tests/test_cxr_confidence_input.py` hooks the predictor in all four
+     classes and asserts one shape per flag value: `(B, 1, 384)` off,
+     `(B, 577, 384)` on. On the previous commit it fails (Round 2 tokens vs
+     Round 2b/3 CLS).
+   - An earlier commit on this branch had switched Round 2 alone to patch
+     tokens; that is now behind the flag.
 
 3. **Checkpoints saved on GPU could not load on CPU** (`trainers/trainer.py`,
    `load_state`). Added `map_location=self.device`. On the device a file was
@@ -65,6 +83,32 @@ checkpoint is the untrained model. Stand-ins use at least 2 epochs.
    a 7.6-minute CPU smoke run. Virtual r1 stand-ins pass `--bootstrap_iters 20`
    (recorded in the manifest). The point estimates are unaffected; only the CI
    resolution changes.
+
+5. **Round 2 trainer kept the token axis only when there were several tokens**
+   (`trainers/MSMA_trainer.py`, new `confidence_logits`). `train_epoch` and
+   `validate` did `pred.squeeze()` on the `c-unimodal` output, which drops
+   _every_ size-1 axis. With the default CXR input (CLS as one token,
+   `[B, 1, 25]`) that removed the token axis, the target was repeated over the
+   class axis (`[B, 25, 25]`) and the loss failed on shape at the first
+   validation. Now only the trailing class axis is dropped, and only when it is
+   1 (mortality). For every case the old code handled (batch and tokens > 1)
+   the result is identical; it also no longer drops the batch axis when a
+   batch has one sample. Covered by `test_round2_trainer_keeps_the_token_axis`.
+   **Open for Round 2b:** `trainers/Calibration.py:115` has the same bare
+   `.squeeze()`, so Round 2b on CXR will hit the same shape failure with the
+   default input. Not changed here (Round 2b is out of scope for this branch);
+   apply the same `confidence_logits` treatment before running it.
+
+### Planned ablations
+
+- **`--cxr_token_confidence` — per-patch CXR confidence.** Off by default.
+  Switches Round 2, 2b and 3 together from one CLS confidence per image to one
+  confidence per ViT patch (577 tokens), which is what "token-level
+  confidence" suggests for the other readers. Run after the reproduction gate
+  (week 7, AUROC 0.88–0.92) on the released behaviour. Not yet evaluated on
+  real data. On the virtual smoke set the per-patch head scored val AUROC 0.417
+  (8 images, 2 positives): meaningless as a result; recorded only to show the
+  flag path runs end to end.
 
 ### Deviations in how we run the paper's scripts (no code change)
 
@@ -96,6 +140,14 @@ checkpoint is the untrained model. Stand-ins use at least 2 epochs.
 - Check e) (AUROC > 0.55) on the smoke preset rests on ~2 validation positives
   per reader. It proves the plumbing learns on seed 0; it is not a stable
   estimate and other seeds may fall below the floor.
+- **Confidence "sure" pile on virtual data** (check b, γ = max(σ, 1−σ),
+  fraction of token-class values ≥ 0.75, θ): EHR 0.713, CXR 0.800 (one token
+  per image), RR 0.782, DN 0.781 — smoke run of 2026-09-27. Most of it is the
+  heads learning the 24 random labels' base rates, not pneumonia. An earlier
+  EHR run with 5 Round 2 epochs had γ in [0.50, 0.65], i.e. **0% ≥ 0.75**: an
+  empty high-confidence group. Before reading any Round 3 result on virtual
+  data, check these fractions; an empty or near-empty pile makes the high/low
+  split meaningless and is an artefact of the stand-ins.
 - **Normalizer**: virtual runs pass `--normalizer_state` pointing at a
   normalizer fit on the virtual train split, so no MIMIC-derived statistics are
   involved. Real runs keep medpatch's default.
