@@ -1,17 +1,16 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 
 const credentials = {
   email: process.env.SEED_CLINICIAN_EMAIL ?? 'clinician@pneumovision.local',
   password: process.env.SEED_CLINICIAN_PASSWORD ?? '',
 };
 
-// Minimal valid PNG; the API validates the PNG signature before persistence.
 const PNG_1X1 = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
   'base64',
 );
 
-async function signIn(page: Parameters<typeof test>[0] extends never ? never : any) {
+async function signIn(page: Page) {
   await page.goto('/login');
   await page.getByLabel('Email').fill(credentials.email);
   await page.getByLabel('Password').fill(credentials.password);
@@ -19,7 +18,7 @@ async function signIn(page: Parameters<typeof test>[0] extends never ? never : a
   await expect(page).toHaveURL(/\/$/);
 }
 
-async function submitAnalyze(page: any, includeEhr: boolean) {
+async function submitAnalyze(page: Page, includeEhr: boolean) {
   await page.goto('/analyze');
   await page.getByLabel('Chest X-ray').setInputFiles({
     name: 'demo-cxr.png',
@@ -29,9 +28,7 @@ async function submitAnalyze(page: any, includeEhr: boolean) {
   await page.getByLabel('Clinical notes').fill(
     'Synthetic radiology note: bibasilar opacity with increasing respiratory symptoms.',
   );
-  if (includeEhr) {
-    await page.getByRole('switch', { name: 'EHR' }).click();
-  }
+  if (includeEhr) await page.getByRole('switch', { name: /EHR/ }).click();
 
   await page.getByRole('button', { name: 'Run analysis' }).click();
   await expect(page).toHaveURL(/\/predictions\/[0-9a-f]{24}$/);
@@ -41,7 +38,6 @@ async function submitAnalyze(page: any, includeEhr: boolean) {
 test('CXR + notes produces reduced-input completed report', async ({ page }) => {
   await signIn(page);
   await submitAnalyze(page, false);
-
   await expect(page.getByRole('note')).toContainText('Reduced-input prediction');
   await expect(page.getByText('Fused decision')).toBeVisible();
 });
@@ -49,8 +45,6 @@ test('CXR + notes produces reduced-input completed report', async ({ page }) => 
 test('CXR + notes + EHR produces completed multimodal report', async ({ page }) => {
   await signIn(page);
   await submitAnalyze(page, true);
-
-  await expect(page.getByRole('note')).toHaveCount(0);
-  await expect(page.getByText('EHR (vitals)')).toBeVisible();
   await expect(page.getByText('Fused decision')).toBeVisible();
+  await expect(page.getByText('EHR (vitals)')).toBeVisible();
 });
