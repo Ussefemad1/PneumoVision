@@ -1,10 +1,9 @@
-import type { Prediction } from '@pneumovision/shared';
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { api, apiErrorMessage } from '../lib/api.js';
 import { getSocket } from '../lib/socket.js';
-import { Button, Card, ErrorState } from '../components/ui.jsx';
+import { Button, Card } from '../components/ui.jsx';
 
 type Task = 'mortality' | 'pneumonia';
 
@@ -50,16 +49,13 @@ export function AnalyzePage() {
     const form = new FormData();
     form.append('task', task);
     if (cxr) form.append('cxr', cxr);
-    if (notes.trim()) {
-      form.append('notesJson', JSON.stringify([{ type: 'radiology', text: notes.trim() }]));
-    }
+    if (notes.trim()) form.append('notesJson', JSON.stringify([{ type: 'radiology', text: notes.trim() }]));
     if (includeEhr) form.append('ehrJson', JSON.stringify(SAMPLE_EHR));
 
     try {
       const response = await api.post<{ data: { predictionId: string; stayId: string; status: string } }>(
         '/analyze',
         form,
-        { headers: { 'Content-Type': 'multipart/form-data' } },
       );
       const { predictionId } = response.data.data;
       setStatus('Prediction complete — opening report…');
@@ -85,13 +81,8 @@ export function AnalyzePage() {
       <Card title="1 · Prediction task" subtitle="Choose the report you want the fusion model to produce">
         <div className="grid gap-3 sm:grid-cols-2">
           {(['pneumonia', 'mortality'] as Task[]).map((value) => (
-            <button
-              key={value}
-              type="button"
-              onClick={() => setTask(value)}
-              aria-pressed={task === value}
-              className={`rounded-lg border p-4 text-left transition ${task === value ? 'border-[var(--series-mortality)] bg-surface-3' : 'border-hairline hover:bg-surface-2'}`}
-            >
+            <button key={value} type="button" onClick={() => setTask(value)} aria-pressed={task === value}
+              className={`rounded-lg border p-4 text-left transition ${task === value ? 'border-[var(--series-mortality)] bg-surface-3' : 'border-hairline hover:bg-surface-2'}`}>
               <div className="text-sm font-medium capitalize text-ink">{value}</div>
               <div className="mt-1 text-xs text-ink-muted">
                 {value === 'pneumonia' ? 'EHR + CXR + radiology/discharge notes' : 'EHR + CXR + radiology/progress/nursing notes'}
@@ -106,48 +97,30 @@ export function AnalyzePage() {
           <label className="rounded-lg border border-hairline p-4">
             <span className="block text-sm font-medium text-ink">Chest X-ray</span>
             <span className="mt-1 block text-xs text-ink-muted">PNG or JPEG</span>
-            <input
-              aria-label="Chest X-ray"
-              type="file"
-              accept="image/png,image/jpeg"
-              className="mt-3 w-full text-xs"
-              onChange={(event) => setCxr(event.target.files?.[0] ?? null)}
-            />
+            <input aria-label="Chest X-ray" type="file" accept="image/png,image/jpeg" className="mt-3 w-full text-xs"
+              onChange={(event) => setCxr(event.target.files?.[0] ?? null)} />
             {cxr && <span className="mt-2 block truncate text-xs text-ink-secondary">{cxr.name}</span>}
           </label>
 
           <label className="rounded-lg border border-hairline p-4">
             <span className="block text-sm font-medium text-ink">Clinical notes</span>
             <span className="mt-1 block text-xs text-ink-muted">Radiology note for the demo</span>
-            <textarea
-              aria-label="Clinical notes"
-              value={notes}
-              onChange={(event) => setNotes(event.target.value)}
-              rows={7}
-              className="mt-3 w-full rounded-md border border-hairline bg-surface-2 p-2 text-sm text-ink"
-              placeholder="Paste a clinical note…"
-            />
+            <textarea aria-label="Clinical notes" value={notes} onChange={(event) => setNotes(event.target.value)} rows={7}
+              className="mt-3 w-full rounded-md border border-hairline bg-surface-2 p-2 text-sm text-ink" placeholder="Paste a clinical note…" />
           </label>
 
           <div className="rounded-lg border border-hairline p-4">
             <div className="text-sm font-medium text-ink">EHR</div>
             <div className="mt-1 text-xs text-ink-muted">Synthetic hourly vitals for the demo</div>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={includeEhr}
-              onClick={() => setIncludeEhr((value) => !value)}
-              className={`mt-4 rounded-md px-3 py-2 text-xs ${includeEhr ? 'bg-[var(--series-mortality)] text-white' : 'bg-surface-3 text-ink-secondary'}`}
-            >
+            <button type="button" role="switch" aria-checked={includeEhr} onClick={() => setIncludeEhr((value) => !value)}
+              className={`mt-4 rounded-md px-3 py-2 text-xs ${includeEhr ? 'bg-[var(--series-mortality)] text-white' : 'bg-surface-3 text-ink-secondary'}`}>
               {includeEhr ? 'EHR included' : 'EHR omitted'}
             </button>
           </div>
         </div>
 
         <div className="mt-5 flex flex-wrap items-center gap-3 border-t border-hairline pt-4">
-          <Button variant="primary" disabled={submitting} onClick={() => void submit()}>
-            {submitting ? 'Analyzing…' : 'Run analysis'}
-          </Button>
+          <Button variant="primary" disabled={submitting} onClick={() => void submit()}>{submitting ? 'Analyzing…' : 'Run analysis'}</Button>
           <span role="status" className="text-xs text-ink-muted">{status}</span>
           {error && <span role="alert" className="text-xs text-status-critical">{error}</span>}
         </div>
