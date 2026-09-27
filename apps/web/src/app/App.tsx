@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { Navigate, Outlet, Route, BrowserRouter, Routes } from 'react-router-dom';
 
 import { AlertsPage } from '../pages/Alerts.jsx';
+import { AnalyzePage } from '../pages/Analyze.jsx';
 import { DashboardPage } from '../pages/Dashboard.jsx';
 import { LoginPage } from '../pages/Login.jsx';
 import { PredictionReportPage } from '../pages/PredictionReport.jsx';
@@ -31,10 +32,11 @@ export function App() {
             <Route element={<RequireAuth />}>
               <Route element={<Layout />}>
                 <Route index element={<DashboardPage />} />
-                <Route path="stays/:stayId" element={<StayPage />} />
-                <Route path="predictions/:predictionId" element={<PredictionReportPage />} />
-                <Route path="alerts" element={<AlertsPage />} />
-                <Route path="replay" element={<ReplayPage />} />
+                <Route path="/analyze" element={<AnalyzePage />} />
+                <Route path="/stays/:stayId" element={<StayPage />} />
+                <Route path="/predictions/:predictionId" element={<PredictionReportPage />} />
+                <Route path="/alerts" element={<AlertsPage />} />
+                <Route path="/replay" element={<ReplayPage />} />
               </Route>
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
@@ -45,7 +47,6 @@ export function App() {
   );
 }
 
-/** Auth guard: unauthenticated users never reach a patient route. */
 function RequireAuth() {
   const { user, isLoading } = useAuth();
 
