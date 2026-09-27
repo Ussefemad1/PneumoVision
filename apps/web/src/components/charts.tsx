@@ -67,10 +67,12 @@ export function RiskTrajectoryChart({
     const byTime = new Map<number, { t: number; mortality?: number; pneumonia?: number }>();
     for (const p of mortality) {
       const t = new Date(p.cutoffTime).getTime();
+      if (!Number.isFinite(t)) continue;
       byTime.set(t, { ...(byTime.get(t) ?? { t }), t, mortality: p.probability });
     }
     for (const p of pneumonia ?? []) {
       const t = new Date(p.cutoffTime).getTime();
+      if (!Number.isFinite(t)) continue;
       byTime.set(t, { ...(byTime.get(t) ?? { t }), t, pneumonia: p.probability });
     }
     return [...byTime.values()].sort((a, b) => a.t - b.t);
@@ -125,10 +127,13 @@ export function RiskTrajectoryChart({
           {threshold !== undefined && (
             <ReferenceLine y={threshold} stroke="var(--axis)" strokeDasharray="4 3" />
           )}
-          {events.map((event, i) => (
+          {events.map((event, i) => {
+            const eventTime = new Date(event.at).getTime();
+            if (!Number.isFinite(eventTime)) return null;
+            return (
             <ReferenceLine
               key={`${event.at}-${i}`}
-              x={new Date(event.at).getTime()}
+              x={eventTime}
               stroke="var(--grid)"
               strokeWidth={1}
               label={{
@@ -138,14 +143,19 @@ export function RiskTrajectoryChart({
                 fill: 'var(--text-muted)',
               }}
             />
-          ))}
+            );
+          })}
           <Tooltip
             content={({ active, payload, label }) => {
               if (!active || !payload?.length) return null;
+              const timestamp = Number(label);
+              if (!Number.isFinite(timestamp)) return null;
+              const date = new Date(timestamp);
+              if (!Number.isFinite(date.getTime())) return null;
               return (
                 <TooltipShell>
                   <div className="mb-1 font-medium text-ink">
-                    {shortDateTime(new Date(Number(label)).toISOString())}
+                    {shortDateTime(date.toISOString())}
                   </div>
                   {payload.map((entry) => (
                     <div key={entry.name} className="flex items-center gap-2">
