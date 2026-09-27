@@ -38,7 +38,7 @@ interface MultipartBody { fields: Record<string, string>; files: MultipartFile[]
 
 async function parseMultipart(req: Request): Promise<MultipartBody> {
   const contentType = req.headers['content-type'] ?? '';
-  const match = /^multipart\/form-data;\\s*boundary=(?:"([^"]+)"|([^;]+))/i.exec(contentType);
+  const match = /^multipart\/form-data;\s*boundary=(?:"([^"]+)|([^;]+))/i.exec(contentType);
   if (!match) throw ApiError.badRequest('INVALID_CONTENT_TYPE', 'Use multipart/form-data');
   const boundary = Buffer.from(`--${match[1] ?? match[2]}`);
   const chunks: Buffer[] = [];
@@ -58,18 +58,18 @@ async function parseMultipart(req: Request): Promise<MultipartBody> {
     if (start < 0) break;
     const headerStart = start + boundary.length;
     if (body.subarray(headerStart, headerStart + 2).equals(Buffer.from('--'))) break;
-    const contentStart = body.indexOf(Buffer.from('\\r\\n\\r\\n'), headerStart);
+    const contentStart = body.indexOf(Buffer.from('\r\n\r\n'), headerStart);
     if (contentStart < 0) break;
     const headers = body.subarray(headerStart + 2, contentStart).toString('utf8');
     const next = body.indexOf(boundary, contentStart + 4);
     if (next < 0) break;
     const contentEnd = next - 2;
     const content = body.subarray(contentStart + 4, contentEnd);
-    const disposition = /content-disposition:\\s*form-data;\\s*name="([^"]+)"(?:;\\s*filename="([^"]*)")?/i.exec(headers);
+    const disposition = /content-disposition:\s*form-data;\s*name="([^"]+)"(?:;\s*filename="([^"]*)")?/i.exec(headers);
     if (!disposition) { cursor = next; continue; }
     const fieldName = disposition[1]!;
     const fileName = disposition[2];
-    const typeMatch = /content-type:\\s*([^\\r\\n]+)/i.exec(headers);
+    const typeMatch = /content-type:\s*([^\r\n]+)/i.exec(headers);
     if (fileName !== undefined) files.push({ fieldName, fileName, contentType: typeMatch?.[1]?.trim() ?? 'application/octet-stream', buffer: Buffer.from(content) });
     else fields[fieldName] = content.toString('utf8');
     cursor = next;
@@ -101,7 +101,7 @@ function normalizeVitalsValues(values: Record<string, unknown>) {
     if (value === undefined || value === null || value === '') { out[variable] = null; continue; }
     if (EHR_CATEGORICAL_VARIABLES.includes(variable)) {
       const allowed = EHR_CATEGORICAL_VALUES[variable] ?? [];
-      if (typeof value !== 'string' || !allowed.includes(value as never)) throw ApiError.badRequest('INVALID_EHR', 'Invalid value for ' + variable);
+      if (typeof value !== 'string' || !allowed.includes(value)) throw ApiError.badRequest('INVALID_EHR', 'Invalid value for ' + variable);
       out[variable] = value;
     } else {
       const number = typeof value === 'number' ? value : Number(value);
@@ -145,13 +145,15 @@ export function analyzeRoutes(env: Env, service: PredictionService): Router {
     let stay = bodyResult.data.stayId ? await StayModel.findById(bodyResult.data.stayId) : null;
     if (!stay) stay = await ensureAdhocStay(requestedBy);
     const cutoff = new Date();
+    // Ensure availability exists (always initialized by schema, but TypeScript needs explicit guard)
+    if (!stay.availability) stay.availability = { ehr: false, cxr: false, notes: false };
 
     if (ehrFromField?.rows) {
-      const docs = ehrFromField.rows.map((row) => ({ ts: new Date(row.ts), meta: { stayId: stay!._id, source: 'analyze' }, values: normalizeVitalsValues(row.values) }));
+      const docs = ehrFromField.rows.map((row) => ({ ts: new Date(row.ts), meta: { stayId: stay._id, source: 'analyze' }, values: normalizeVitalsValues(row.values) }));
       if (docs.length) { await VitalsModel.insertMany(docs, { ordered: true }); stay.availability.ehr = true; }
     }
     if (ehrFile) {
-      const lines = ehrFile.buffer.toString('utf8').split(/\\r?\\n/).filter(Boolean);
+      const lines = ehrFile.buffer.toString('utf8').split(/\r?\n/).filter(Boolean);
       if (lines.length > 49) throw ApiError.badRequest('INVALID_EHR', 'EHR CSV may contain at most 48 data rows');
       const header = lines[0]?.split(',').map((v) => v.trim()) ?? [];
       const timestampColumn = header.findIndex((v) => v === 'ts' || v === 'timestamp');
@@ -162,7 +164,7 @@ export function analyzeRoutes(env: Env, service: PredictionService): Router {
         if (Number.isNaN(ts.getTime())) throw ApiError.badRequest('INVALID_EHR', 'CSV contains an invalid timestamp');
         const values: Record<string, unknown> = {};
         for (let i = 0; i < header.length; i++) if (i !== timestampColumn) values[header[i]!] = cells[i] ?? null;
-        return { ts, meta: { stayId: stay!._id, source: 'analyze' }, values: normalizeVitalsValues(values) };
+        return { ts, meta: { stayId: stay._id, source: 'analyze' }, values: normalizeVitalsValues(values) };
       });
       if (docs.length) { await VitalsModel.insertMany(docs, { ordered: true }); stay.availability.ehr = true; }
     }
