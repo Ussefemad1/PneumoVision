@@ -358,7 +358,19 @@ class Trainer():
         if self.args.fusion_type == 'c-msma' or self.args.fusion_type == 'c-e-msma':
             checkpoint_data['weights'] = self.weights.detach().cpu()
 
-        torch.save(checkpoint_data, path)
+        # Write to a temp file and rename, rather than straight to `path`.
+        # Training is handed between Colab accounts, and a session can be cut
+        # off with no warning -- including mid-write. A 285 MB save to a Drive
+        # mount takes seconds, so a direct write leaves a truncated file at the
+        # real checkpoint name, which resume then tries to load first.
+        #
+        # os.replace is atomic on a normal filesystem. On Google Drive's FUSE
+        # layer that guarantee is weaker, so this reduces the window rather
+        # than closing it -- resume_from_checkpoint() also falls back to the
+        # 'best' checkpoint if the file it picks turns out to be unreadable.
+        tmp_path = f"{path}.tmp"
+        torch.save(checkpoint_data, tmp_path)
+        os.replace(tmp_path, path)
         print(f"saving {prefix} checkpoint at epoch {self.epoch} -> {path}")
 
     def resume_from_checkpoint(self):
@@ -373,14 +385,39 @@ class Trainer():
         Returns True if training state was restored.
         """
         candidates = [self.checkpoint_path('last'), self.checkpoint_path('best')]
-        path = next((p for p in candidates if os.path.isfile(p)), None)
+        existing = [p for p in candidates if os.path.isfile(p)]
 
-        if path is None:
+        if not existing:
             print(f"[resume] no checkpoint found in "
                   f"{os.path.dirname(candidates[0])} -- starting fresh from epoch 0")
             return False
 
-        checkpoint = torch.load(path, map_location=self.device)
+        # Try each in turn. A checkpoint truncated by a session dying mid-write
+        # raises here rather than loading silently wrong, so falling through to
+        # the next candidate turns "the next person is stuck" into "the next
+        # person continues from the last good state, loudly warned".
+        checkpoint, path = None, None
+        for candidate in existing:
+            try:
+                checkpoint = torch.load(candidate, map_location=self.device)
+                path = candidate
+                break
+            except Exception as error:
+                print(f"[resume] WARNING: could not read {candidate}")
+                print(f"[resume]          {type(error).__name__}: {error}")
+                print(f"[resume]          Most likely truncated by a session that "
+                      f"died mid-save. Trying the next checkpoint.")
+
+        if checkpoint is None:
+            print("[resume] ERROR: every checkpoint present is unreadable. "
+                  "Not starting fresh, because that would silently discard the "
+                  "run -- delete or repair them and re-run deliberately.")
+            raise RuntimeError(
+                f"all checkpoints unreadable: {existing}")
+
+        if path != candidates[0] and os.path.isfile(candidates[0]):
+            print(f"[resume] NOTE: fell back to {os.path.basename(path)}. "
+                  "Progress since the last *improving* epoch is lost.")
 
         own_state = self.model.state_dict()
         for name, param in checkpoint['state_dict'].items():
