@@ -9,6 +9,33 @@ Newest first.
 
 ---
 
+## 2026-09-28 — transformers 4.44.2 → 4.45.2 (Colab on Python 3.13)
+
+**Why:** Colab's runtime moved to Python 3.13. `transformers==4.44.2` requires
+`tokenizers<0.20`, and tokenizers 0.19.x publishes no cp313 wheel (the newest is
+cp312). pip therefore falls back to building tokenizers from source, which fails
+on a fresh Colab runtime even with Rust installed. So `requirements-colab.txt`
+no longer installed. `transformers==4.45.2` requires `tokenizers>=0.20,<0.21`,
+which has cp313 wheels; it is the smallest bump that installs.
+
+**What changed:** `transformers` pinned to 4.45.2 in both `requirements.txt` and
+`requirements-colab.txt`, so local and Colab stay matched. No code change. The
+local environment resolves `tokenizers` 0.20.3.
+
+**Verified (locally, non-training only):** the tooling imports and
+`pytest -m "not round2 and not round2b"` (100 passed). `test_environment.py`
+imports `models.text_models`, which imports medpatch's
+`BertModel`/`BertTokenizerFast`, so those imports load on 4.45.2.
+
+**Not verified:** Bio_ClinicalBERT outputs on 4.45.2 vs 4.44.2. No text model
+was run (training and inference happen on Colab). A minor-version bump should
+not change `BertModel` numerics, but the first Colab run of RR/DN should be
+compared against earlier virtual results if exact reproducibility matters.
+Also not verified: that requirements-colab.txt now installs on a fresh Colab
+runtime (the cp313 wheel availability was checked by the user on PyPI).
+
+---
+
 ## 2026-09-28 — Round 2b (calibration) on virtual data, code only
 
 **Status: written and checked without training.** Imports and the non-training

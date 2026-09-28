@@ -19,7 +19,13 @@
 # Local development still uses requirements.txt, which stays fully pinned.
 
 # Pinned: these define model behaviour and must match the local environment.
-transformers==4.44.2
+#
+# transformers 4.45.2, not 4.44.2 (2026-09-28): Colab now runs Python 3.13.
+# 4.44.2 requires tokenizers<0.20, and tokenizers 0.19.x ships no cp313 wheel
+# (newest is cp312), so pip falls back to a Rust source build that fails even
+# with Rust installed. 4.45.2 requires tokenizers>=0.20,<0.21, which has cp313
+# wheels -- the smallest bump that installs. requirements.txt is bumped to match.
+transformers==4.45.2
 timm==1.0.9
 
 # Pinned: small, no heavy dependencies, unlikely to fight Colab's stack.
