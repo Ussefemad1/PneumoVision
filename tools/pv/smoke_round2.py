@@ -2,6 +2,7 @@
 
     python -m tools.pv.smoke_round2              # generate -> r1 x4 -> r2 x4 -> checks
     python -m tools.pv.smoke_round2 --skip-r1    # reuse existing r1 stand-ins
+    python tools/pv/smoke_round2.py              # same, run as a file path
 
 Steps:
   1. generate the smoke virtual dataset (data/virtual/smoke), unless present;
@@ -18,10 +19,16 @@ import argparse
 import subprocess
 import sys
 import time
+from pathlib import Path
 
-from . import manifest, run
-from .medpatch_bridge import REPO_ROOT
-from .paper_scripts import READERS
+# Run as a file (`python tools/pv/smoke_round2.py`), Python puts tools/pv/ on
+# sys.path instead of the repo root, so `tools` is not importable. Add the root.
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from tools.pv import manifest, run  # noqa: E402
+from tools.pv.medpatch_bridge import REPO_ROOT  # noqa: E402
+from tools.pv.paper_scripts import READERS  # noqa: E402
 
 
 def _fmt(seconds: float) -> str:

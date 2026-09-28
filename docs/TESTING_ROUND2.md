@@ -143,10 +143,13 @@ Pass looks like `..........  [100%]` (10 dots, no `F`).
 ## 3. The one-command smoke test
 
 ```powershell
-python -m tools.pv.smoke_round2
+python -m tools.pv.smoke_round2        # preferred
+python tools/pv/smoke_round2.py        # also works (same for run.py, import_checkpoint.py)
 ```
 
 On Colab: `!python -m tools.pv.smoke_round2`
+
+Run either from the repo root.
 
 It generates the smoke data (if missing), trains the 4 Round 1 stand-ins, runs
 Round 2 for all 4 readers, then runs the checks. Expect roughly **25 minutes**
@@ -251,6 +254,16 @@ python -m pytest -m round2 -s -k "test_a and cxr" # one check, one reader
 ```
 
 (Plain `python -m pytest` skips these on purpose — they need saved runs.)
+Bare `pytest …` works too.
+
+> **Import-path gotcha (hit once, don't regress):** `tools` must be importable
+> from the repo root. `pytest.ini` sets `pythonpath = .` because the bare
+> `pytest` command, unlike `python -m pytest`, does not put the working directory
+> on `sys.path`. Without it, every round2 test failed to collect with
+> `ModuleNotFoundError: No module named 'tools'`. Likewise, the `tools/pv/*.py`
+> entry points add the repo root themselves when run as files, because
+> `python tools/pv/x.py` puts `tools/pv/` on the path instead, which gave
+> `attempted relative import with no known parent package`. Keep both.
 
 | Check                    | What it proves                                                                                                              | Pass looks like                                                                                                                                                                                                                              |
 | ------------------------ | --------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -351,7 +364,8 @@ where those weights live.
 | `sha256 mismatch`                                                                   | the parent file changed after it was registered (re-saved, re-downloaded, overwritten)  | re-register it with `import_checkpoint` (it gets a new id) and pass `--parent <new id>`                                                                       |
 | `Mixing virtual and real lineage is refused`                                        | r2 `--data real` with a virtual parent, or the reverse                                  | register the right kind of parent                                                                                                                             |
 | `FileNotFoundError` / `does not exist` for a data dir                               | wrong path or not in the repo folder                                                    | run from the repo root; on Colab `%cd /content/PneumoVision`                                                                                                  |
-| `ModuleNotFoundError: No module named 'tools'`                                      | run from the wrong folder                                                               | same as above: commands must run from the repo root                                                                                                           |
+| `ModuleNotFoundError: No module named 'tools'`                                      | run from the wrong folder, or `pytest.ini` lost its `pythonpath = .` line               | run from the repo root; check `pytest.ini` still has `pythonpath = .` (see the gotcha in section 4)                                                           |
+| `ImportError: attempted relative import with no known parent package`               | a `tools/pv` script run as a file lost its sys.path bootstrap                           | use `python -m tools.pv.<name>`; restore the `if __package__ in (None, "")` block at the top of the script                                                    |
 | `Activate.ps1 cannot be loaded`                                                     | PowerShell execution policy                                                             | `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`                                                                                                         |
 | A run dies half-way                                                                 | Colab disconnect / sleep                                                                | rerun with `--run-id <id>`; it resumes from the last epoch                                                                                                    |
 | Check a) says `nothing changed -- the best checkpoint is the untrained start`       | val loss never improved after epoch 0 (medpatch validates _before_ training each epoch) | train more epochs: `python -m tools.pv.run r2 --reader X --data virtual --epochs 10`                                                                          |

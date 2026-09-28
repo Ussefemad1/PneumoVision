@@ -17,12 +17,18 @@ the reader's encoder and classifier weights, and no Round 2 confidence head.
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 import torch
 
-from . import manifest
-from .paper_scripts import READERS
+# Run as a file (`python tools/pv/import_checkpoint.py`), the repo root is not
+# on sys.path.
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from tools.pv import manifest  # noqa: E402
+from tools.pv.paper_scripts import READERS  # noqa: E402
 
 #: state_dict key prefixes a Round 1 checkpoint of each reader must contain.
 REQUIRED_PREFIXES = {

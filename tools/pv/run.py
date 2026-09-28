@@ -27,10 +27,25 @@ import sys
 import time
 from pathlib import Path
 
-from . import manifest
-from .evaluate import checkpoint_path, score_checkpoint
-from .medpatch_bridge import MEDPATCH, REPO_ROOT, fusion_main_argv, parse_args
-from .paper_scripts import LOAD_FLAG, READERS, SCRIPT_FOR, build_argv, script_settings
+# Run as a file (`python tools/pv/run.py`), the repo root is not on sys.path.
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from tools.pv import manifest  # noqa: E402
+from tools.pv.evaluate import checkpoint_path, score_checkpoint  # noqa: E402
+from tools.pv.medpatch_bridge import (  # noqa: E402
+    MEDPATCH,
+    REPO_ROOT,
+    fusion_main_argv,
+    parse_args,
+)
+from tools.pv.paper_scripts import (  # noqa: E402
+    LOAD_FLAG,
+    READERS,
+    SCRIPT_FOR,
+    build_argv,
+    script_settings,
+)
 
 #: Settings a virtual smoke run may change, and to what. Everything else is the paper's.
 VIRTUAL_DEFAULTS = {
