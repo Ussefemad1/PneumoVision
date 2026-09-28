@@ -330,6 +330,22 @@ class Trainer():
         eta = f"{d.day-1} Days {d.hour}:{d.minute}:{d.second}"
 
         return eta
+    def confidence_logits(self, output):
+        """A c-unimodal output as [batch, tokens, classes], class axis dropped when 1.
+
+        This used to be a bare `.squeeze()`, which also removed the token axis
+        when there is one token -- the CXR confidence input by default is the
+        CLS vector as a length-1 sequence ([B, 1, D] -> [B, 1, 25]), so the
+        target was then repeated over the class axis and the loss failed on
+        shape. Wherever the old squeeze worked (batch and tokens > 1) the result
+        is identical. See docs/model_track_notes.md, "CXR confidence input".
+
+        Lives on the base Trainer so MSMA_Trainer (Round 2) and calibration
+        (Round 2b) share it without importing each other.
+        """
+        pred = output[self.args.fusion_type]
+        return pred.squeeze(-1) if pred.shape[-1] == 1 else pred
+
     def get_gt(self, y_ehr, y_cxr):
         if 'radiology' in self.args.labels_set :
             return y_cxr

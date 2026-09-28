@@ -80,9 +80,12 @@ class calibration(Trainer):
         curr_len = tensor.size(1)
         num_classes = tensor.size(2)
     
-        # If already the desired size, just return
-        if curr_len == max_len:
-            return tensor
+        # If already the desired size, just return. Longer sequences are cut to
+        # max_len: `padded[:, :curr_len]` below cannot hold them, so any EHR
+        # batch longer than 48 hours used to crash here. See
+        # docs/model_track_notes.md, "Round 2b trainer".
+        if curr_len >= max_len:
+            return tensor[:, :max_len, :]
     
         # Otherwise, create a new zero tensor, then copy
         padded = torch.zeros(
@@ -112,7 +115,10 @@ class calibration(Trainer):
             img = img.to(self.device)
 
             output = self.model(x, seq_lengths, img, pairs, rr, dn)
-            pred = output[self.args.fusion_type].squeeze()
+            # Not a bare .squeeze(): that also dropped the single token of the
+            # default CXR input ([B, 1, 25] -> [B, 25]), so the repeat below
+            # built a [B, 25, 25] target. Same fix as Round 2 (Trainer base).
+            pred = self.confidence_logits(output)
             probs = torch.sigmoid(pred)
             
             if 'c-unimodal' in self.args.fusion_type:
@@ -125,6 +131,12 @@ class calibration(Trainer):
     
             loss = self.loss(pred, y)
             epoch_loss += loss.item()
+
+            # The ECE tensors must match in length across batches. EHR batches
+            # differ in length, and only probs was padded, so torch.cat(outGT)
+            # failed. Pad the labels the same way as the probs.
+            if 'c-unimodal_ehr' in self.args.fusion_type and self.args.task == 'phenotyping':
+                y = self.pad_to_length(y, max_len=48)
             
             # if 'c-unimodal_ehr' in self.args.fusion_type:
             #     batch_size, curr_len, num_classes = y.shape
@@ -157,6 +169,20 @@ class calibration(Trainer):
 
         return
     
+    def flat_ece(self, probs, labels, n_bins=10):
+        """compute_ece over every (sample, token) pair, per class.
+
+        compute_ece expects [N, num_classes]. train() passed the 3-D
+        [N, tokens, classes] output, so `probs[:, c]` picked *token* c: the
+        "per-class" ECE was really per token index 0..24, and with CXR's single
+        default token it raised IndexError. Flattening the token axis gives the
+        per-class ECE the docstring describes. See docs/model_track_notes.md,
+        "Round 2b trainer".
+        """
+        num_classes = self.args.num_classes
+        return self.compute_ece(probs.reshape(-1, num_classes),
+                                labels.reshape(-1, num_classes), n_bins=n_bins)
+
     def compute_ece(self, probs, labels, n_bins=10):
         """
         Compute Expected Calibration Error (ECE) for each class independently, 
@@ -294,8 +320,10 @@ class calibration(Trainer):
         print(f'Running training for fusion_type {self.args.fusion_type}')
         # Compute ECE before training (inference mode)
         probs, labels = self.train_epoch(inference=True)
-        pre_ece = self.compute_ece(probs, labels)
-        self.plot_calibration_curve(probs, labels, 10, 'calibration_curve')
+        pre_ece = self.flat_ece(probs, labels)
+        self.plot_calibration_curve(probs.reshape(-1, self.args.num_classes),
+                                    labels.reshape(-1, self.args.num_classes),
+                                    10, 'calibration_curve')
         
         print('Before Training')
         for index, class_ece in enumerate(pre_ece):
@@ -357,7 +385,7 @@ class calibration(Trainer):
             probs, labels = self.train_epoch()
     
             # Compute ECE after training
-            post_ece = self.compute_ece(probs, labels)
+            post_ece = self.flat_ece(probs, labels)
             print('After Training')
     
             # Log ECE values to Weights & Biases

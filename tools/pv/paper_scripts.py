@@ -22,6 +22,9 @@ READERS = ("ehr", "cxr", "rr", "dn")
 SCRIPT_FOR = {
     "r1": lambda reader: SCRIPTS / "Unimodal" / f"{reader.upper()}.sh",
     "r2": lambda reader: SCRIPTS / "Confidence" / f"Confidence-{reader.upper()}.sh",
+    # Round 2b: temperature calibration. fusion_main.py routes temp_c-unimodal_*
+    # to trainers/Calibration.py. Calibrate-DN.sh already uses --load_dn.
+    "r2b": lambda reader: SCRIPTS / "Calibrate" / f"Calibrate-{reader.upper()}.sh",
 }
 
 #: The flag Round 2 must use to load its Round 1 parent. Confidence-DN.sh passes

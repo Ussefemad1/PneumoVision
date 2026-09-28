@@ -9,6 +9,9 @@ worked. It assumes no prior experience with this repo.
 > numbers only prove the plumbing works. Never quote them as model performance,
 > and never report accuracy — we use AUROC and AUPRC.
 
+**Next step:** Round 2b (temperature calibration) builds on the Round 2
+checkpoints made here. See [TESTING_ROUND2B.md](TESTING_ROUND2B.md).
+
 ## What Round 2 is, in one paragraph
 
 MedPatch has four _readers_: EHR (an LSTM over hourly vitals), CXR (a

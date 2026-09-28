@@ -38,7 +38,10 @@ COLUMNS = [
     "val_auprc",
     "notes",
 ]
-STAGES = ("r1", "r2")
+STAGES = ("r1", "r2", "r2b")
+#: The stage a run of each stage must load: r2 trains on a frozen r1 reader;
+#: r2b (calibration) loads the r2 reader + confidence head and adds temperatures.
+PARENT_STAGE = {"r2": "r1", "r2b": "r2"}
 DATA_KINDS = ("virtual", "real")
 
 
@@ -113,16 +116,32 @@ def latest(
     return rows[-1] if rows else None
 
 
-def verify_parent(parent: dict[str, str] | None, reader: str, data: str) -> Path:
-    """The r1 parent's file, or a ManifestError explaining why it is unusable."""
-    if parent is None:
-        raise ManifestError(
-            f"No r1 row for reader '{reader}' ({data} data) in {manifest_path()}. "
+def _missing_parent_hint(expected_stage: str, reader: str, data: str) -> str:
+    if expected_stage == "r1":
+        return (
             f"Run `python -m tools.pv.run r1 --reader {reader} --data {data}` or register "
             f"a teammate file with `python -m tools.pv.import_checkpoint`."
         )
-    if parent["stage"] != "r1":
-        raise ManifestError(f"Parent {parent['id']} is stage '{parent['stage']}', not r1.")
+    return f"Run `python -m tools.pv.run {expected_stage} --reader {reader} --data {data}` first."
+
+
+def verify_parent(
+    parent: dict[str, str] | None, reader: str, data: str, expected_stage: str = "r1"
+) -> Path:
+    """The parent's file, or a ManifestError explaining why it is unusable.
+
+    ``expected_stage`` is the stage the parent must be: "r1" for an r2 run,
+    "r2" for an r2b run (see PARENT_STAGE).
+    """
+    if parent is None:
+        raise ManifestError(
+            f"No {expected_stage} row for reader '{reader}' ({data} data) in {manifest_path()}. "
+            + _missing_parent_hint(expected_stage, reader, data)
+        )
+    if parent["stage"] != expected_stage:
+        raise ManifestError(
+            f"Parent {parent['id']} is stage '{parent['stage']}', not {expected_stage}."
+        )
     if parent["reader"] != reader:
         raise ManifestError(
             f"Parent {parent['id']} is a '{parent['reader']}' checkpoint; this run is '{reader}'."
@@ -142,3 +161,8 @@ def verify_parent(parent: dict[str, str] | None, reader: str, data: str) -> Path
             f"file {actual[:12]}... ({file}). The file changed after it was registered."
         )
     return file
+
+
+def verify_r2_parent(parent: dict[str, str] | None, reader: str, data: str) -> Path:
+    """An r2b run's parent: an r2 row for the same reader and data kind."""
+    return verify_parent(parent, reader, data, expected_stage="r2")

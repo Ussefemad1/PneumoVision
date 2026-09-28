@@ -100,19 +100,6 @@ class MSMA_Trainer(Trainer):
             sys.exit(0)
 
     
-    def confidence_logits(self, output):
-        """A c-unimodal output as [batch, tokens, classes], class axis dropped when 1.
-
-        This used to be a bare `.squeeze()`, which also removed the token axis
-        when there is one token -- the CXR confidence input by default is the
-        CLS vector as a length-1 sequence ([B, 1, D] -> [B, 1, 25]), so the
-        target was then repeated over the class axis and the loss failed on
-        shape. Wherever the old squeeze worked (batch and tokens > 1) the result
-        is identical. See docs/model_track_notes.md, "CXR confidence input".
-        """
-        pred = output[self.args.fusion_type]
-        return pred.squeeze(-1) if pred.shape[-1] == 1 else pred
-
     def train_epoch(self):
         print(f'starting train epoch {self.epoch}')
         epoch_loss = 0

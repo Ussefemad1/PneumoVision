@@ -9,6 +9,90 @@ Newest first.
 
 ---
 
+## 2026-09-28 — Round 2b (calibration) on virtual data, code only
+
+**Status: written and checked without training.** Imports and the non-training
+test suite pass. `pytest -m round2b` and `tools/pv/smoke_round2b.py` have
+**not** been run yet; that run happens on Colab. Everything below about
+runtime behaviour is from reading the code.
+
+### Round 2 → Round 2b map (verified by reading the code)
+
+|                    | Round 2                        | Round 2b                                                                                                                    |
+| ------------------ | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| Script             | `Confidence/Confidence-<R>.sh` | `Calibrate/Calibrate-<R>.sh`                                                                                                |
+| `--fusion_type`    | `c-unimodal_<r>`               | `temp_c-unimodal_<r>`                                                                                                       |
+| Trainer            | `MSMA_Trainer`                 | `trainers/Calibration.py` `calibration` (routed by `fusion_main.py`: `'temp_c-unimodal' in fusion_type`) — no wiring needed |
+| Model              | `Unimodal<R>Confidence`        | `TempCUnimodal<R>`: same submodule names plus `<r>_temperature`                                                             |
+| Loads              | r1 file                        | **r2** file, via the same `--load_<r>` flag (`Calibrate-DN.sh` already uses `--load_dn`)                                    |
+| Trains             | the confidence head, on train  | only `<r>_temperature`, on **val only**                                                                                     |
+| Best checkpoint by | lowest val loss                | lowest val ECE (saved only when it improves)                                                                                |
+
+Key match: `TempCUnimodal<R>` registers `<r>_model` / `text_model`,
+`<r>_classifier` and `<r>_confidence_predictor` under the same names as Round 2,
+so `load_state` restores all of them from the r2 file. Only `<r>_temperature`
+(init 1.0) is new. `tests/test_round2b_tools.py::test_r2_keys_cover_every_r2b_weight_but_temperature`
+checks this for all four readers.
+
+Temperature shape: `[max_seq_len, classes]`: EHR 2646×25, CXR 578×25,
+RR/DN 512×25. With the default CXR input (one CLS token), only row 0 of CXR's
+578 rows is ever used.
+
+### Changes to `medpatch/`
+
+6. **`confidence_logits` moved to the base `Trainer`** (`trainers/trainer.py`;
+   removed from `MSMA_trainer.py`, behaviour unchanged). Round 2 and Round 2b
+   now share it without importing each other.
+
+7. **Round 2b trainer fixes** (`trainers/Calibration.py`). As released it could
+   not run on any reader with the default CXR input, nor on EHR:
+   - **squeeze:** `train_epoch` used `output[...].squeeze()`, dropping CXR's
+     single token (`[B,1,25]` → `[B,25]`), so the target became `[B,25,25]`.
+     Now uses `self.confidence_logits(output)`.
+   - **EHR length:** EHR batches differ in token length (one per hour). Only
+     `probs` was padded (`pad_to_length(probs, 48)`), and that crashed for any
+     batch longer than 48; the labels were never padded, so `torch.cat(outGT)`
+     failed. `pad_to_length` now truncates to 48 as well as padding, and the
+     labels are padded the same way. The loss still uses the full length; only
+     the ECE bookkeeping is cut to 48 tokens (the length upstream chose).
+     Padded positions (prob 0, label 0) count as confident and correct in the
+     trainer's own ECE, as they did in upstream's intent. `tools/pv/evaluate.py`
+     reports ECE over real tokens only.
+   - **ECE input shape:** `compute_ece` documents `[N, classes]`, but `train()`
+     passed `[N, tokens, classes]`, so `probs[:, c]` selected token c: the
+     "per-class" ECE (also the checkpoint-selection criterion) was really per
+     token index 0–24, and with CXR's single token it raised `IndexError`. New
+     `flat_ece()` flattens the token axis first; `train()` and the
+     calibration-curve plot use it. **This changes which epoch is selected as
+     best for RR/DN/EHR** compared with the released code (which selected on
+     the per-token-index quantity). The per-token ECE table is unchanged.
+
+### Tooling
+
+- `manifest.STAGES` has `r2b`; `PARENT_STAGE = {"r2": "r1", "r2b": "r2"}`;
+  `verify_parent(..., expected_stage=)` and `verify_r2_parent()`.
+- `run.py r2b`: parent = the latest **r2** row for the reader/data kind (or
+  `--parent`), verified like r1 parents. Virtual defaults: batch 4, epochs
+  EHR/CXR 30, RR/DN 10 (see `VIRTUAL_R2B_EPOCHS` for the reasoning: at the
+  paper's lr of 0.001 the temperature moves ≤ ~0.001 per step).
+- `run.py` now moves any file a trainer writes into `medpatch/` (its working
+  directory) into `<run>/medpatch_outputs/`. Calibration writes ECE tables,
+  per-token probability CSVs and 25 PNGs there.
+- Manifest `notes` for r2b rows record ECE before → after on val (the fit split)
+  and test (held out). "Before" = the r2 parent in the r2b model with
+  temperature 1.0.
+
+### Known limits (not changed)
+
+- `Calibration.py` has no resume; `--resume` is accepted and ignored.
+- It writes a per-token probability CSV with one row per (sample, token), and
+  25 PNGs per ECE pass. That is fine on virtual data; on real data (thousands of
+  stays × 512–2646 tokens) it will be large and slow.
+- If val ECE never improves, no best checkpoint is written and `run.py` stops
+  with a clear error.
+
+---
+
 ## 2026-09-27 — Round 2 on virtual data (branch `model/round2-virtual`)
 
 ### Round 1 → Round 2 map (verified by reading the code)
@@ -94,10 +178,9 @@ checkpoint is the untrained model. Stand-ins use at least 2 epochs.
    1 (mortality). For every case the old code handled (batch and tokens > 1)
    the result is identical; it also no longer drops the batch axis when a
    batch has one sample. Covered by `test_round2_trainer_keeps_the_token_axis`.
-   **Open for Round 2b:** `trainers/Calibration.py:115` has the same bare
-   `.squeeze()`, so Round 2b on CXR will hit the same shape failure with the
-   default input. Not changed here (Round 2b is out of scope for this branch);
-   apply the same `confidence_logits` treatment before running it.
+   **Resolved for Round 2b (2026-09-28):** `trainers/Calibration.py` had the
+   same bare `.squeeze()`; `confidence_logits` moved to the base `Trainer` and
+   both trainers use it. See the Round 2b section above.
 
 ### Planned ablations
 

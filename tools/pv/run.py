@@ -1,20 +1,23 @@
 """Run one training stage for one reader and record it in the manifest.
 
     python -m tools.pv.run r2 --reader cxr --data virtual
+    python -m tools.pv.run r2b --reader cxr --data virtual     # Round 2b: calibration
     python -m tools.pv.run r1 --reader ehr --data virtual      # virtual stand-in
 
 The fusion_main.py command is built from the paper's own script
-(Unimodal/<READER>.sh for r1, Confidence/Confidence-<READER>.sh for r2); every
-setting in it is kept. Replaced, and recorded in run.json and the manifest:
+(Unimodal/<READER>.sh for r1, Confidence/Confidence-<READER>.sh for r2,
+Calibrate/Calibrate-<READER>.sh for r2b); every setting in it is kept.
+Replaced, and recorded in run.json and the manifest:
 
 - data directories, --save_dir (under RUNS_ROOT) and --normalizer_state
   (virtual data ships its own; real data keeps medpatch's default);
-- --load_<reader> for r2, taken from the manifest -- never hard-coded;
+- --load_<reader> for r2 / r2b, taken from the manifest -- never hard-coded;
 - --resume (always: rerunning with the same --run-id continues an interrupted run);
 - --num_workers when set, and the smoke-test --epochs / --batch_size overrides.
 
-r2 refuses to start unless its parent is an r1 row for the same reader and the
-same kind of data, whose file still matches the recorded sha256.
+r2 refuses to start unless its parent is an r1 row, and r2b unless its parent is
+an r2 row, for the same reader and the same kind of data, whose file still
+matches the recorded sha256 (manifest.PARENT_STAGE).
 """
 
 from __future__ import annotations
@@ -51,11 +54,20 @@ from tools.pv.paper_scripts import (  # noqa: E402
 VIRTUAL_DEFAULTS = {
     "r1": {"epochs": 2, "batch_size": 4, "bootstrap_iters": 20},
     "r2": {"epochs": 5, "batch_size": 4},
+    "r2b": {"batch_size": 4},
 }
 #: Round 2 epochs per reader on virtual data. The confidence head is one linear
 #: layer and the smoke set is tiny, so it needs more passes than 5 to learn;
 #: EHR and CXR epochs are cheap on CPU, BERT (RR/DN) epochs are not.
 VIRTUAL_R2_EPOCHS = {"ehr": 20, "cxr": 20, "rr": 5, "dn": 5}
+#: Round 2b epochs per reader on virtual data. Only the temperature trains, and
+#: only on the validation split (~15 stays, ~4 batches per epoch at batch 4), so
+#: an epoch is cheap except for BERT's forward pass. At the paper's lr (0.001,
+#: Adam) each temperature moves by at most ~0.001 per step, so 30 epochs x ~4
+#: steps move it by at most ~0.1: enough to show calibration working, far from
+#: converged. RR/DN get fewer epochs because their cost is the BERT forward.
+VIRTUAL_R2B_EPOCHS = {"ehr": 30, "cxr": 30, "rr": 10, "dn": 10}
+VIRTUAL_EPOCHS_BY_STAGE = {"r2": VIRTUAL_R2_EPOCHS, "r2b": VIRTUAL_R2B_EPOCHS}
 #: Paper default for flags the scripts do not set explicitly.
 PAPER_DEFAULTS = {"--bootstrap_iters": "1000"}
 
@@ -103,15 +115,21 @@ def plan(args) -> dict:
     stage, reader = args.stage, args.reader
     parent = None
     overrides: dict[str, str | None] = {}
-    if stage == "r2":
+    if stage in manifest.PARENT_STAGE:
+        # r2 loads its r1 reader; r2b loads the r2 reader + confidence head
+        # (TempCUnimodal* uses the same submodule names, so load_state restores
+        # them and only <reader>_temperature starts fresh).
+        parent_stage = manifest.PARENT_STAGE[stage]
         parent = (
-            manifest.find(args.parent) if args.parent else manifest.latest("r1", reader, args.data)
+            manifest.find(args.parent)
+            if args.parent
+            else manifest.latest(parent_stage, reader, args.data)
         )
         if args.parent and parent is None:
             raise manifest.ManifestError(
                 f"--parent {args.parent} is not in {manifest.manifest_path()}"
             )
-        parent_file = manifest.verify_parent(parent, reader, args.data)
+        parent_file = manifest.verify_parent(parent, reader, args.data, expected_stage=parent_stage)
         overrides[LOAD_FLAG[reader]] = str(parent_file)
 
     run_id = args.run_id or manifest.next_id(stage, reader)
@@ -122,8 +140,8 @@ def plan(args) -> dict:
 
     deviations = []
     defaults = dict(VIRTUAL_DEFAULTS[stage]) if args.data == "virtual" else {}
-    if args.data == "virtual" and stage == "r2":
-        defaults["epochs"] = VIRTUAL_R2_EPOCHS[reader]
+    if args.data == "virtual" and stage in VIRTUAL_EPOCHS_BY_STAGE:
+        defaults["epochs"] = VIRTUAL_EPOCHS_BY_STAGE[stage][reader]
     paper = script_settings(stage, reader)
     for name in ("epochs", "batch_size", "bootstrap_iters"):
         value = getattr(args, name, None) or defaults.get(name)
@@ -166,6 +184,37 @@ def execute(run: dict) -> Path:
     }
     log_path = save_dir / "train.log"
     print(f"[pv] {run['id']}: {run['script']} -> {save_dir}")
+    before = {p.name for p in MEDPATCH.iterdir()}
+    try:
+        code = _run_fusion_main(run, env, log_path)
+    finally:
+        _collect_stray_outputs(before, save_dir / "medpatch_outputs")
+    if code != 0:
+        raise SystemExit(f"[pv] fusion_main.py failed (exit {code}); see {log_path}")
+    best = checkpoint_path(parse_args(run["argv"]))
+    if not best.is_file():
+        raise SystemExit(f"[pv] run finished but {best} was not written; see {log_path}")
+    return best
+
+
+def _collect_stray_outputs(before: set[str], dest: Path) -> None:
+    """Move files a trainer wrote into medpatch/ (its cwd) into the run folder.
+
+    Calibration.py writes ECE tables, per-token probability CSVs and 25
+    calibration-curve PNGs to the working directory, which must be medpatch/
+    (the discretizer config path is relative). They belong to the run, not the
+    source tree.
+    """
+    new = [p for p in MEDPATCH.iterdir() if p.name not in before and p.is_file()]
+    if not new:
+        return
+    dest.mkdir(parents=True, exist_ok=True)
+    for path in new:
+        path.replace(dest / path.name)
+    print(f"  moved {len(new)} file(s) written into medpatch/ to {dest}")
+
+
+def _run_fusion_main(run: dict, env: dict[str, str], log_path: Path) -> int:
     with open(log_path, "w", encoding="utf-8") as log:
         proc = subprocess.Popen(
             fusion_main_argv(run["argv"]),
@@ -195,13 +244,7 @@ def execute(run: dict) -> Path:
                 )
             ):
                 print(f"  {line.rstrip()[:160]}")
-        code = proc.wait()
-    if code != 0:
-        raise SystemExit(f"[pv] fusion_main.py failed (exit {code}); see {log_path}")
-    best = checkpoint_path(parse_args(run["argv"]))
-    if not best.is_file():
-        raise SystemExit(f"[pv] run finished but {best} was not written; see {log_path}")
-    return best
+        return proc.wait()
 
 
 def record(run: dict, best: Path, who: str) -> dict[str, str]:
@@ -213,6 +256,9 @@ def record(run: dict, best: Path, who: str) -> dict[str, str]:
     ]
     if run["stage"] == "r2":
         notes.append("r2 score=mean token confidence-head prob")
+    if run["stage"] == "r2b":
+        notes.append("r2b score=mean calibrated token confidence-head prob")
+        notes += calibration_notes(run, best, scores)
     if run["data"] == "virtual":
         notes.insert(0, "VIRTUAL stand-in, SYNTHETIC - not a scientific result")
     notes += run["deviations"]
@@ -238,13 +284,33 @@ def record(run: dict, best: Path, who: str) -> dict[str, str]:
     return row
 
 
+def calibration_notes(run: dict, best: Path, after_val) -> list[str]:
+    """ECE (mean over the 25 classes) before and after Round 2b, val and test.
+
+    "Before" is the r2 parent loaded into the same model with every temperature
+    at its initial 1.0, i.e. the uncalibrated head. Val is the split the
+    temperatures were fitted on (in-sample); test is held out.
+    """
+    args = parse_args(run["argv"])
+    parent_file = Path(run["argv"][run["argv"].index(LOAD_FLAG[run["reader"]]) + 1])
+    before_val = score_checkpoint(args, parent_file, split="val")
+    before_test = score_checkpoint(args, parent_file, split="test")
+    after_test = score_checkpoint(args, best, split="test")
+    return [
+        f"ECE val {before_val.ece:.4f}->{after_val.ece:.4f} (fit split)",
+        f"ECE test {before_test.ece:.4f}->{after_test.ece:.4f} (held out)",
+    ]
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="python -m tools.pv.run", description=__doc__.splitlines()[0])
-    p.add_argument("stage", choices=("r1", "r2"))
+    p.add_argument("stage", choices=manifest.STAGES)
     p.add_argument("--reader", choices=READERS, required=True)
     p.add_argument("--data", choices=manifest.DATA_KINDS, required=True)
     p.add_argument(
-        "--parent", help="r1 manifest id to load (default: latest r1 row for the reader)"
+        "--parent",
+        help="manifest id to load: an r1 row for r2, an r2 row for r2b "
+        "(default: the latest such row for the reader)",
     )
     p.add_argument("--run-id", help="reuse an existing id to resume an interrupted run")
     p.add_argument("--who", default=os.environ.get("PV_WHO", os.environ.get("USERNAME", "unknown")))
