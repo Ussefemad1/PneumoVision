@@ -277,6 +277,63 @@ one to get wrong silently.
 
 ---
 
+## Checkpoint durability for multi-account training (2026-09-27)
+
+Training runs across **three free Colab accounts** (~30 h/week each, ~90 h/week
+total) rather than a paid subscription. Work is handed between accounts using
+the per-epoch `last_checkpoint` plus `--resume`. One person trains a block,
+their session ends, the next points at the same `save_dir` and adds `--resume`.
+
+**Resume is verified end-to-end**, not just code-reviewed — a genuine
+kill-and-restart in a fresh Colab session on the real ViT restored epoch,
+optimizer state, `best_auroc` and patience.
+
+**The one operational rule:** only one person trains against a given checkpoint
+at a time. Two concurrent resume-and-save cycles on the same file would
+conflict. Coordinated manually in chat. If two suspiciously close timestamps
+ever appear on one checkpoint, that is the failure mode to suspect.
+
+### Two durability fixes this made necessary
+
+The handoff plan rests on sessions ending **abruptly** — that is the premise,
+not an edge case. Two weaknesses mattered once checkpoints became load-bearing:
+
+**1. Writes were not atomic.** `save_checkpoint` wrote straight to the final
+filename. A 285 MB save to a Drive mount takes seconds, so a session killed
+mid-write left a *truncated file at the real checkpoint name*. With an epoch at
+~20 min and a ~30 s write, roughly 2.5% of wall-clock time sat inside that
+window — near-certain to hit at least once across days of handoffs.
+
+Now writes go to `<path>.tmp` and `os.replace()` into position. On a normal
+filesystem that is atomic; on Google Drive's FUSE layer the guarantee is
+weaker, so it narrows the window rather than closing it — hence fix 2.
+
+**2. A corrupt checkpoint killed the resume.** `resume_from_checkpoint` tried
+`last` first with no `try/except`, so a truncated file crashed the next
+person's run — and the file they depended on was already destroyed.
+
+It now tries each candidate in turn, and on an unreadable one prints the real
+error and falls back to `best`, noting that progress since the last
+*improving* epoch is lost. If **every** checkpoint is unreadable it raises
+rather than silently starting from scratch, which would discard the run.
+
+Verified against a deliberately truncated checkpoint:
+
+    [resume] WARNING: could not read last_checkpoint_...pth.tar
+    [resume]          RuntimeError: PytorchStreamReader failed reading zip
+                      archive: failed finding central directory
+    [resume]          Most likely truncated by a session that died mid-save.
+    [resume] NOTE: fell back to best_checkpoint_...  Progress since the last
+                   *improving* epoch is lost.
+
+Happy path is unchanged: with both files intact it still uses `last`.
+
+Deliberately **not** done: staging to local disk before copying to Drive. It
+would shrink the window further, but the fallback already converts this from
+"the next person is stuck" into "the next person continues, loudly warned".
+
+---
+
 ## Known PhysioNet data gap — one image is unavailable
 
 One study on our download list returns **HTTP 404** from PhysioNet while being
