@@ -447,9 +447,12 @@ def loadmetadata(args, discharge_notes, radiology_reports, cxr_reports):
 
 
 def load_cxr_ehr_rr_dn(args, ehr_train_ds, ehr_val_ds, cxr_train_ds, cxr_val_ds, ehr_test_ds, cxr_test_ds):
+    # Only load the (multi-GB) note files when they are used: a note modality, or 'partial' pairing,
+    # which always merges them
     notes_dir = args.notes_data_dir
-    discharge_notes = pd.read_csv(os.path.join(notes_dir, 'discharge.csv'))
-    radiology_reports = pd.read_csv(os.path.join(notes_dir, 'radiology.csv'))
+    uses_notes = args.data_pairs == 'partial' or any(m in args.modalities for m in ('RR', 'DN', 'CXRR'))
+    discharge_notes = pd.read_csv(os.path.join(notes_dir, 'discharge.csv')) if uses_notes else None
+    radiology_reports = pd.read_csv(os.path.join(notes_dir, 'radiology.csv')) if uses_notes else None
     cxr_reports= None
 
     cxr_merged_icustays = loadmetadata(args, discharge_notes, radiology_reports, cxr_reports) 

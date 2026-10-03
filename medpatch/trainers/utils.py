@@ -22,14 +22,17 @@ def bootstraping_eval(df, num_iter):
     for _ in range(num_iter):
         sample = df.sample(frac=1, replace=True)
         auprc, auroc = evaluate_new(sample)
-        if auprc != np.nan and auroc != np.nan:
+        if not (np.isnan(auprc) or np.isnan(auroc)):
             auroc_list.append(auroc)
             auprc_list.append(auprc)
     return auprc_list, auroc_list
 
 def computing_confidence_intervals(list_,true_value):
     """This function calcualts the 95% Confidence Intervals"""
-    delta = (true_value - list_)
+    if len(list_) == 0:  # metric undefined in every resample (e.g. a label with no positives)
+        return (np.nan, np.nan)
+    # sklearn >= 1.x returns Python floats, so convert before subtracting
+    delta = (true_value - np.asarray(list_))
     list(np.sort(delta))
     delta_lower = np.percentile(delta, 97.5)
     delta_upper = np.percentile(delta, 2.5)
