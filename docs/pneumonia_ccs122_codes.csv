@@ -1,0 +1,110 @@
+icd_code,icd_version,description
+00322,9,Salmonella pneumonia
+0203,9,Primary pneumonic plague
+0204,9,Secondary pneumonic plague
+0205,9,"Pneumonic plague, unspecified"
+0212,9,Pulmonary tularemia
+0221,9,Pulmonary anthrax
+0310,9,Pulmonary diseases due to other mycobacteria
+0391,9,Pulmonary actinomycotic infection
+0521,9,Varicella (hemorrhagic) pneumonitis
+0551,9,Postmeasles pneumonia
+0730,9,Ornithosis with pneumonia
+0830,9,Q fever
+1124,9,Candidiasis of lung
+1140,9,Primary coccidioidomycosis (pulmonary)
+1144,9,Chronic pulmonary coccidioidomycosis
+1145,9,"Pulmonary coccidioidomycosis, unspecified"
+11505,9,"Infection by Histoplasma capsulatum, pneumonia"
+11515,9,"Infection by Histoplasma duboisii, pneumonia"
+11595,9,"Histoplasmosis, unspecified, pneumonia"
+1304,9,Pneumonitis due to toxoplasmosis
+1363,9,Pneumocystosis
+4800,9,Pneumonia due to adenovirus
+4801,9,Pneumonia due to respiratory syncytial virus
+4802,9,Pneumonia due to parainfluenza virus
+4803,9,Pneumonia due to SARS-associated coronavirus
+4808,9,Pneumonia due to other virus not elsewhere classified
+4809,9,"Viral pneumonia, unspecified"
+481,9,Pneumococcal pneumonia [Streptococcus pneumoniae pneumonia]
+4820,9,Pneumonia due to Klebsiella pneumoniae
+4821,9,Pneumonia due to Pseudomonas
+4822,9,Pneumonia due to Hemophilus influenzae [H. influenzae]
+4823,9,Pneumonia due to Streptococcus (category header)
+48230,9,"Pneumonia due to Streptococcus, unspecified"
+48231,9,"Pneumonia due to Streptococcus, group A"
+48232,9,"Pneumonia due to Streptococcus, group B"
+48239,9,Pneumonia due to other Streptococcus
+4824,9,Pneumonia due to Staphylococcus (category header)
+48240,9,"Pneumonia due to Staphylococcus, unspecified"
+48241,9,Methicillin susceptible pneumonia due to Staphylococcus aureus
+48242,9,Methicillin resistant pneumonia due to Staphylococcus aureus
+48249,9,Other Staphylococcus pneumonia
+4828,9,Pneumonia due to other specified bacteria (category header)
+48281,9,Pneumonia due to anaerobes
+48282,9,Pneumonia due to escherichia coli [E. coli]
+48283,9,Pneumonia due to other gram-negative bacteria
+48284,9,Pneumonia due to Legionnaires' disease
+48289,9,Pneumonia due to other specified bacteria
+4829,9,"Bacterial pneumonia, unspecified"
+483,9,Pneumonia due to other specified organism (category header)
+4830,9,Pneumonia due to mycoplasma pneumoniae
+4831,9,Pneumonia due to chlamydia
+4838,9,Pneumonia due to other specified organism
+4841,9,Pneumonia in cytomegalic inclusion disease
+4843,9,Pneumonia in whooping cough
+4845,9,Pneumonia in anthrax
+4846,9,Pneumonia in aspergillosis
+4847,9,Pneumonia in other systemic mycoses
+4848,9,Pneumonia in other infectious diseases classified elsewhere
+485,9,"Bronchopneumonia, organism unspecified"
+486,9,"Pneumonia, organism unspecified"
+5130,9,Abscess of lung
+5171,9,Rheumatic pneumonia
+A0222,10,Salmonella pneumonia
+A202,10,Pneumonic plague
+A212,10,Pulmonary tularemia
+A221,10,Pulmonary anthrax
+A310,10,Pulmonary mycobacterial infection
+A3791,10,"Whooping cough, unspecified species with pneumonia"
+A420,10,Pulmonary actinomycosis
+A481,10,Legionnaires' disease
+A78,10,Q fever
+B012,10,Varicella pneumonia
+B052,10,Measles complicated by pneumonia
+B250,10,Cytomegaloviral pneumonitis
+B371,10,Pulmonary candidiasis
+B380,10,Acute pulmonary coccidioidomycosis
+B381,10,Chronic pulmonary coccidioidomycosis
+B382,10,"Pulmonary coccidioidomycosis, unspecified"
+B392,10,"Pulmonary histoplasmosis capsulati, unspecified"
+B440,10,Invasive pulmonary aspergillosis
+B583,10,Pulmonary toxoplasmosis
+B59,10,Pneumocystosis
+J120,10,Adenoviral pneumonia
+J121,10,Respiratory syncytial virus pneumonia
+J122,10,Parainfluenza virus pneumonia
+J1281,10,Pneumonia due to SARS-associated coronavirus
+J1289,10,Other viral pneumonia
+J129,10,"Viral pneumonia, unspecified"
+J14,10,Pneumonia due to Hemophilus influenzae
+J150,10,Pneumonia due to Klebsiella pneumoniae
+J151,10,Pneumonia due to Pseudomonas
+J1520,10,"Pneumonia due to staphylococcus, unspecified"
+J15211,10,Pneumonia due to Methicillin susceptible Staphylococcus aureus
+J15212,10,Pneumonia due to Methicillin resistant Staphylococcus aureus
+J1529,10,Pneumonia due to other staphylococcus
+J153,10,"Pneumonia due to streptococcus, group B"
+J154,10,Pneumonia due to other streptococci
+J155,10,Pneumonia due to Escherichia coli
+J156,10,Pneumonia due to other Gram-negative bacteria
+J157,10,Pneumonia due to Mycoplasma pneumoniae
+J158,10,Pneumonia due to other specified bacteria
+J159,10,Unspecified bacterial pneumonia
+J160,10,Chlamydial pneumonia
+J168,10,Pneumonia due to other specified infectious organisms
+J17,10,Pneumonia in diseases classified elsewhere
+J180,10,"Bronchopneumonia, unspecified organism"
+J181,10,"Lobar pneumonia, unspecified organism"
+J189,10,"Pneumonia, unspecified organism"
+J852,10,Abscess of lung without pneumonia

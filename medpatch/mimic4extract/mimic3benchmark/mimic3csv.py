@@ -20,10 +20,32 @@ def read_patients_table(path):
     return pats
 
 
+def collapse_race_to_ethnicity(race):
+    # MIMIC-IV v3.1 'race' has ~33 fine-grained values; DataFusion.ETHNICITY only knows the
+    # 8 categories of the release the paper used, so collapse to those to keep them comparable.
+    if not isinstance(race, str) or race == '':
+        return 'UNKNOWN'
+    for prefix, category in [('WHITE', 'WHITE'),
+                             ('BLACK', 'BLACK/AFRICAN AMERICAN'),
+                             ('HISPANIC', 'HISPANIC/LATINO'),
+                             ('ASIAN', 'ASIAN'),
+                             ('AMERICAN INDIAN', 'AMERICAN INDIAN/ALASKA NATIVE')]:
+        if race.startswith(prefix):
+            return category
+    if race in ('UNKNOWN', 'UNABLE TO OBTAIN'):
+        return race
+    if race == 'PATIENT DECLINED TO ANSWER':
+        return 'UNABLE TO OBTAIN'
+    return 'OTHER'
+
+
 def read_admissions_table(path):
 
     # admits = dataframe_from_csv(path)
     admits = pd.read_csv(path) #header=header, index_col=index_col
+    # v3.1 renamed 'ethnicity' to 'race'
+    race_column = 'race' if 'race' in admits.columns else 'ethnicity'
+    admits['ethnicity'] = admits[race_column].apply(collapse_race_to_ethnicity)
     admits = admits[['subject_id', 'hadm_id', 'admittime', 'dischtime', 'deathtime', 'ethnicity']] # missing DIAGNOSIS
     admits.admittime = pd.to_datetime(admits.admittime)
     admits.dischtime = pd.to_datetime(admits.dischtime)

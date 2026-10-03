@@ -83,8 +83,11 @@ cont_channels = [i for (i, x) in enumerate(discretizer_header) if x.find("->") =
 normalizer = Normalizer(fields=cont_channels)  # choose here which columns to standardize
 normalizer_state = args.normalizer_state
 if normalizer_state is None:
-    normalizer_state = 'normalizers/ph_ts{}.input_str_previous.start_time_zero.normalizer'.format(args.timestep)
+    # Use the shipped normalizer matching the task (previously 'ph' was loaded for every task).
+    prefix = 'ihm' if args.task == 'in-hospital-mortality' else 'ph'
+    normalizer_state = 'normalizers/{}_ts{}.input_str_previous.start_time_zero.normalizer'.format(prefix, args.timestep)
     normalizer_state = os.path.join(os.path.dirname(__file__), normalizer_state)
+print(f'Normalizer: {normalizer_state}')
 normalizer.load_params(normalizer_state)
 
 print("getting data")

@@ -26,6 +26,7 @@ Thumbs.db
 # MIMIC / medical data
 data/*
 !data/.gitkeep
+handoff_output/
 
 # Model checkpoints
 checkpoints/*
@@ -55,3 +56,6 @@ errlogs/
 
 # Local tool caches
 .cache/
+
+# Normalizers refit on our MIMIC data (share via Drive, not git)
+*.mimic4v31_train.normalizer
