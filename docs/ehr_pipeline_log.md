@@ -92,3 +92,20 @@ point during the hospital admission. Norhan's 48-hour x-rays pair with 99.91% of
 - A normalizer refit on our train split was distorted by these values, so training keeps the paper's shipped
   normalizers (task-matched; `fusion_main.py` previously loaded the phenotyping one for every task).
 - Options: blank out-of-range values at load time, and/or remove the urine pH items and re-run D3/D5.
+
+## Stage G: EHR LSTM, phenotyping (2026-10-04)
+
+Paper settings (`scripts/phenotyping/Unimodal/EHR.sh`): LSTM encoder, `unimodal_ehr`, 25 classes, batch 16,
+lr 1e-3, up to 100 epochs with early stopping (patience 15), `--data_pairs paired` with EHR only, so every
+phenotyping stay is used. Trained on a GTX 1650 Ti (about 30 min per epoch).
+
+| Metric (test, 11,845 stays) | Ours | Paper (Table 1) |
+|---|---|---|
+| AUROC | 0.764 (0.752–0.775) | 0.764 (0.752–0.775) |
+| AUPRC | 0.426 (0.405–0.449) | 0.423 (0.402–0.446) |
+
+- Pneumonia label: AUROC 0.812 (0.801–0.823), AUPRC 0.398 (0.371–0.426).
+- Best validation epoch 7 (val AUROC 0.761); validation declined afterwards (overfitting) and early stopping
+  ended the run after epoch 22. The test uses the epoch-7 checkpoint.
+- Two fixes were needed to run the paper's code with current libraries: the bootstrap confidence intervals
+  (`trainers/utils.py`) and loading note files only when a note modality is used (`DataFusion.py`).
