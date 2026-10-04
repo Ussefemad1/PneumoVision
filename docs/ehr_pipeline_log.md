@@ -109,3 +109,16 @@ phenotyping stay is used. Trained on a GTX 1650 Ti (about 30 min per epoch).
   ended the run after epoch 22. The test uses the epoch-7 checkpoint.
 - Two fixes were needed to run the paper's code with current libraries: the bootstrap confidence intervals
   (`trainers/utils.py`) and loading note files only when a note modality is used (`DataFusion.py`).
+
+## Stage G: EHR LSTM, in-hospital mortality (2026-10-04)
+
+Paper settings (`scripts/mortality/Unimodal/EHR.sh`): as phenotyping, with `--num_classes 1 --task in-hospital-mortality
+--labels_set mortality`. About 4 min per epoch on the GTX 1650 Ti.
+
+| Metric (test, 5,302 stays) | Ours | Paper (Table 1) |
+|---|---|---|
+| AUROC | 0.861 (0.846–0.875) | 0.861 (0.847–0.875) |
+| AUPRC | 0.513 (0.472–0.550) | 0.523 (0.484–0.562) |
+
+- Best validation epoch 3 (val AUROC 0.870); early stopping ended the run after epoch 18.
+- Our death rate is slightly higher than the paper's (13.7% vs 12.5% in train).
