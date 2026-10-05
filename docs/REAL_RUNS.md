@@ -17,6 +17,49 @@ task. **In-hospital mortality** uses the same flow with `--task mortality`; see
 
 ---
 
+## Confirmed facts (teammates, 2026-10-05/06)
+
+**Note readers (Farida): phenotyping RR, phenotyping DN, mortality RR.**
+
+- All use `dmis-lab/biobert-v1.1`, frozen, with mean pooling; the head is
+  `Linear(768→512) + LayerNorm + Linear(512→C)`, trained at lr 1.2225e-4.
+- That head is medpatch's own layout: `text_model.fc_rr`/`fc_dn` is the
+  768→512 layer, and the `*_classifier` (`layernorm` + `fc`) is the rest.
+- They were trained on cached BioBERT outputs, so **without BERT dropout**, then
+  converted to medpatch's checkpoint format.
+- Both RR files reproduce her numbers with `fusion_main.py --mode eval`, with
+  no "Not Loaded"/"Not Found" keys. DN was checked on synthetic text only
+  (0 missing, 0 extra keys), so run `check_weights` on it (step 4).
+
+**Cohort and train lists.**
+
+- Only subjects in
+  `medpatch/mimic4extract/mimic3benchmark/resources/testset_iv.csv` are kept in
+  **train**. Val and test are the shared files.
+- Counts (train / val / test):
+
+  | Task        | Train  | Val   | Test   |
+  | ----------- | ------ | ----- | ------ |
+  | phenotyping | 42,328 | 4,756 | 11,845 |
+  | mortality   | 19,064 | 2,161 | 5,302  |
+
+- Every reader's Round 2 / 2b / 3 uses these **filtered** train lists; the
+  Colab notebook rebuilds them.
+- Caroll's EHR and Norhan's CXR Round 1 were trained on the **unfiltered**
+  train lists. Their weights are fine to load; just remember that their
+  Round 1 numbers come from a larger train set than everything after.
+
+**Notes folder for mortality:** the real `radiology.csv` plus a **header-only**
+`discharge.csv`. The loader opens `discharge.csv` whenever notes are
+requested, but mortality never uses discharge notes (they leak the outcome).
+The header must include at least `subject_id,hadm_id,charttime,text`.
+
+**Caroll's EHR runs:** `normalizer_state None`, `timestep 1.0`, stay 30007216
+excluded. That matches what Round 2 uses by default (see "EHR normalizer" in
+section 5).
+
+---
+
 ## 0. Before you start
 
 - A Colab **GPU** runtime (Runtime → Change runtime type → GPU).
@@ -96,17 +139,44 @@ Below, `EHR`, `CXR` and `NOTES` stand for those three paths, e.g.
 DATA = '--ehr-data-dir /content/data/<ehr folder> --cxr-data-dir /content/data/<cxr folder> --notes-data-dir /content/data/<notes folder>'
 ```
 
-## 4. Register the real Round 1 files
+## 4. Check the weights, then register the real Round 1 files
 
-Copy them to Drive first if they aren't there, so the paths stay valid. Each
-command opens the file, checks it really is that reader's Round 1 checkpoint,
-records its sha256, and adds an `r1` row.
+Copy the files to Drive first if they aren't there, so the paths stay valid.
+
+**4a. Check each file against the model Round 2 will build.** `--load_<reader>`
+(medpatch's `Trainer.load_state`) is not strict. It copies matching names,
+prints the rest as "Not Loaded"/"Not Found" and carries on, and its `copy_`
+silently _broadcasts_ some wrong shapes. `check_weights` builds the reader's
+Round 2 model (downloads BioBERT / the ViT on first use) and applies the file
+the same way. It fails if any encoder or classifier tensor is missing or
+mis-shaped, or if a text file's BERT weights are not the pretrained weights of
+the named model. The confidence head is new in Round 2, so it is listed as
+"expected new". The seven real Round 1 files:
 
 ```python
-!python -m tools.pv.import_checkpoint --reader ehr --who "<who>" --file "/content/drive/MyDrive/<…>/best_checkpoint_0.001_phenotyping_unimodal_ehr_EHR_paired.pth.tar" --val-auroc <x> --val-auprc <y>
-!python -m tools.pv.import_checkpoint --reader cxr --who "<who>" --file "/content/drive/MyDrive/<…>/best_checkpoint_0.001_phenotyping_unimodal_cxr_EHR-CXR_paired.pth.tar" --val-auroc <x> --val-auprc <y>
-!python -m tools.pv.import_checkpoint --reader rr  --who "Farida" --bert-model-name dmis-lab/biobert-v1.1 --file "/content/drive/MyDrive/<…>/best_checkpoint_0.001_phenotyping_unimodal_rr_EHR-RR_paired.pth.tar" --val-auroc <x> --val-auprc <y>
-!python -m tools.pv.import_checkpoint --reader dn  --who "Farida" --bert-model-name dmis-lab/biobert-v1.1 --file "/content/drive/MyDrive/<…>/best_checkpoint_0.001_phenotyping_unimodal_dn_EHR-DN_paired.pth.tar" --val-auroc <x> --val-auprc <y>
+F = "/content/drive/MyDrive/<…>"   # where the Round 1 files are
+!python -m tools.pv.check_weights --task phenotyping --reader ehr --file "{F}/<phenotyping EHR file>.pth.tar"
+!python -m tools.pv.check_weights --task phenotyping --reader cxr --file "{F}/<phenotyping CXR file>.pth.tar"
+!python -m tools.pv.check_weights --task phenotyping --reader rr  --bert-model-name dmis-lab/biobert-v1.1 --file "{F}/<phenotyping RR file>.pth.tar"
+!python -m tools.pv.check_weights --task phenotyping --reader dn  --bert-model-name dmis-lab/biobert-v1.1 --file "{F}/<phenotyping DN file>.pth.tar"
+!python -m tools.pv.check_weights --task mortality   --reader ehr --file "{F}/<mortality EHR file>.pth.tar"
+!python -m tools.pv.check_weights --task mortality   --reader cxr --file "{F}/<mortality CXR file>.pth.tar"
+!python -m tools.pv.check_weights --task mortality   --reader rr  --bert-model-name dmis-lab/biobert-v1.1 --file "{F}/<mortality RR file>.pth.tar"
+```
+
+Each ends with `PASS` or `FAIL (n)` and a list. Add `--trust-pickle` if a file
+from a teammate can't be loaded with `weights_only=True`. Do not register a
+file that fails: tell the model track which keys failed.
+
+**4b. Register.** Each command checks the file is that reader's Round 1
+checkpoint, records its sha256 and adds an `r1` row. `--check-weights` repeats
+4a and writes e.g. `weights: 100% covered (…)` into the manifest notes.
+
+```python
+!python -m tools.pv.import_checkpoint --check-weights --reader ehr --who "Caroll" --file "/content/drive/MyDrive/<…>/best_checkpoint_0.001_phenotyping_unimodal_ehr_EHR_paired.pth.tar" --val-auroc <x> --val-auprc <y>
+!python -m tools.pv.import_checkpoint --check-weights --reader cxr --who "Norhan" --file "/content/drive/MyDrive/<…>/best_checkpoint_0.001_phenotyping_unimodal_cxr_EHR-CXR_paired.pth.tar" --val-auroc <x> --val-auprc <y>
+!python -m tools.pv.import_checkpoint --check-weights --reader rr  --who "Farida" --bert-model-name dmis-lab/biobert-v1.1 --file "/content/drive/MyDrive/<…>/<phenotyping RR file>.pth.tar" --val-auroc <x> --val-auprc <y>
+!python -m tools.pv.import_checkpoint --check-weights --reader dn  --who "Farida" --bert-model-name dmis-lab/biobert-v1.1 --file "/content/drive/MyDrive/<…>/<phenotyping DN file>.pth.tar" --val-auroc <x> --val-auprc <y>
 ```
 
 `--bert-model-name` is **required** for real rr/dn files; there is no default,
@@ -162,6 +232,14 @@ No smoke overrides apply on real data. These are the paper's settings (100
 epochs, batch 16), so expect hours per reader on a GPU. Each run prints its id
 (e.g. `r2-rr-001`) at the start.
 
+`run.py` adds `--frozen_readers_eval` to every Round 2 and 2b command. The
+released code puts the whole model in train mode for each training epoch, which
+turns the frozen BERT's dropout (p = 0.1) on while the head trains. Farida's
+readers were trained and evaluated without it, so the frozen reader now stays
+in eval mode. It makes no difference for EHR (LSTM, no dropout) or CXR (the
+ViT has no active dropout), and it never affects Round 3. It shows in the
+`--dry-run` output and in the manifest notes.
+
 **If Colab disconnects, resume Round 2.** Rerun the same command with that id:
 
 ```python
@@ -204,12 +282,13 @@ team Sheet.
 
 ---
 
-## BERT must match everywhere downstream
+## BERT and train lists must match everywhere downstream
 
 The RR/DN confidence heads trained here sit on top of **BioBERT**
-(`dmis-lab/biobert-v1.1`) features. Anything that later loads these
-checkpoints must build the same BERT, or it silently tokenizes with the wrong
-vocabulary:
+(`dmis-lab/biobert-v1.1`) features, and every Round 2 / 2b / 3 run uses the
+**filtered** train lists (see "Confirmed facts"). Anything that later loads
+these checkpoints must build the same BERT and use the same lists. A different
+BERT silently tokenizes with the wrong vocabulary:
 
 - **Round 3** (`c-msma` / `c-e-msma`): built by `MSMA_Trainer` →
   `Text_encoder`, so pass `--bert_model_name dmis-lab/biobert-v1.1`, taken from
@@ -221,6 +300,45 @@ vocabulary:
 - Other medpatch trainers (the ensembles, DHF, staged, etc.) and
   `models/rr_encoder.py` also hardcode Bio_ClinicalBERT. They are not on the
   Round 2/2b/3 path; check before using any of them with these checkpoints.
+
+### Round 3: use `c-msma`, not `c-e-msma`
+
+`scripts/phenotyping/MedPatch/Confidence-Patching.sh` passes
+`--fusion_type c-e-msma`, the same as `Entropy-Patching.sh`; the mortality
+`Confidence-Patching.sh` passes `c-msma`.
+
+- `c-e-msma` (`EMSMAFusion`) scores a token by binary **entropy**
+  `−[p ln p + (1−p) ln(1−p)]`, which lies in [0, ln 2 ≈ 0.693], and marks it
+  high-confidence when entropy **≥ θ** (`fusion.py:2463`, `:2469`). With the
+  scripts' θ = 0.75, no token can ever qualify, so the high-confidence branch
+  is always empty. With a lower θ it would select the _least_ confident
+  tokens.
+- `c-msma` (`CMSMAFusion`) is the paper's `max(p, 1−p)` in [0.5, 1], with
+  high when ≥ θ (`fusion.py:1461`, `:1467`).
+
+Both read the Round 2 confidence heads and Round 2b temperatures through the
+same keys, frozen. **Run phenotyping Round 3 with `--fusion_type c-msma`**, and
+treat `c-e-msma` as an entropy ablation that needs its threshold rule fixed
+first. (CLAUDE.md's task table, which lists `c-e-msma` for pneumonia, came from
+that script.)
+
+### Round 3 with `--data_pairs partial` (missing notes or X-ray)
+
+A stay with no radiology report (or, for phenotyping, no discharge note)
+loads without crashing:
+
+- the loader left-merges notes, so the text is NaN, and collate turns it into
+  `""`;
+- a missing X-ray becomes a zero image with `pairs=False`;
+- `CMSMAFusion.detect_missingness_batch` (`fusion.py:1366-1378`) marks empty
+  notes and all-zero images as missing, and the late fusion masks those
+  modalities' predictions and weights (`fusion.py:1796-1812`).
+
+**Risk:** the high/low token pools (`fusion.py:1478-1690`) ignore that mask. An
+empty note is still run through BERT (`""` tokenizes to `[CLS][SEP]` plus
+padding) and a missing X-ray through the ViT, and those tokens are scored by
+the confidence heads and can enter the joint high/low predictions. That is
+upstream behaviour; it is not changed here.
 
 ---
 
@@ -250,9 +368,9 @@ Pointing `--parent` at a phenotyping row (or the reverse) is refused, and
 without `--parent` only rows of the same task are considered.
 
 ```python
-!python -m tools.pv.import_checkpoint --task mortality --reader ehr --who "<who>" --file "/content/drive/MyDrive/<…>/best_checkpoint_0.001_in-hospital-mortality_unimodal_ehr_EHR_paired.pth.tar" --val-auroc <x> --val-auprc <y>
-!python -m tools.pv.import_checkpoint --task mortality --reader cxr --who "Norhan" --file "/content/drive/MyDrive/<…>/best_checkpoint_<lr>_in-hospital-mortality_unimodal_cxr_EHR-CXR_paired.pth.tar" --val-auroc <x> --val-auprc <y>
-!python -m tools.pv.import_checkpoint --task mortality --reader rr  --who "Farida" --bert-model-name dmis-lab/biobert-v1.1 --file "/content/drive/MyDrive/<…>/best_checkpoint_0.001_in-hospital-mortality_unimodal_rr_EHR-RR_paired.pth.tar" --val-auroc <x> --val-auprc <y>
+!python -m tools.pv.import_checkpoint --check-weights --task mortality --reader ehr --who "<who>" --file "/content/drive/MyDrive/<…>/best_checkpoint_0.001_in-hospital-mortality_unimodal_ehr_EHR_paired.pth.tar" --val-auroc <x> --val-auprc <y>
+!python -m tools.pv.import_checkpoint --check-weights --task mortality --reader cxr --who "Norhan" --file "/content/drive/MyDrive/<…>/best_checkpoint_<lr>_in-hospital-mortality_unimodal_cxr_EHR-CXR_paired.pth.tar" --val-auroc <x> --val-auprc <y>
+!python -m tools.pv.import_checkpoint --check-weights --task mortality --reader rr  --who "Farida" --bert-model-name dmis-lab/biobert-v1.1 --file "/content/drive/MyDrive/<…>/best_checkpoint_0.001_in-hospital-mortality_unimodal_rr_EHR-RR_paired.pth.tar" --val-auroc <x> --val-auprc <y>
 
 !python -m tools.pv.run r2  --task mortality --reader rr --data real {DATA} --dry-run   # check first
 !python -m tools.pv.run r2  --task mortality --reader ehr --data real {DATA}

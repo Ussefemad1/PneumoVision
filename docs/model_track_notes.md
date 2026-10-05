@@ -9,6 +9,130 @@ Newest first.
 
 ---
 
+## 2026-10-06 — Real-data pre-flight: frozen-reader dropout, strict weight check, Round 3 findings
+
+**Confirmed facts (teammates, 2026-10-05/06).**
+
+- **Note readers (Farida):** phenotyping RR, phenotyping DN, mortality RR, all
+  `dmis-lab/biobert-v1.1`.
+  - BERT frozen, mean pooling; head `Linear(768→512) + LayerNorm +
+Linear(512→C)` (= `text_model.fc_*` + `*_classifier`), lr 1.2225e-4.
+  - Trained on cached BioBERT outputs, i.e. without BERT dropout, then
+    converted to medpatch format.
+  - Both RR files reproduce her numbers with `--mode eval` and no "Not
+    Loaded"/"Not Found" keys; DN was checked on synthetic text only.
+- **Train lists:** filtered to the subjects in
+  `mimic3benchmark/resources/testset_iv.csv` (train only; val/test shared).
+  - phenotyping 42,328 / 4,756 / 11,845; mortality 19,064 / 2,161 / 5,302.
+  - Round 2 / 2b / 3 of every reader use these filtered lists. Caroll's EHR
+    and Norhan's CXR Round 1 saw the unfiltered lists.
+- **Mortality notes:** real `radiology.csv` plus a header-only `discharge.csv`.
+- **Caroll's EHR:** `normalizer_state None`, `timestep 1.0`, stay 30007216
+  excluded.
+
+**A1 — frozen readers and dropout (changed, flag-gated).**
+
+- `MSMA_trainer.py:472` (`self.model.train()` before each training epoch) and
+  `Calibration.py:103` (`self.model.train(not inference)`) put the whole model
+  in train mode, frozen reader included.
+- Active dropout in the readers, checked on randomly initialised modules:
+  BERT-base has 37 `Dropout(p=0.1)`; `vit_small_patch16_384` (timm defaults)
+  and the 1-layer LSTM (`dropout=0.0`) have none.
+- So in Round 2 / 2b, RR/DN heads trained on dropout-noised BERT features,
+  unlike how Farida's readers were trained and evaluated.
+
+10. **`--frozen_readers_eval`** (`arguments.py`, default off = released
+    behaviour). `Trainer.keep_frozen_readers_in_eval()` (`trainers/trainer.py`)
+    runs right after `model.train()` in `MSMA_Trainer.train` and
+    `calibration.train_epoch`.
+    - It puts every subtree that has parameters and none trainable into eval.
+      The confidence head and temperature keep train mode.
+    - Only for `c-unimodal_*` / `temp_c-unimodal_*`: Round 3
+      (`c-msma`/`c-e-msma`) is never touched.
+    - `tools/pv/run.py` passes it on every r2/r2b plan. **This is the only
+      run-plan change:** 28 of 42 plans (all r2/r2b, both tasks, virtual and
+      real) gain `--frozen_readers_eval` and a deviation note. The 14 r1 plans
+      are identical.
+    - Effect on the verified virtual runs: none for EHR/CXR (no active
+      dropout). RR/DN r2 and r2b results change; their smoke runs need
+      re-running.
+    - Tests: `tests/test_frozen_eval_and_ece.py`.
+
+**A2 — one-class ECE (no change needed).**
+
+- Released `train()` passed `[N, L]` mortality probs to `compute_ece`, whose
+  loop over `num_classes = 1` read `probs[:, 0]`: **token 0 only**, as Farida
+  reports.
+- Since 9c5d50c, `train()` uses `flat_ece`, which reshapes to `[N·L, 1]`, so
+  every token is measured. For mortality today:
+  - EHR: all 48 bins;
+  - CXR: its 1 token (the CLS default);
+  - RR: all 512 positions, padding included, as the head is trained on all of
+    them.
+- The per-token tables use `probs[:, t]` for every t. Best-epoch selection
+  (`post_ece.mean()`) is therefore over all tokens; it changed in 9c5d50c and
+  not now.
+- Pinned by `test_one_class_ece_is_over_all_tokens_not_token_0`.
+
+**A3 — Round 3 fusion type (no code change; recommendation).**
+
+- `CMSMAFusion` uses `max(p, 1−p)` ∈ [0.5, 1] and high when ≥ θ
+  (`fusion.py:1461/1467`, `1526/1545`, `1592/1611`, `1654/1672`).
+- `EMSMAFusion` uses binary entropy ∈ [0, ln 2 ≈ 0.693] and high when ≥ θ
+  (`fusion.py:2463/2469`, `2528/2547`, `2594/2612`, `2655/2672`). With the
+  scripts' θ = 0.75 no token is ever high; with a lower θ it would pick the
+  least confident tokens.
+- Both consume the Round 2 heads and Round 2b temperatures through the same
+  keys (`*_confidence_predictor`, `*_temperature`), frozen.
+- `scripts/phenotyping/MedPatch/Confidence-Patching.sh` passes `c-e-msma`
+  (same as `Entropy-Patching.sh`); `scripts/mortality/MedPatch/Confidence-Patching.sh`
+  passes `c-msma`.
+- **Recommendation:** run Round 3 with `c-msma` for both tasks; treat
+  `c-e-msma` as an entropy ablation needing its threshold rule fixed.
+  CLAUDE.md's task table (`c-e-msma` for pneumonia) came from that script and
+  should be revisited.
+
+**A4 — `--data_pairs partial` without notes (no change).**
+
+- A stay with no RR (or DN) report loads without crashing: left merges at
+  `DataFusion.py:334`, `:388`, `:428` give NaN text, and collate turns it into
+  `""`. A missing X-ray becomes a zero image with `pairs=False`.
+- `CMSMAFusion.detect_missingness_batch` (`fusion.py:1366-1378`) marks those as
+  missing, and the late fusion masks their predictions and weights
+  (`fusion.py:1796-1812`).
+- **Risk:** the high/low token pools (`fusion.py:1478-1690`) ignore the mask.
+  `""` is BERT-encoded as `[CLS][SEP]` plus padding (`text_models.py:97` only
+  zeroes when there are no chunks) and a zero image is ViT-encoded, so phantom
+  tokens can enter the joint high/low predictions. Upstream behaviour.
+
+**How a parent is loaded today.** `--load_<reader>` → `Trainer.load_state`.
+
+- It is not strict and filters nothing by reader: every checkpoint key whose
+  name exists in the model is copied with `own_state[name].copy_(param)`.
+- "Not Loaded" lists checkpoint keys absent from the model; "Not Found" lists
+  model keys absent from the checkpoint (left at their initial values). Both
+  are printed, never fatal.
+- A shape mismatch is not reported: `copy_` broadcasts (a `[512]` or
+  `[1, 512]` tensor fills a `[25, 512]` parameter silently) and only raises for
+  non-broadcastable shapes.
+
+**New: `tools/pv/check_weights.py`** (+ `import_checkpoint --check-weights`).
+
+- Builds the reader's Round 2 (or 2b) model from the same paper-script argv,
+  compares names and shapes, applies the file via `Trainer.load_state` and
+  verifies the values.
+- Fails on any missing or mis-shaped encoder/classifier tensor, and for rr/dn
+  if the file's frozen BERT is not the pretrained `--bert-model-name`. Shapes
+  cannot catch that: BioBERT and Bio_ClinicalBERT share a 28,996 vocabulary.
+- Confidence head / temperature are "expected new".
+- Tests: `tests/test_check_weights.py` (encoders stubbed, both tasks).
+
+**Downstream:** Round 3 and the inference service must use the same BERT
+(`dmis-lab/biobert-v1.1` for these text readers) and the same filtered train
+lists.
+
+---
+
 ## 2026-10-05 — In-hospital mortality in `tools/pv` (Round 2 / 2b)
 
 **Scope:** task `in-hospital-mortality` (CLI `--task mortality`), readers EHR,
