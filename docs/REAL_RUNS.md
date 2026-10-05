@@ -134,6 +134,20 @@ Check four things in its output:
 
 Do the same for `ehr`, `cxr` and `dn`.
 
+**EHR normalizer.** Real runs pass no `--normalizer_state`, and nothing is
+fitted on the fly. `fusion_main.py` (lines 105–109) then loads the bundled
+file `medpatch/normalizers/ph_ts1.0.input_str_previous.start_time_zero.normalizer`
+(the `1.0` is `--timestep`, default 1.0; no phenotyping script changes it). That
+is the same file a Round 1 run with `normalizer_state None` loaded, and it has
+not changed in git since it was added, so Round 2/2b EHR inputs are standardised
+exactly as Round 1's were. Because the file is fixed, excluding a stay (such as 30007216) does not change it. The normalizer is **not** stored in the
+checkpoint (only `epoch`, `state_dict`, `best_auroc`, `optimizer`,
+`patience`). It is recorded in `args.txt` in each run's save folder, so check
+there: Round 1's `args.txt` and your Round 2's must both show
+`normalizer_state: None` and `timestep: 1.0`. If Round 1's `args.txt` shows
+anything else, do not run Round 2: `tools/pv/run.py` has no option for a custom
+normalizer on real data yet, so raise it with the model track first.
+
 ## 6. Round 2
 
 ```python

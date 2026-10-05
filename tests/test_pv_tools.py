@@ -177,3 +177,19 @@ def test_import_rejects_a_round2_file():
 
 def test_import_rejects_non_checkpoints():
     assert check_round1({"weights": 1}, "ehr")
+
+
+# ── normalizer resolution (real runs pass no --normalizer_state) ──────────────
+
+
+def test_bridge_resolves_the_default_normalizer_like_fusion_main():
+    from tools.pv.medpatch_bridge import MEDPATCH, normalizer_state_path, parse_args
+
+    real = parse_args(build_argv("r2", "ehr", {"--ehr_data_dir": "/content/data/ehr"}))
+    assert real.normalizer_state is None
+    expected = MEDPATCH / "normalizers" / "ph_ts1.0.input_str_previous.start_time_zero.normalizer"
+    assert normalizer_state_path(real) == expected
+    assert expected.is_file()  # the bundled code resource fusion_main.py loads
+
+    virtual = parse_args(["--normalizer_state", "/tmp/virtual.normalizer"])
+    assert str(normalizer_state_path(virtual)).replace("\\", "/") == "/tmp/virtual.normalizer"

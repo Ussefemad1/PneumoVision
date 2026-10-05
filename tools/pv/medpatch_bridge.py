@@ -47,6 +47,24 @@ def parse_args(argv: list[str]):
     return args_parser().parse_args(argv)
 
 
+def normalizer_state_path(args) -> Path:
+    """The normalizer file a run uses -- the same resolution as fusion_main.py.
+
+    fusion_main.py (lines 105-108): an explicit --normalizer_state, else the
+    bundled phenotyping file for the timestep,
+    medpatch/normalizers/ph_ts{timestep}.input_str_previous.start_time_zero.normalizer.
+    Real runs pass no --normalizer_state, so scoring must resolve the default
+    the same way; loading `None` raised TypeError after training had finished.
+    """
+    if args.normalizer_state:
+        return Path(args.normalizer_state)
+    return (
+        MEDPATCH
+        / "normalizers"
+        / f"ph_ts{args.timestep}.input_str_previous.start_time_zero.normalizer"
+    )
+
+
 def build_loaders(args):
     """(train_dl, val_dl, test_dl) exactly as fusion_main.py builds them."""
     import numpy as np  # noqa: PLC0415
@@ -70,7 +88,7 @@ def build_loaders(args):
         header = discretizer.transform(rows)[1].split(",")
         cont = [i for i, x in enumerate(header) if x.find("->") == -1]
         normalizer = Normalizer(fields=cont)
-        normalizer.load_params(args.normalizer_state)
+        normalizer.load_params(str(normalizer_state_path(args)))
 
         ehr_train, ehr_val, ehr_test = get_datasets(discretizer, normalizer, args)
         cxr_train, cxr_val, cxr_test = get_cxr_datasets(args)
