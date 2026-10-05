@@ -101,6 +101,9 @@ class calibration(Trainer):
         print(f"Starting train epoch {self.epoch}")
         print(f"Starting {'inference' if inference else 'training'} epoch {self.epoch}")
         self.model.train(not inference)  # Set model to eval mode for inference
+        if not inference:
+            # --frozen_readers_eval: everything but the temperature keeps eval mode.
+            self.keep_frozen_readers_in_eval()
     
         outGT = []
         outPRED = []

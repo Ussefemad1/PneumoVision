@@ -166,6 +166,13 @@ def args_parser():
                         help='Bootstrap resamples per class for the AUROC/AUPRC confidence '
                              'intervals (Trainer.computeAUROC). 1000 is the paper setting; '
                              'lower it only for smoke tests on synthetic data.')
+    parser.add_argument('--frozen_readers_eval', action='store_true',
+                        help='Round 2 / 2b only (c-unimodal_*, temp_c-unimodal_*): keep every '
+                             'fully frozen submodule (the reader -- BERT, LSTM, ViT) in eval mode '
+                             'while the head trains, so frozen-BERT dropout stays off as it was '
+                             'when the reader was trained and evaluated. Off by default (released '
+                             'behaviour: model.train() turns that dropout on). Never affects '
+                             'Round 3.')
     parser.add_argument('--cxr_token_confidence', action='store_true',
                         help='Feed the CXR confidence predictor the ViT patch tokens (one '
                              'confidence per patch) instead of the CLS vector (one per image, '

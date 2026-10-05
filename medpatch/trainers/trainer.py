@@ -330,6 +330,37 @@ class Trainer():
         eta = f"{d.day-1} Days {d.hour}:{d.minute}:{d.second}"
 
         return eta
+    def keep_frozen_readers_in_eval(self):
+        """With --frozen_readers_eval, put every fully frozen subtree in eval mode.
+
+        Call right after self.model.train(). That call puts the whole model in
+        train mode, including the frozen reader, so BERT's dropout (p=0.1) was
+        active while Round 2 / 2b trained the head -- unlike how the reader was
+        trained and evaluated. A subtree counts as frozen when it has parameters
+        and none requires grad; trainable modules (the confidence head, the
+        temperature) keep train mode.
+
+        Only for c-unimodal_* / temp_c-unimodal_* (Round 2 / 2b); Round 3
+        (c-msma, c-e-msma) is never touched. Returns the switched module names.
+        """
+        if not getattr(self.args, 'frozen_readers_eval', False):
+            return []
+        if 'c-unimodal' not in self.args.fusion_type:
+            return []
+        switched = []
+
+        def visit(name, module):
+            params = list(module.parameters())
+            if params and not any(p.requires_grad for p in params):
+                module.eval()
+                switched.append(name)
+                return
+            for child_name, child in module.named_children():
+                visit(f'{name}.{child_name}' if name else child_name, child)
+
+        visit('', self.model)
+        return switched
+
     def confidence_logits(self, output):
         """A c-unimodal output as [batch, tokens, classes], class axis dropped when 1.
 

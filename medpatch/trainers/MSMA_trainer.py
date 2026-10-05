@@ -470,6 +470,8 @@ class MSMA_Trainer(Trainer):
                     self.patience+=1
 
             self.model.train()
+            # --frozen_readers_eval: the frozen reader keeps eval mode (no BERT dropout).
+            self.keep_frozen_readers_in_eval()
             self.train_epoch()
 
             # Save every epoch, not only on improvement. 'best' is still written
