@@ -130,6 +130,12 @@ def main(argv: list[str] | None = None) -> dict[str, str]:
         action="store_true",
         help="allow full unpickling (only for files from people you trust)",
     )
+    p.add_argument(
+        "--check-weights",
+        action="store_true",
+        help="before registering, run tools.pv.check_weights against the reader's Round 2 "
+        "model (builds it, so needs the pretrained encoder: run on Colab); refuse on failure",
+    )
     args = p.parse_args(argv)
     task = canonical_task(args.task)
     try:
@@ -144,6 +150,25 @@ def main(argv: list[str] | None = None) -> dict[str, str]:
     problems = check_round1(load_checkpoint(path, args.trust_pickle), args.reader)
     if problems:
         raise SystemExit(f"Refusing to register {path}:\n  - " + "\n  - ".join(problems))
+
+    weights_note = ""
+    if args.check_weights:
+        from tools.pv import check_weights  # noqa: PLC0415 -- it imports this module
+
+        rep = check_weights.check(
+            args.reader,
+            task,
+            path,
+            stage="r2",
+            bert_model_name=bert_model_name or None,
+            trust_pickle=args.trust_pickle,
+        )
+        print(check_weights.describe(rep, path, "r2", task, bert_model_name or None))
+        if rep.failures:
+            raise SystemExit(f"Refusing to register {path}: weight check failed (see above).")
+        weights_note = f"weights: {rep.coverage:.0f}% covered ({len(rep.required())} tensors)"
+        if bert_model_name:
+            weights_note += f", BERT = {bert_model_name} pretrained"
 
     digest = manifest.sha256_file(path)
     duplicate = next((r for r in manifest.read_rows() if r["sha256"] == digest), None)
@@ -164,7 +189,7 @@ def main(argv: list[str] | None = None) -> dict[str, str]:
             "seed": args.seed,
             "val_auroc": args.val_auroc,
             "val_auprc": args.val_auprc,
-            "notes": "; ".join(filter(None, ["imported", args.notes])),
+            "notes": "; ".join(filter(None, ["imported", weights_note, args.notes])),
             "bert_model_name": bert_model_name,
         }
     )

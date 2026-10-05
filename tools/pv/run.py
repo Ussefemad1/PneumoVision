@@ -221,6 +221,11 @@ def plan(args) -> dict:
     overrides.update(data_dirs(args))
     overrides["--save_dir"] = str(save_dir)
     overrides["--resume"] = None
+    if stage in manifest.PARENT_STAGE:
+        # Round 2 / 2b train a head on a frozen reader. Keep the reader in eval
+        # mode (BERT dropout off), as it was when the reader was trained and
+        # evaluated; the released code leaves it on. No effect on EHR/CXR.
+        overrides["--frozen_readers_eval"] = None
 
     deviations = []
     defaults = dict(VIRTUAL_DEFAULTS[stage]) if args.data == "virtual" else {}
@@ -237,6 +242,8 @@ def plan(args) -> dict:
                 deviations.append(f"{name}={value} (paper {baseline})")
     if args.num_workers is not None:
         overrides["--num_workers"] = str(args.num_workers)
+    if "--frozen_readers_eval" in overrides:
+        deviations.append("frozen_readers_eval (frozen reader in eval: BERT dropout off)")
     if stage == "r2" and reader == "dn" and paper.get("--load_rr") is not None:
         deviations.append("--load_dn instead of the script's --load_rr (see model_track_notes)")
 

@@ -193,3 +193,32 @@ def test_bridge_resolves_the_default_normalizer_like_fusion_main():
 
     virtual = parse_args(["--normalizer_state", "/tmp/virtual.normalizer"])
     assert str(normalizer_state_path(virtual)).replace("\\", "/") == "/tmp/virtual.normalizer"
+
+
+# ── --frozen_readers_eval on Round 2 / 2b plans only ─────────────────────────
+
+
+@pytest.mark.parametrize("stage, expected", [("r1", False), ("r2", True), ("r2b", True)])
+def test_frozen_readers_eval_only_on_r2_and_r2b(tmp_manifest, tmp_path, stage, expected):
+    for parent_stage in ("r1", "r2"):
+        _r1(tmp_path, reader="cxr", stage=parent_stage)
+    args = argparse.Namespace(
+        stage=stage,
+        reader="cxr",
+        data="virtual",
+        parent=None,
+        run_id=None,
+        preset="smoke",
+        data_root=None,
+        epochs=None,
+        batch_size=None,
+        bootstrap_iters=None,
+        num_workers=None,
+    )
+    root = tmp_path / "virtual"
+    root.mkdir(exist_ok=True)
+    (root / "README.md").write_text("SYNTHETIC")
+    args.data_root = str(root)
+    plan = run.plan(args)
+    assert ("--frozen_readers_eval" in plan["argv"]) is expected
+    assert any("frozen_readers_eval" in d for d in plan["deviations"]) is expected
