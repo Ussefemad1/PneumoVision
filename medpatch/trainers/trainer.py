@@ -342,9 +342,15 @@ class Trainer():
 
         Lives on the base Trainer so MSMA_Trainer (Round 2) and calibration
         (Round 2b) share it without importing each other.
+
+        Only a 3-D output has a class axis to drop. With num_classes 1
+        (mortality) ConfidencePredictor has already squeezed it, so the output
+        is [batch, tokens] -- and for the single default CXR token that is
+        [B, 1], whose last axis is the *token* axis and must be kept. Phenotyping
+        outputs are always 3-D [B, tokens, 25], so they are unaffected.
         """
         pred = output[self.args.fusion_type]
-        return pred.squeeze(-1) if pred.shape[-1] == 1 else pred
+        return pred.squeeze(-1) if pred.dim() == 3 and pred.shape[-1] == 1 else pred
 
     def get_gt(self, y_ehr, y_cxr):
         if 'radiology' in self.args.labels_set :
