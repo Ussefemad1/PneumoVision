@@ -12,6 +12,7 @@ On virtual data every number here is SYNTHETIC -- not a scientific result.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -28,8 +29,15 @@ READER_PREFIX = {"ehr": "ehr_model.", "cxr": "cxr_model.", "rr": "text_model.", 
 AUROC_FLOOR = 0.55
 
 
+#: Restrict the checks to one task (set by the smoke scripts); unset = latest row
+#: of any task, as before.
+CHECK_TASK = os.environ.get("PV_CHECK_TASK") or None
+
+
 def r2_row(reader: str) -> dict[str, str]:
-    row = manifest.latest("r2", reader)
+    if CHECK_TASK == "in-hospital-mortality" and reader == "dn":
+        pytest.skip("dn is not a mortality reader (discharge notes leak the outcome)")
+    row = manifest.latest("r2", reader, task=CHECK_TASK)
     if row is None:
         pytest.skip(
             f"no r2 row for {reader} in {manifest.manifest_path()} -- "
@@ -167,6 +175,7 @@ def test_d_lineage():
         assert parent["stage"] == "r1", f"{row['id']}: parent is {parent['stage']}"
         assert parent["reader"] == row["reader"], f"{row['id']}: parent reader differs"
         assert parent["data"] == row["data"], f"{row['id']}: parent data kind differs"
+        assert parent["task"] == row["task"], f"{row['id']}: parent task differs"
         assert manifest.sha256_file(Path(parent["file_path"])) == parent["sha256"], (
             f"{row['id']}: parent file no longer matches its sha256"
         )

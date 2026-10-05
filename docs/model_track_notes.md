@@ -9,6 +9,67 @@ Newest first.
 
 ---
 
+## 2026-10-05 — In-hospital mortality in `tools/pv` (Round 2 / 2b)
+
+**Scope:** task `in-hospital-mortality` (CLI `--task mortality`), readers EHR,
+CXR, RR. **DN is refused for mortality everywhere** (script lookup,
+`import_checkpoint`, `run`, smoke): discharge notes leak the outcome.
+
+**`medpatch/` (one change):**
+
+9. **`Trainer.confidence_logits` with one class** (`trainers/trainer.py`).
+   With `num_classes 1`, `ConfidencePredictor` already squeezes the class axis,
+   so a mortality head outputs `[B, tokens]`. For CXR's single default token
+   that is `[B, 1]`, and `confidence_logits` dropped that axis to `[B]`. The
+   next line (`y.unsqueeze(1).repeat(1, pred.shape[1])`) then raised in both
+   `MSMA_Trainer` (r2) and `calibration` (r2b). Now only a **3-D** output loses a
+   size-1 last axis. Phenotyping outputs are always 3-D `[B, L, 25]`, so that
+   path is unchanged. Covered by `test_confidence_logits_handles_one_class`.
+
+Checked and left alone (they already work with one class): MSMA's mortality
+branches (`repeat(1, pred.shape[1])`, the `num_classes > 1` max);
+`Calibration.train_epoch` (EHR padding is phenotyping-only, mortality EHR is a
+fixed 48 bins), `flat_ece`/`compute_ece` with `[N, L]` → `[N·L, 1]`, the
+per-token tables (`num_classes = 1` branch); `TempCUnimodal*` 1-D temperature
+`[max_seq_len]` against `[B, L]` logits.
+
+**`tools/pv`:**
+
+- `paper_scripts`: task-aware (`script_path(stage, reader, task)`), reading
+  `medpatch/scripts/mortality/...`; `SCRIPT_FOR`, `build_argv` and
+  `script_settings` take an optional task (default phenotyping, so existing
+  callers are unchanged).
+- `manifest`: the `task` column already existed; empty values read as
+  `phenotyping`; `latest(..., task=)`; `verify_parent(..., task=)` refuses a
+  parent of another task.
+- `import_checkpoint --task`; `run --task` (folder
+  `RUNS_ROOT/in-hospital-mortality/...` for mortality; phenotyping layout
+  unchanged), task in `run.json`, the manifest row and `--dry-run`.
+- `run --normalizer-state` (real data, opt-in): `fusion_main.py` defaults to
+  the _phenotyping_ normalizer for every task, so a mortality Round 2 must pass
+  whatever its Round 1 used (see `docs/REAL_RUNS.md`).
+- `evaluate`: target class per task (pneumonia 21 / mortality 0); handles
+  `[B]` labels and `[B, L]` one-class token outputs.
+- Smoke: `smoke_round2 / smoke_round2b --task mortality`; the checks filter
+  rows by `PV_CHECK_TASK` (set by the smoke scripts; unset = previous
+  behaviour) and lineage now also requires the same task.
+- `tools/synthetic/make_virtual_dataset.py --task mortality`:
+  `generate_mortality()` writes the benchmark's in-hospital-mortality layout
+  (`stay,period_length,stay_id,y_true`, first 48 h only, CXR and RR inside the
+  48 h, header-only `discharge.csv`) to `data/virtual/<preset>-mortality`.
+  `generate()` is untouched.
+
+**Phenotyping parity (verified, not assumed):** the phenotyping `run.plan()`
+output (argv, save_dir, script, parent, deviations, BERT) for r1/r2/r2b ×
+4 readers × virtual/real was dumped before and after this change and is
+identical, and the phenotyping smoke dataset is byte-identical (102 files).
+
+**Not verified here (no training on this machine):** an actual mortality
+r2/r2b run. `tests/test_mortality_tools.py` (38) covers the non-training paths,
+including the mortality virtual data loading through medpatch's loaders.
+
+---
+
 ## 2026-10-05 — `--bert_model_name`, BERT lineage, real-data prep (phenotyping)
 
 **Why:** Farida trained the real RR/DN Round 1 readers with

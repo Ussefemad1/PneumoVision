@@ -7,6 +7,10 @@
 Text readers (rr/dn) also need ``--bert-model-name`` on real data, e.g.
 ``--bert-model-name dmis-lab/biobert-v1.1``. Round 2 and 2b inherit it.
 
+``--task`` (default phenotyping; ``mortality`` for in-hospital mortality) is
+recorded, and a run only ever loads a parent of its own task. DN is refused for
+mortality: discharge notes leak the outcome.
+
 This is how real Round 1 files replace the virtual stand-ins: once a file is
 registered as an r1 row, ``python -m tools.pv.run r2 --reader cxr --data real``
 loads it (the latest r1 row for that reader and data kind, or ``--parent ID``).
@@ -31,7 +35,12 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from tools.pv import manifest  # noqa: E402
-from tools.pv.paper_scripts import READERS  # noqa: E402
+from tools.pv.paper_scripts import (  # noqa: E402
+    READERS,
+    TASK_ALIASES,
+    canonical_task,
+    refuse_reader,
+)
 
 #: state_dict key prefixes a Round 1 checkpoint of each reader must contain.
 REQUIRED_PREFIXES = {
@@ -100,7 +109,12 @@ def main(argv: list[str] | None = None) -> dict[str, str]:
     p.add_argument("--file", type=Path, required=True)
     p.add_argument("--who", required=True, help="who trained it (as in the team Sheet)")
     p.add_argument("--data", choices=manifest.DATA_KINDS, default="real")
-    p.add_argument("--task", default="phenotyping")
+    p.add_argument(
+        "--task",
+        choices=sorted(TASK_ALIASES),
+        default="phenotyping",
+        help="phenotyping (default) or mortality (= in-hospital-mortality)",
+    )
     p.add_argument("--seed", default="")
     p.add_argument("--val-auroc", dest="val_auroc", default="")
     p.add_argument("--val-auprc", dest="val_auprc", default="")
@@ -117,6 +131,11 @@ def main(argv: list[str] | None = None) -> dict[str, str]:
         help="allow full unpickling (only for files from people you trust)",
     )
     args = p.parse_args(argv)
+    task = canonical_task(args.task)
+    try:
+        refuse_reader(args.reader, task)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     bert_model_name = resolve_bert_model_name(args.reader, args.data, args.bert_model_name)
 
     path = args.file.resolve()
@@ -137,7 +156,7 @@ def main(argv: list[str] | None = None) -> dict[str, str]:
             "who": args.who,
             "stage": "r1",
             "reader": args.reader,
-            "task": args.task,
+            "task": task,
             "file_path": path.as_posix(),
             "sha256": digest,
             "parent_id": "",
@@ -151,7 +170,7 @@ def main(argv: list[str] | None = None) -> dict[str, str]:
     )
     bert = f"  BERT {bert_model_name}" if bert_model_name else ""
     print(
-        f"Registered {row['id']}  {args.reader.upper()}  sha256 {digest[:12]}...{bert}  "
+        f"Registered {row['id']}  {args.reader.upper()}  {task}  sha256 {digest[:12]}...{bert}  "
         f"-> {manifest.manifest_path()}"
     )
     return row

@@ -17,6 +17,7 @@ On virtual data every number here is SYNTHETIC -- not a scientific result.
 from __future__ import annotations
 
 import copy
+import os
 from pathlib import Path
 
 import pytest
@@ -34,8 +35,15 @@ pytestmark = pytest.mark.round2b
 ECE_TOLERANCE = 0.02
 
 
+#: Restrict the checks to one task (set by the smoke scripts); unset = latest row
+#: of any task, as before.
+CHECK_TASK = os.environ.get("PV_CHECK_TASK") or None
+
+
 def r2b_row(reader: str) -> dict[str, str]:
-    row = manifest.latest("r2b", reader)
+    if CHECK_TASK == "in-hospital-mortality" and reader == "dn":
+        pytest.skip("dn is not a mortality reader (discharge notes leak the outcome)")
+    row = manifest.latest("r2b", reader, task=CHECK_TASK)
     if row is None:
         pytest.skip(
             f"no r2b row for {reader} in {manifest.manifest_path()} -- "
@@ -169,6 +177,7 @@ def test_d_lineage():
         assert parent["stage"] == "r2", f"{row['id']}: parent is {parent['stage']}, not r2"
         assert parent["reader"] == row["reader"], f"{row['id']}: parent reader differs"
         assert parent["data"] == row["data"], f"{row['id']}: parent data kind differs"
+        assert parent["task"] == row["task"], f"{row['id']}: parent task differs"
         assert manifest.sha256_file(Path(parent["file_path"])) == parent["sha256"], (
             f"{row['id']}: parent file no longer matches its sha256"
         )

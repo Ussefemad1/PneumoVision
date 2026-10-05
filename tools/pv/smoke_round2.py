@@ -16,6 +16,7 @@ Everything it produces is SYNTHETIC -- not a scientific result.
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 import time
@@ -28,7 +29,12 @@ if __package__ in (None, ""):
 
 from tools.pv import manifest, run  # noqa: E402
 from tools.pv.medpatch_bridge import REPO_ROOT  # noqa: E402
-from tools.pv.paper_scripts import READERS  # noqa: E402
+from tools.pv.paper_scripts import (  # noqa: E402
+    DEFAULT_TASK,
+    READERS,
+    READERS_FOR_TASK,
+    canonical_task,
+)
 
 
 def _fmt(seconds: float) -> str:
@@ -46,8 +52,18 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="reuse the latest virtual r1 rows instead of retraining them",
     )
-    p.add_argument("--readers", nargs="+", choices=READERS, default=list(READERS))
+    p.add_argument(
+        "--task",
+        choices=("phenotyping", "mortality"),
+        default="phenotyping",
+        help="mortality: readers ehr, cxr, rr on data/virtual/smoke-mortality",
+    )
+    p.add_argument("--readers", nargs="+", choices=READERS, default=None)
     args = p.parse_args(argv)
+    task = canonical_task(args.task)
+    readers = args.readers or list(READERS_FOR_TASK[task])
+    if task != DEFAULT_TASK and "dn" in readers:
+        p.error("dn is not a mortality reader: discharge notes leak the outcome")
 
     started = time.time()
     timings: list[tuple[str, float]] = []
@@ -59,23 +75,27 @@ def main(argv: list[str] | None = None) -> int:
         timings.append((name, time.time() - t))
         return result
 
-    data_root = REPO_ROOT / "data" / "virtual" / "smoke"
+    suffix = "" if task == DEFAULT_TASK else "-mortality"
+    data_root = REPO_ROOT / "data" / "virtual" / f"smoke{suffix}"
     if args.regenerate or not (data_root / "README.md").is_file():
-        from tools.synthetic.make_virtual_dataset import generate  # noqa: PLC0415
-
-        step(
-            "generate virtual smoke dataset", lambda: print(generate(data_root, "smoke", args.seed))
+        from tools.synthetic.make_virtual_dataset import (  # noqa: PLC0415
+            generate,
+            generate_mortality,
         )
+
+        build = generate if task == DEFAULT_TASK else generate_mortality
+
+        step("generate virtual smoke dataset", lambda: print(build(data_root, "smoke", args.seed)))
     else:
         print(f"using existing virtual dataset {data_root} (--regenerate to rebuild)")
 
-    common = ["--data", "virtual", "--preset", "smoke", "--who", "smoke_round2"]
+    common = ["--data", "virtual", "--preset", "smoke", "--who", "smoke_round2", "--task", task]
     rows = {}
-    for reader in args.readers:
-        if args.skip_r1 and manifest.latest("r1", reader, "virtual"):
+    for reader in readers:
+        if args.skip_r1 and manifest.latest("r1", reader, "virtual", task=task):
             continue
         step(f"r1 stand-in: {reader}", lambda r=reader: run.main(["r1", "--reader", r, *common]))
-    for reader in args.readers:
+    for reader in readers:
         rows[reader] = step(
             f"r2: {reader}", lambda r=reader: run.main(["r2", "--reader", r, *common])
         )
@@ -95,6 +115,8 @@ def main(argv: list[str] | None = None) -> int:
                 "tests/round2",
             ],
             cwd=REPO_ROOT,
+            # Check this task's rows only (tests/round2: PV_CHECK_TASK).
+            env={**os.environ, "PV_CHECK_TASK": task},
         ),
     )
 

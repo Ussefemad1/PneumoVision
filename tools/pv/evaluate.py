@@ -1,17 +1,18 @@
 """Scoring a checkpoint on the validation split, with medpatch's own model.
 
-Metrics are AUROC and AUPRC only (never accuracy), for the platform's task:
-pneumonia, phenotype class 21.
+Metrics are AUROC and AUPRC only (never accuracy), for the platform's target
+of each task: phenotyping -> pneumonia, phenotype class 21; in-hospital
+mortality -> its single class (index 0).
 
-- r1 (``unimodal_*``): the reader's classifier logit for class 21.
+- r1 (``unimodal_*``): the reader's classifier logit for the target class.
 - r2 (``c-unimodal_*``) and r2b (``temp_c-unimodal_*``, the same head with
   its logits divided by the learned temperature): each token predicts the
-  label; the stay's score is the mean over its tokens of sigmoid(logit[21]).
+  label; the stay's score is the mean over its tokens of sigmoid(logit[target]).
   EHR tokens past a stay's real length are LSTM padding and are excluded.
 
 For token models the expected calibration error is also reported: medpatch's
 own ``Calibration.compute_ece`` (10 bins, confidence max(p, 1-p)) per class over
-every real token, averaged over the 25 classes.
+every real token, averaged over the classes (25, or 1 for mortality).
 
 Round 2 in medpatch computes no AUROC of its own (its best checkpoint is picked
 by validation loss), so this is the only place r2 AUROC/AUPRC come from.
@@ -32,6 +33,14 @@ import torch
 from .medpatch_bridge import build_loaders, build_trainer, parse_args
 
 PNEUMONIA = 21
+#: The class each task's AUROC/AUPRC is reported for.
+TARGET_CLASS = {"phenotyping": PNEUMONIA, "in-hospital-mortality": 0}
+
+
+def _as_2d(labels) -> torch.Tensor:
+    """Labels as [B, classes]: mortality's are one scalar per stay ([B])."""
+    y = torch.as_tensor(np.asarray(labels), dtype=torch.float32)
+    return y[:, None] if y.dim() == 1 else y
 
 
 def checkpoint_path(args, prefix: str = "best") -> Path:
@@ -118,24 +127,29 @@ def score_checkpoint(args, checkpoint: Path, loaders=None, split: str = "val") -
     dl = {"train": loaders[0], "val": loaders[1], "test": loaders[2]}[split]
 
     is_token = is_token_model(trainer.args.fusion_type)
+    target = TARGET_CLASS[trainer.args.task]
     labels, scores, gammas = [], [], []
     token_probs, token_labels = [], []
     for batch in dl:
         logits, seq_lengths = model_output(trainer, batch)
-        y_all = torch.as_tensor(np.asarray(batch[4]), dtype=torch.float32)  # [B, 25]
-        y = y_all[:, PNEUMONIA].numpy()
+        y_all = _as_2d(batch[4])  # [B, 25] phenotyping, [B, 1] mortality
+        y = y_all[:, target].numpy()
         if is_token:
+            # With one class ConfidencePredictor squeezes the class axis away:
+            # [B, tokens] -> [B, tokens, 1], so both tasks index the same way.
+            if logits.dim() == 2:
+                logits = logits.unsqueeze(-1)
             mask = token_mask(trainer, logits, seq_lengths).to(logits.device)
-            prob = torch.sigmoid(logits[..., PNEUMONIA])
+            prob = torch.sigmoid(logits[..., target])
             per_stay = (prob * mask).sum(1) / mask.sum(1).clamp(min=1)
             scores.append(per_stay.cpu().numpy())
-            p_all = torch.sigmoid(logits)[mask]  # [n_tokens, 25]
+            p_all = torch.sigmoid(logits)[mask]  # [n_tokens, classes]
             gammas.append(torch.maximum(p_all, 1 - p_all).flatten().cpu().numpy())
             token_probs.append(p_all.cpu())
             y_tok = y_all[:, None, :].expand(-1, logits.shape[1], -1)
             token_labels.append(y_tok[mask.cpu()])
         else:
-            scores.append(logits.reshape(len(y), -1)[:, PNEUMONIA].cpu().numpy())
+            scores.append(logits.reshape(len(y), -1)[:, target].cpu().numpy())
         labels.append(y)
 
     labels_np, scores_np = np.concatenate(labels), np.concatenate(scores)

@@ -1,4 +1,4 @@
-# Real-data Round 2 / 2b on Colab (phenotyping)
+# Real-data Round 2 / 2b on Colab (phenotyping and mortality)
 
 How to run Round 2 (confidence heads) and Round 2b (calibration) on the **real**
 data, starting from the team's real Round 1 checkpoints. It uses the same
@@ -6,8 +6,9 @@ tooling as the virtual runs ([TESTING_ROUND2.md](TESTING_ROUND2.md),
 [TESTING_ROUND2B.md](TESTING_ROUND2B.md)); only `--data real` and the data paths
 change.
 
-Scope: **phenotyping only** (pneumonia = class 21). Mortality is not wired into
-`tools/pv` yet.
+Scope: sections 0–8 are **phenotyping** (pneumonia = class 21), the default
+task. **In-hospital mortality** uses the same flow with `--task mortality`; see
+[Mortality](#mortality-in-hospital) at the end.
 
 > **Data rules (PhysioNet DUA):** the MIMIC data stays on your Drive and the
 > Colab VM. Never copy it into the repo, never commit it, never paste rows or
@@ -220,3 +221,76 @@ vocabulary:
 - Other medpatch trainers (the ensembles, DHF, staged, etc.) and
   `models/rr_encoder.py` also hardcode Bio_ClinicalBERT. They are not on the
   Round 2/2b/3 path; check before using any of them with these checkpoints.
+
+---
+
+## Mortality (in-hospital)
+
+Same Colab flow as sections 0–8 (Drive, copy/unzip, import, dry-run, r2, r2b,
+checks), with `--task mortality` on every `import_checkpoint` and `run`
+command. `mortality` is short for medpatch's `in-hospital-mortality`; the
+manifest records the long name.
+
+**Readers: EHR, CXR and RR only.** There is no DN reader for mortality:
+discharge notes leak the outcome (they are written after death or discharge).
+`import_checkpoint`, `run` and the smoke scripts all refuse `--reader dn` with
+`--task mortality`.
+
+**What changes.** The commands are built from
+`medpatch/scripts/mortality/{Unimodal,Confidence,Calibrate}/*.sh`, which set
+`--task in-hospital-mortality --labels_set mortality --num_classes 1` (epochs
+100, batch 16, lr 0.001, `--data_pairs paired`, read from those files). The
+EHR folder must contain `in-hospital-mortality/{train,val,test}_listfile.csv`
+and `in-hospital-mortality/{train,test}/` from the extraction. Runs land in
+`RUNS_ROOT/in-hospital-mortality/<stage>/<reader>/<id>/`, separate from
+phenotyping. The metric recorded is mortality AUROC/AUPRC on the val split.
+
+**Lineage is per task.** A mortality run only ever loads a mortality parent.
+Pointing `--parent` at a phenotyping row (or the reverse) is refused, and
+without `--parent` only rows of the same task are considered.
+
+```python
+!python -m tools.pv.import_checkpoint --task mortality --reader ehr --who "<who>" --file "/content/drive/MyDrive/<…>/best_checkpoint_0.001_in-hospital-mortality_unimodal_ehr_EHR_paired.pth.tar" --val-auroc <x> --val-auprc <y>
+!python -m tools.pv.import_checkpoint --task mortality --reader cxr --who "Norhan" --file "/content/drive/MyDrive/<…>/best_checkpoint_<lr>_in-hospital-mortality_unimodal_cxr_EHR-CXR_paired.pth.tar" --val-auroc <x> --val-auprc <y>
+!python -m tools.pv.import_checkpoint --task mortality --reader rr  --who "Farida" --bert-model-name dmis-lab/biobert-v1.1 --file "/content/drive/MyDrive/<…>/best_checkpoint_0.001_in-hospital-mortality_unimodal_rr_EHR-RR_paired.pth.tar" --val-auroc <x> --val-auprc <y>
+
+!python -m tools.pv.run r2  --task mortality --reader rr --data real {DATA} --dry-run   # check first
+!python -m tools.pv.run r2  --task mortality --reader ehr --data real {DATA}
+!python -m tools.pv.run r2  --task mortality --reader cxr --data real {DATA}
+!python -m tools.pv.run r2  --task mortality --reader rr  --data real {DATA}
+!python -m tools.pv.run r2b --task mortality --reader ehr --data real {DATA}          # one session each
+!python -m tools.pv.run r2b --task mortality --reader cxr --data real {DATA}
+!python -m tools.pv.run r2b --task mortality --reader rr  --data real {DATA}
+```
+
+Resume Round 2 with `--run-id` exactly as for phenotyping; Round 2b still
+cannot resume.
+
+**Norhan's CXR mortality checkpoint was trained at lr 3e-5.** That only
+describes how her Round 1 file was made. It does not change the Round 2 / 2b
+settings, which come from the mortality Confidence/Calibrate scripts
+(lr 0.001). Her file's name contains its own lr, so match `<lr>` above to it.
+
+**EHR normalizer (check this one).** `fusion_main.py` defaults to the
+_phenotyping_ normalizer file for every task (see "EHR normalizer" in
+section 5). A mortality Round 1 run with `normalizer_state None` therefore used
+the phenotyping file, and so will your Round 2 if you pass nothing, which keeps
+them consistent. medpatch also ships a mortality file,
+`medpatch/normalizers/ihm_ts1.0.input_str_previous.start_time_zero.normalizer`.
+If the Round 1 EHR (or any reader's) `args.txt` shows that file, pass the same
+one: `--normalizer-state /content/PneumoVision/medpatch/normalizers/ihm_ts1.0.input_str_previous.start_time_zero.normalizer`.
+Round 2/2b must use whatever Round 1 used.
+
+**Checks:** `PV_CHECK_TASK=in-hospital-mortality python -m pytest -m round2 -s`
+(and `-m round2b`) checks the mortality rows only.
+
+### Virtual mortality smoke (Colab or any CPU)
+
+```python
+!python -m tools.pv.smoke_round2  --task mortality              # generate -> r1 x3 -> r2 x3 -> checks
+!python -m tools.pv.smoke_round2b --task mortality --skip-r1 --skip-r2   # r2b x3 -> checks
+```
+
+The first command creates `data/virtual/smoke-mortality` (SYNTHETIC — not a
+scientific result: invented stays with a planted signal; the discharge-note
+file is empty on purpose) and runs the readers EHR, CXR and RR.

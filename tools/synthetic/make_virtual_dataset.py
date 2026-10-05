@@ -1,5 +1,7 @@
 """Generate a fully invented dataset in the exact layout ``medpatch/fusion_main.py``
-expects for ``--task phenotyping``.
+expects for ``--task phenotyping`` (default) or, with ``--task mortality``, for
+``--task in-hospital-mortality`` (see ``generate_mortality``; written to
+``data/virtual/<preset>-mortality``).
 
 SYNTHETIC -- not a scientific result. Nothing here is read from, sampled from
 or derived from MIMIC. Column names follow the *published* schemas of
@@ -493,9 +495,18 @@ def generate(out: Path, preset_name: str, seed: int = 0) -> dict:
     return summary
 
 
-def fit_normalizer(ehr: Path, train_rows: list) -> Path:
+def fit_normalizer(
+    ehr: Path,
+    train_rows: list,
+    task_dir: str = "phenotyping",
+    file_name: str = "ph_ts1.0.virtual.normalizer",
+    end: float | None = None,
+) -> Path:
     """Fit the repo's own Normalizer on the virtual train split, so nothing
-    downstream depends on the MIMIC-derived statistics in medpatch/normalizers."""
+    downstream depends on the MIMIC-derived statistics in medpatch/normalizers.
+
+    The defaults are the phenotyping dataset's; mortality passes its own task
+    folder, file name and the fixed 48-hour window (its listfiles carry 0)."""
     sys.path.insert(0, str(MEDPATCH))
     from ehr_utils.preprocessing import Discretizer, Normalizer  # noqa: PLC0415
 
@@ -509,15 +520,214 @@ def fit_normalizer(ehr: Path, train_rows: list) -> Path:
     header = None
     normalizer = None
     for stay_file, period, *_ in train_rows:
-        raw = pd.read_csv(ehr / "phenotyping" / "train" / stay_file, dtype=str).fillna("")
-        data, header = discretizer.transform(raw.values, end=period)
+        raw = pd.read_csv(ehr / task_dir / "train" / stay_file, dtype=str).fillna("")
+        data, header = discretizer.transform(raw.values, end=period if end is None else end)
         if normalizer is None:
             cont = [i for i, x in enumerate(header.split(",")) if x.find("->") == -1]
             normalizer = Normalizer(fields=cont)
         normalizer._feed_data(data)
-    path = ehr / "ph_ts1.0.virtual.normalizer"
+    path = ehr / file_name
     normalizer._save_params(str(path))
     return path
+
+
+# ── In-hospital mortality ────────────────────────────────────────────────────
+
+MORTALITY_TASK = "in-hospital-mortality"
+MORTALITY_WINDOW_HOURS = 48.0
+NOTE_COLUMNS = [
+    "note_id",
+    "subject_id",
+    "hadm_id",
+    "note_type",
+    "note_seq",
+    "charttime",
+    "storetime",
+    "text",
+]
+
+
+def generate_mortality(out: Path, preset_name: str, seed: int = 0) -> dict:
+    """A virtual in-hospital-mortality dataset (EHR, CXR, radiology reports).
+
+    Same layout as the MIMIC-IV benchmark's in-hospital-mortality extraction
+    (medpatch/mimic4extract/.../create_in_hospital_mortality.py): listfiles
+    ``stay,period_length,stay_id,y_true`` with period_length 0 (the loader then
+    uses the 48-hour window), and only the first 48 hours of each stay charted.
+    X-rays and radiology reports fall inside those 48 hours, as
+    datasets/DataFusion.py requires for this task. ``discharge.csv`` is written
+    header-only: the loader opens it whenever notes are requested, but mortality
+    never uses discharge notes (they leak the outcome), so it holds no text.
+
+    The planted signal reuses the phenotyping one, driven by death instead of
+    pneumonia: deteriorating vitals, a brighter lung blob, consolidation
+    language. SYNTHETIC -- not a scientific result.
+    """
+    preset = PRESETS[preset_name]
+    rng = np.random.default_rng(seed)
+    config = json.loads(DISCRETIZER_CONFIG.read_text())
+
+    ehr, cxr, notes = out / "ehr", out / "cxr", out / "notes"
+    for d in (
+        ehr / "root",
+        ehr / MORTALITY_TASK / "train",
+        ehr / MORTALITY_TASK / "test",
+        cxr / "resized",
+        notes,
+    ):
+        d.mkdir(parents=True, exist_ok=True)
+
+    n = preset.stays
+    died = np.zeros(n, dtype=int)
+    died[rng.choice(n, size=max(2, round(0.12 * n)), replace=False)] = 1
+    has_cxr = np.zeros(n, dtype=bool)
+    n_cxr = max(3, round(preset.cxr_rate * n))
+    positives, negatives = np.flatnonzero(died == 1), np.flatnonzero(died == 0)
+    n_pos_cxr = min(len(positives), n_cxr, round(preset.cxr_given_pneumonia * len(positives)))
+    has_cxr[rng.choice(positives, size=n_pos_cxr, replace=False)] = True
+    has_cxr[rng.choice(negatives, size=n_cxr - n_pos_cxr, replace=False)] = True
+    splits = _stratified_split(rng, list(zip(died, has_cxr, strict=True)), preset.split)
+
+    stays, listfiles = [], {"train": [], "val": [], "test": []}
+    metadata, chexpert, cxr_split, rad = [], [], [], []
+    base = datetime(2150, 1, 1)
+    window = MORTALITY_WINDOW_HOURS
+    note_id = 0
+    for i in range(n):
+        subject_id, hadm_id, stay_id = 10_000_000 + i, 20_000_000 + i, 30_000_000 + i
+        dies = bool(died[i])
+        hours = float(rng.uniform(window, 2 * window))  # the benchmark keeps stays >= 48 h
+        intime = base + timedelta(
+            days=int(rng.integers(0, 3650)), minutes=int(rng.integers(0, 1440))
+        )
+        outtime = intime + timedelta(hours=hours)
+        stays.append(
+            {
+                "subject_id": subject_id,
+                "hadm_id": hadm_id,
+                "stay_id": stay_id,
+                "last_careunit": "Medical Intensive Care Unit (MICU)",
+                "intime": intime,
+                "outtime": outtime,
+                "los": round(hours / 24, 4),
+                "admittime": intime - timedelta(hours=2),
+                "dischtime": outtime + timedelta(hours=20),
+                "deathtime": outtime if dies else "",
+                "ethnicity": str(rng.choice(ETHNICITIES)),
+                "gender": str(rng.choice(["M", "F"])),
+                "age": int(rng.integers(18, 91)),
+                "mortality_inunit": int(dies),
+                "mortality": int(dies),
+                "mortality_inhospital": int(dies),
+            }
+        )
+
+        split = splits[i]
+        folder = "test" if split == "test" else "train"
+        stay_file = f"{subject_id}_episode1_timeseries.csv"
+        make_timeseries(rng, config, window, dies).to_csv(
+            ehr / MORTALITY_TASK / folder / stay_file, index=False
+        )
+        listfiles[split].append([stay_file, 0, stay_id, int(dies)])
+
+        if has_cxr[i]:
+            study_id = 50_000_000 + i
+            dicom_id = "-".join(f"{int(x):08x}" for x in rng.integers(0, 2**32, size=5))
+            taken = intime + timedelta(hours=float(rng.uniform(1.0, window - 1.0)))
+            img_dir = (
+                cxr / "resized" / f"p{str(subject_id)[:2]}" / f"p{subject_id}" / f"s{study_id}"
+            )
+            img_dir.mkdir(parents=True, exist_ok=True)
+            make_xray(rng, preset.image_px, dies).save(img_dir / f"{dicom_id}.jpg", quality=90)
+            metadata.append(
+                {
+                    "dicom_id": dicom_id,
+                    "subject_id": subject_id,
+                    "study_id": study_id,
+                    "PerformedProcedureStepDescription": "CHEST (PORTABLE AP)",
+                    "ViewPosition": "AP",
+                    "Rows": preset.image_px,
+                    "Columns": preset.image_px,
+                    "StudyDate": taken.strftime("%Y%m%d"),
+                    "StudyTime": taken.strftime("%H%M%S.000"),
+                    "ProcedureCodeSequence_CodeMeaning": "CHEST (PORTABLE AP)",
+                    "ViewCodeSequence_CodeMeaning": "antero-posterior",
+                    "PatientOrientationCodeSequence_CodeMeaning": "Erect",
+                }
+            )
+            findings = {c: 0.0 for c in CHEXPERT}
+            findings["No Finding"] = 0.0 if dies else 1.0
+            chexpert.append({"subject_id": subject_id, "study_id": study_id, **findings})
+            cxr_split.append(
+                {
+                    "dicom_id": dicom_id,
+                    "study_id": study_id,
+                    "subject_id": subject_id,
+                    "split": {"val": "validate"}.get(split, split),
+                }
+            )
+
+        for _ in range(int(rng.integers(1, 3))):
+            note_id += 1
+            charted = intime + timedelta(hours=float(rng.uniform(0.5, window - 0.5)))
+            rad.append(
+                {
+                    "note_id": f"{subject_id}-RR-{note_id}",
+                    "subject_id": subject_id,
+                    "hadm_id": hadm_id,
+                    "note_type": "RR",
+                    "note_seq": note_id,
+                    "charttime": charted,
+                    "storetime": charted + timedelta(minutes=30),
+                    "text": radiology_text(rng, dies),
+                }
+            )
+
+    fmt = "%Y-%m-%d %H:%M:%S"
+    pd.DataFrame(stays).to_csv(ehr / "root" / "all_stays.csv", index=False, date_format=fmt)
+    for split, rows in listfiles.items():
+        pd.DataFrame(rows, columns=["stay", "period_length", "stay_id", "y_true"]).to_csv(
+            ehr / MORTALITY_TASK / f"{split}_listfile.csv", index=False
+        )
+    pd.DataFrame(metadata).to_csv(cxr / "mimic-cxr-2.0.0-metadata.csv", index=False)
+    pd.DataFrame(chexpert, columns=["subject_id", "study_id", *CHEXPERT]).to_csv(
+        cxr / "mimic-cxr-2.0.0-chexpert.csv", index=False
+    )
+    pd.DataFrame(cxr_split, columns=["dicom_id", "study_id", "subject_id", "split"]).to_csv(
+        cxr / "mimic-cxr-ehr-split.csv", index=False
+    )
+    pd.DataFrame(rad, columns=NOTE_COLUMNS).to_csv(
+        notes / "radiology.csv", index=False, date_format=fmt
+    )
+    pd.DataFrame(columns=NOTE_COLUMNS).to_csv(notes / "discharge.csv", index=False)
+
+    normalizer_path = fit_normalizer(
+        ehr,
+        listfiles["train"],
+        task_dir=MORTALITY_TASK,
+        file_name="ihm_ts1.0.virtual.normalizer",
+        end=window,
+    )
+
+    summary = {
+        "task": MORTALITY_TASK,
+        "preset": preset_name,
+        "seed": seed,
+        "stays": n,
+        "split_sizes": {k: len(v) for k, v in listfiles.items()},
+        "mortality_prevalence": round(float(died.mean()), 3),
+        "cxr_available": round(float(has_cxr.mean()), 3),
+        "cxr_given_death": round(float(has_cxr[died == 1].mean()), 3),
+        "cxr_by_split": {
+            s: int(sum(has_cxr[i] for i in range(n) if splits[i] == s))
+            for s in ("train", "val", "test")
+        },
+        "discharge_notes": "none (header-only file; discharge notes leak the outcome)",
+        "normalizer": str(normalizer_path.relative_to(out)),
+    }
+    (out / "README.md").write_text(readme(summary), encoding="utf-8")
+    (out / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    return summary
 
 
 def readme(summary: dict) -> str:
@@ -541,11 +751,22 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--preset", choices=sorted(PRESETS), default="smoke")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
-        "--out", type=Path, default=None, help="Output folder (default data/virtual/<preset>)"
+        "--task",
+        choices=("phenotyping", "mortality"),
+        default="phenotyping",
+        help="phenotyping (default) or in-hospital mortality (EHR, CXR, RR; no discharge notes)",
+    )
+    parser.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help="Output folder (default data/virtual/<preset>, or <preset>-mortality)",
     )
     args = parser.parse_args(argv)
-    out = args.out or REPO_ROOT / "data" / "virtual" / args.preset
-    summary = generate(out, args.preset, args.seed)
+    suffix = "-mortality" if args.task == "mortality" else ""
+    out = args.out or REPO_ROOT / "data" / "virtual" / f"{args.preset}{suffix}"
+    build = generate_mortality if args.task == "mortality" else generate
+    summary = build(out, args.preset, args.seed)
     sys.stdout.reconfigure(encoding="utf-8")
     print(f"{SYNTHETIC_STAMP}\nwrote {out}\n{json.dumps(summary, indent=2)}")
 

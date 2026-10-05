@@ -48,6 +48,9 @@ STAGES = ("r1", "r2", "r2b")
 PARENT_STAGE = {"r2": "r1", "r2b": "r2"}
 DATA_KINDS = ("virtual", "real")
 
+#: Rows written before tasks were tracked are phenotyping (the only task then).
+DEFAULT_TASK = "phenotyping"
+
 #: Readers whose checkpoints embed a BERT, so lineage must carry its name.
 TEXT_READERS = ("rr", "dn")
 #: medpatch's default (--bert_model_name in arguments.py): what every virtual
@@ -76,12 +79,19 @@ def sha256_file(path: Path) -> str:
 
 
 def read_rows(path: Path | None = None) -> list[dict[str, str]]:
-    """All rows; columns a row predates (older manifests) read as ""."""
+    """All rows; columns a row predates (older manifests) read as "".
+
+    An empty ``task`` reads as "phenotyping": every row written before tasks
+    were tracked was a phenotyping run.
+    """
     path = path or manifest_path()
     if not path.is_file():
         return []
     with open(path, newline="", encoding="utf-8") as f:
-        return [{c: row.get(c) or "" for c in COLUMNS} for row in csv.DictReader(f)]
+        rows = [{c: row.get(c) or "" for c in COLUMNS} for row in csv.DictReader(f)]
+    for row in rows:
+        row["task"] = row["task"] or DEFAULT_TASK
+    return rows
 
 
 def _upgrade_header(path: Path) -> None:
@@ -156,37 +166,55 @@ def find(row_id: str, path: Path | None = None) -> dict[str, str] | None:
 
 
 def latest(
-    stage: str, reader: str, data: str | None = None, path: Path | None = None
+    stage: str,
+    reader: str,
+    data: str | None = None,
+    path: Path | None = None,
+    task: str | None = None,
 ) -> dict[str, str] | None:
+    """The newest row for a stage and reader, optionally of one data kind / task."""
     rows = [
         r
         for r in read_rows(path)
-        if r["stage"] == stage and r["reader"] == reader and (data is None or r["data"] == data)
+        if r["stage"] == stage
+        and r["reader"] == reader
+        and (data is None or r["data"] == data)
+        and (task is None or r["task"] == task)
     ]
     return rows[-1] if rows else None
 
 
-def _missing_parent_hint(expected_stage: str, reader: str, data: str) -> str:
+def _missing_parent_hint(expected_stage: str, reader: str, data: str, task: str) -> str:
+    task_flag = "" if task == DEFAULT_TASK else f" --task {task}"
     if expected_stage == "r1":
         return (
-            f"Run `python -m tools.pv.run r1 --reader {reader} --data {data}` or register "
-            f"a teammate file with `python -m tools.pv.import_checkpoint`."
+            f"Run `python -m tools.pv.run r1 --reader {reader} --data {data}{task_flag}` or "
+            f"register a teammate file with `python -m tools.pv.import_checkpoint{task_flag}`."
         )
-    return f"Run `python -m tools.pv.run {expected_stage} --reader {reader} --data {data}` first."
+    return (
+        f"Run `python -m tools.pv.run {expected_stage} --reader {reader} --data {data}"
+        f"{task_flag}` first."
+    )
 
 
 def verify_parent(
-    parent: dict[str, str] | None, reader: str, data: str, expected_stage: str = "r1"
+    parent: dict[str, str] | None,
+    reader: str,
+    data: str,
+    expected_stage: str = "r1",
+    task: str = DEFAULT_TASK,
 ) -> Path:
     """The parent's file, or a ManifestError explaining why it is unusable.
 
     ``expected_stage`` is the stage the parent must be: "r1" for an r2 run,
-    "r2" for an r2b run (see PARENT_STAGE).
+    "r2" for an r2b run (see PARENT_STAGE). ``task`` must match too: a
+    phenotyping checkpoint (25 classes) can never feed a mortality run (1 class)
+    or the reverse.
     """
     if parent is None:
         raise ManifestError(
-            f"No {expected_stage} row for reader '{reader}' ({data} data) in {manifest_path()}. "
-            + _missing_parent_hint(expected_stage, reader, data)
+            f"No {expected_stage} row for reader '{reader}' ({data} data, task {task}) in "
+            f"{manifest_path()}. " + _missing_parent_hint(expected_stage, reader, data, task)
         )
     if parent["stage"] != expected_stage:
         raise ManifestError(
@@ -201,6 +229,12 @@ def verify_parent(
             f"Parent {parent['id']} was trained on {parent['data']} data; this run uses {data}. "
             "Mixing virtual and real lineage is refused."
         )
+    parent_task = parent.get("task") or DEFAULT_TASK
+    if parent_task != task:
+        raise ManifestError(
+            f"Parent {parent['id']} is a {parent_task} checkpoint; this run is {task}. "
+            "Mixing tasks is refused (different classes, labels and data)."
+        )
     file = Path(parent["file_path"])
     if not file.is_file():
         raise ManifestError(f"Parent {parent['id']} file is missing: {file}")
@@ -213,6 +247,8 @@ def verify_parent(
     return file
 
 
-def verify_r2_parent(parent: dict[str, str] | None, reader: str, data: str) -> Path:
-    """An r2b run's parent: an r2 row for the same reader and data kind."""
-    return verify_parent(parent, reader, data, expected_stage="r2")
+def verify_r2_parent(
+    parent: dict[str, str] | None, reader: str, data: str, task: str = DEFAULT_TASK
+) -> Path:
+    """An r2b run's parent: an r2 row for the same reader, data kind and task."""
+    return verify_parent(parent, reader, data, expected_stage="r2", task=task)

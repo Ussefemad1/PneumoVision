@@ -44,10 +44,14 @@ from tools.pv.medpatch_bridge import (  # noqa: E402
     parse_args,
 )
 from tools.pv.paper_scripts import (  # noqa: E402
+    DEFAULT_TASK,
     LOAD_FLAG,
     READERS,
     SCRIPT_FOR,
+    TASK_ALIASES,
     build_argv,
+    canonical_task,
+    refuse_reader,
     script_settings,
     to_pairs,
 )
@@ -74,19 +78,41 @@ VIRTUAL_EPOCHS_BY_STAGE = {"r2": VIRTUAL_R2_EPOCHS, "r2b": VIRTUAL_R2B_EPOCHS}
 PAPER_DEFAULTS = {"--bootstrap_iters": "1000"}
 
 
+#: The normalizer the virtual dataset generator fits on its own train split.
+VIRTUAL_NORMALIZER = {
+    "phenotyping": "ph_ts1.0.virtual.normalizer",
+    "in-hospital-mortality": "ihm_ts1.0.virtual.normalizer",
+}
+
+
+def task_of(args) -> str:
+    return canonical_task(getattr(args, "task", None))
+
+
+def virtual_root(args) -> Path:
+    """data/virtual/<preset> (phenotyping) or data/virtual/<preset>-mortality."""
+    if args.data_root:
+        return Path(args.data_root)
+    suffix = "" if task_of(args) == DEFAULT_TASK else "-mortality"
+    return REPO_ROOT / "data" / "virtual" / f"{args.preset}{suffix}"
+
+
 def data_dirs(args) -> dict[str, str]:
+    task = task_of(args)
     if args.data == "virtual":
-        root = Path(args.data_root or REPO_ROOT / "data" / "virtual" / args.preset).resolve()
+        root = virtual_root(args).resolve()
         if not (root / "README.md").is_file():
+            task_flag = "" if task == DEFAULT_TASK else " --task mortality"
             raise SystemExit(
                 f"No virtual dataset at {root}. Generate it with:\n"
                 f"  python -m tools.synthetic.make_virtual_dataset --preset {args.preset}"
+                f"{task_flag}"
             )
         return {
             "--ehr_data_dir": str(root / "ehr"),
             "--cxr_data_dir": str(root / "cxr"),
             "--notes_data_dir": str(root / "notes"),
-            "--normalizer_state": str(root / "ehr" / "ph_ts1.0.virtual.normalizer"),
+            "--normalizer_state": str(root / "ehr" / VIRTUAL_NORMALIZER[task]),
         }
     missing = [
         n for n in ("ehr_data_dir", "cxr_data_dir", "notes_data_dir") if not getattr(args, n)
@@ -95,17 +121,23 @@ def data_dirs(args) -> dict[str, str]:
         raise SystemExit(
             "--data real needs " + ", ".join(f"--{m.replace('_', '-')}" for m in missing)
         )
-    return {
+    dirs = {
         "--ehr_data_dir": args.ehr_data_dir,
         "--cxr_data_dir": args.cxr_data_dir,
         "--notes_data_dir": args.notes_data_dir,
     }
+    # Only when given: without it fusion_main.py loads its bundled default (the
+    # phenotyping file, for every task) -- what a Round 1 run with
+    # normalizer_state None used. See docs/REAL_RUNS.md, "EHR normalizer".
+    if getattr(args, "normalizer_state", None):
+        dirs["--normalizer_state"] = args.normalizer_state
+    return dirs
 
 
 def data_seed(args) -> str:
     if args.data != "virtual":
         return ""
-    root = Path(args.data_root or REPO_ROOT / "data" / "virtual" / args.preset)
+    root = virtual_root(args)
     try:
         return str(json.loads((root / "summary.json").read_text())["seed"])
     except (OSError, KeyError, ValueError):
@@ -148,6 +180,11 @@ def resolve_bert_model_name(
 def plan(args) -> dict:
     """Everything about the run except executing it."""
     stage, reader = args.stage, args.reader
+    task = task_of(args)
+    try:
+        refuse_reader(reader, task)  # e.g. DN for mortality: discharge notes leak the outcome
+    except ValueError as exc:
+        raise manifest.ManifestError(str(exc)) from exc
     parent = None
     overrides: dict[str, str | None] = {}
     if stage in manifest.PARENT_STAGE:
@@ -158,13 +195,15 @@ def plan(args) -> dict:
         parent = (
             manifest.find(args.parent)
             if args.parent
-            else manifest.latest(parent_stage, reader, args.data)
+            else manifest.latest(parent_stage, reader, args.data, task=task)
         )
         if args.parent and parent is None:
             raise manifest.ManifestError(
                 f"--parent {args.parent} is not in {manifest.manifest_path()}"
             )
-        parent_file = manifest.verify_parent(parent, reader, args.data, expected_stage=parent_stage)
+        parent_file = manifest.verify_parent(
+            parent, reader, args.data, expected_stage=parent_stage, task=task
+        )
         overrides[LOAD_FLAG[reader]] = str(parent_file)
 
     bert_model_name = resolve_bert_model_name(
@@ -174,7 +213,11 @@ def plan(args) -> dict:
         overrides["--bert_model_name"] = bert_model_name
 
     run_id = args.run_id or manifest.next_id(stage, reader)
-    save_dir = (manifest.runs_root() / stage / reader / run_id).resolve()
+    # Phenotyping keeps its original layout (<RUNS_ROOT>/<stage>/...) so existing
+    # folders and --run-id resumes still resolve; other tasks get their own
+    # subfolder, so the two tasks can never write to the same place.
+    task_dir = manifest.runs_root() if task == DEFAULT_TASK else manifest.runs_root() / task
+    save_dir = (task_dir / stage / reader / run_id).resolve()
     overrides.update(data_dirs(args))
     overrides["--save_dir"] = str(save_dir)
     overrides["--resume"] = None
@@ -183,7 +226,7 @@ def plan(args) -> dict:
     defaults = dict(VIRTUAL_DEFAULTS[stage]) if args.data == "virtual" else {}
     if args.data == "virtual" and stage in VIRTUAL_EPOCHS_BY_STAGE:
         defaults["epochs"] = VIRTUAL_EPOCHS_BY_STAGE[stage][reader]
-    paper = script_settings(stage, reader)
+    paper = script_settings(stage, reader, task)
     for name in ("epochs", "batch_size", "bootstrap_iters"):
         value = getattr(args, name, None) or defaults.get(name)
         if value is not None:
@@ -197,18 +240,19 @@ def plan(args) -> dict:
     if stage == "r2" and reader == "dn" and paper.get("--load_rr") is not None:
         deviations.append("--load_dn instead of the script's --load_rr (see model_track_notes)")
 
-    argv = build_argv(stage, reader, overrides)
+    argv = build_argv(stage, reader, overrides, task=task)
     return {
         "id": run_id,
         "stage": stage,
         "reader": reader,
+        "task": task,
         "data": args.data,
         "parent_id": parent["id"] if parent else "",
         "parent_file": overrides.get(LOAD_FLAG[reader]) or "",
         "parent_sha256": parent["sha256"] if parent else "",
         "bert_model_name": bert_model_name,
         "save_dir": str(save_dir),
-        "script": str(SCRIPT_FOR[stage](reader).relative_to(REPO_ROOT)).replace("\\", "/"),
+        "script": str(SCRIPT_FOR[stage](reader, task).relative_to(REPO_ROOT)).replace("\\", "/"),
         "argv": argv,
         "deviations": deviations,
         "seed": data_seed(args),
@@ -296,7 +340,7 @@ def record(run: dict, best: Path, who: str) -> dict[str, str]:
     notes = [
         f"script={run['script']}",
         "trainer seeds fixed in medpatch (1002/379647)",
-        "metric=pneumonia (class 21), val split",
+        METRIC_NOTE[run.get("task", DEFAULT_TASK)],
     ]
     if run["stage"] == "r2":
         notes.append("r2 score=mean token confidence-head prob")
@@ -312,7 +356,7 @@ def record(run: dict, best: Path, who: str) -> dict[str, str]:
             "who": who,
             "stage": run["stage"],
             "reader": run["reader"],
-            "task": "phenotyping",
+            "task": run.get("task", DEFAULT_TASK),
             "file_path": best.as_posix(),
             "sha256": manifest.sha256_file(best),
             "parent_id": run["parent_id"],
@@ -327,6 +371,13 @@ def record(run: dict, best: Path, who: str) -> dict[str, str]:
     run["manifest_row"] = row
     Path(run["save_dir"], "run.json").write_text(json.dumps(run, indent=2), encoding="utf-8")
     return row
+
+
+#: Manifest note naming the metric, per task (phenotyping text unchanged).
+METRIC_NOTE = {
+    "phenotyping": "metric=pneumonia (class 21), val split",
+    "in-hospital-mortality": "metric=in-hospital mortality (1 class), val split",
+}
 
 
 def calibration_notes(run: dict, best: Path, after_val) -> list[str]:
@@ -355,14 +406,15 @@ def describe(run: dict) -> str:
     """
     lines = [
         f"[dry-run] {run['id']}  stage {run['stage']}  reader {run['reader']}  "
-        f"data {run['data']}  (nothing will be trained)",
+        f"task {run.get('task', DEFAULT_TASK)}  data {run['data']}  (nothing will be trained)",
         f"  script        : {run['script']}",
     ]
     if run["parent_id"]:
         parent = manifest.find(run["parent_id"]) or {}
         lines += [
             f"  parent        : {run['parent_id']}  (stage {parent.get('stage', '?')}, "
-            f"{parent.get('data', '?')} data, by {parent.get('who') or '?'})",
+            f"{parent.get('task', '?')}, {parent.get('data', '?')} data, "
+            f"by {parent.get('who') or '?'})",
             f"  parent file   : {run['parent_file']}",
             f"  parent sha256 : {run['parent_sha256']}  -- matches the file: OK",
         ]
@@ -389,6 +441,13 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="python -m tools.pv.run", description=__doc__.splitlines()[0])
     p.add_argument("stage", choices=manifest.STAGES)
     p.add_argument("--reader", choices=READERS, required=True)
+    p.add_argument(
+        "--task",
+        choices=sorted(TASK_ALIASES),
+        default=DEFAULT_TASK,
+        help="phenotyping (default) or mortality (= in-hospital-mortality; readers ehr, cxr, "
+        "rr -- dn is refused: discharge notes leak the outcome)",
+    )
     p.add_argument("--data", choices=manifest.DATA_KINDS, required=True)
     p.add_argument(
         "--parent",
@@ -402,6 +461,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ehr-data-dir", dest="ehr_data_dir")
     p.add_argument("--cxr-data-dir", dest="cxr_data_dir")
     p.add_argument("--notes-data-dir", dest="notes_data_dir")
+    p.add_argument(
+        "--normalizer-state",
+        dest="normalizer_state",
+        help="real data only: EHR normalizer file to pass to fusion_main.py. Omit to use "
+        "fusion_main's default (what a Round 1 run with normalizer_state None used); set it "
+        "only to match a Round 1 run that set one (check its args.txt).",
+    )
     p.add_argument("--epochs", type=int, help="override the paper's epochs (recorded)")
     p.add_argument(
         "--batch-size",
