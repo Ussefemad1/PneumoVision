@@ -37,12 +37,22 @@ COLUMNS = [
     "val_auroc",
     "val_auprc",
     "notes",
+    # Added 2026-10-05, last so older manifests keep their column order. Text
+    # readers (rr/dn) only: the Hugging Face BERT the checkpoint was trained
+    # with. Empty for ehr/cxr, and for rows written before the column existed.
+    "bert_model_name",
 ]
 STAGES = ("r1", "r2", "r2b")
 #: The stage a run of each stage must load: r2 trains on a frozen r1 reader;
 #: r2b (calibration) loads the r2 reader + confidence head and adds temperatures.
 PARENT_STAGE = {"r2": "r1", "r2b": "r2"}
 DATA_KINDS = ("virtual", "real")
+
+#: Readers whose checkpoints embed a BERT, so lineage must carry its name.
+TEXT_READERS = ("rr", "dn")
+#: medpatch's default (--bert_model_name in arguments.py): what every virtual
+#: run used before the flag existed.
+DEFAULT_BERT = "emilyalsentzer/Bio_ClinicalBERT"
 
 
 class ManifestError(SystemExit):
@@ -66,11 +76,49 @@ def sha256_file(path: Path) -> str:
 
 
 def read_rows(path: Path | None = None) -> list[dict[str, str]]:
+    """All rows; columns a row predates (older manifests) read as ""."""
     path = path or manifest_path()
     if not path.is_file():
         return []
     with open(path, newline="", encoding="utf-8") as f:
-        return list(csv.DictReader(f))
+        return [{c: row.get(c) or "" for c in COLUMNS} for row in csv.DictReader(f)]
+
+
+def _upgrade_header(path: Path) -> None:
+    """Rewrite an older manifest with the current columns (new ones empty).
+
+    Appending a row with more columns than the header would misalign every
+    later read, so the file is upgraded first -- via a temp file and an atomic
+    replace, so an interrupted write cannot lose the manifest.
+    """
+    with open(path, newline="", encoding="utf-8") as f:
+        header = next(csv.reader(f), [])
+    if header == COLUMNS:
+        return
+    unknown = set(header) - set(COLUMNS)
+    if unknown:
+        raise ManifestError(f"{path} has unknown columns {sorted(unknown)}; refusing to rewrite it")
+    rows = read_rows(path)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=COLUMNS)
+        writer.writeheader()
+        writer.writerows(rows)
+    os.replace(tmp, path)
+
+
+def bert_model_name_of(row: dict[str, str]) -> str:
+    """The BERT a text-reader row was trained with ("" if not a text reader).
+
+    Virtual rows written before the column existed used medpatch's default.
+    Real rows never get a silent default: "" means unknown, and run.py refuses
+    to build on it.
+    """
+    if row.get("reader") not in TEXT_READERS:
+        return ""
+    if row.get("bert_model_name"):
+        return row["bert_model_name"]
+    return DEFAULT_BERT if row.get("data") == "virtual" else ""
 
 
 def append_row(row: dict[str, object], path: Path | None = None) -> dict[str, str]:
@@ -86,6 +134,8 @@ def append_row(row: dict[str, object], path: Path | None = None) -> dict[str, st
     full["date"] = full["date"] or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     path.parent.mkdir(parents=True, exist_ok=True)
     new = not path.is_file()
+    if not new:
+        _upgrade_header(path)
     with open(path, "a", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=COLUMNS)
         if new:

@@ -4,6 +4,9 @@
         --file "/content/drive/MyDrive/pv/r1/cxr/best_checkpoint_...pth.tar" \\
         --val-auroc 0.71 --val-auprc 0.22
 
+Text readers (rr/dn) also need ``--bert-model-name`` on real data, e.g.
+``--bert-model-name dmis-lab/biobert-v1.1``. Round 2 and 2b inherit it.
+
 This is how real Round 1 files replace the virtual stand-ins: once a file is
 registered as an r1 row, ``python -m tools.pv.run r2 --reader cxr --data real``
 loads it (the latest r1 row for that reader and data kind, or ``--parent ID``).
@@ -66,6 +69,29 @@ def check_round1(checkpoint: dict, reader: str) -> list[str]:
     return problems
 
 
+def resolve_bert_model_name(reader: str, data: str, value: str | None) -> str:
+    """The BERT name to record for an imported r1 file, or SystemExit.
+
+    rr/dn checkpoints embed a BERT; loading one with a different model name
+    raises no error but tokenizes with the wrong vocabulary. So for real rr/dn
+    files the name is required -- there is no silent default. Virtual stand-ins
+    were trained with medpatch's default. ehr/cxr have no BERT.
+    """
+    if reader not in manifest.TEXT_READERS:
+        if value:
+            raise SystemExit(f"--bert-model-name is only for rr/dn, not {reader}.")
+        return ""
+    if value:
+        return value
+    if data == "virtual":
+        return manifest.DEFAULT_BERT
+    raise SystemExit(
+        f"--bert-model-name is required for a real {reader} checkpoint: the Hugging Face "
+        "model it was trained with (e.g. dmis-lab/biobert-v1.1). There is no default -- "
+        "a wrong name loads without error but tokenizes with the wrong vocabulary."
+    )
+
+
 def main(argv: list[str] | None = None) -> dict[str, str]:
     p = argparse.ArgumentParser(
         prog="python -m tools.pv.import_checkpoint", description=__doc__.splitlines()[0]
@@ -80,11 +106,18 @@ def main(argv: list[str] | None = None) -> dict[str, str]:
     p.add_argument("--val-auprc", dest="val_auprc", default="")
     p.add_argument("--notes", default="")
     p.add_argument(
+        "--bert-model-name",
+        dest="bert_model_name",
+        help="rr/dn only, required for real data: the Hugging Face BERT the file was "
+        "trained with (e.g. dmis-lab/biobert-v1.1)",
+    )
+    p.add_argument(
         "--trust-pickle",
         action="store_true",
         help="allow full unpickling (only for files from people you trust)",
     )
     args = p.parse_args(argv)
+    bert_model_name = resolve_bert_model_name(args.reader, args.data, args.bert_model_name)
 
     path = args.file.resolve()
     if not path.is_file():
@@ -113,10 +146,12 @@ def main(argv: list[str] | None = None) -> dict[str, str]:
             "val_auroc": args.val_auroc,
             "val_auprc": args.val_auprc,
             "notes": "; ".join(filter(None, ["imported", args.notes])),
+            "bert_model_name": bert_model_name,
         }
     )
+    bert = f"  BERT {bert_model_name}" if bert_model_name else ""
     print(
-        f"Registered {row['id']}  {args.reader.upper()}  sha256 {digest[:12]}...  "
+        f"Registered {row['id']}  {args.reader.upper()}  sha256 {digest[:12]}...{bert}  "
         f"-> {manifest.manifest_path()}"
     )
     return row

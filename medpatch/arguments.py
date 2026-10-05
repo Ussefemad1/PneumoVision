@@ -54,6 +54,13 @@ def args_parser():
     parser.add_argument('--cxr_encoder', type=str, default=None, help='state dir path')
     parser.add_argument('--ehr_encoder', type=str, default=None, help='state dir path')
     parser.add_argument('--text_encoder', type=str, default=None, help='state dir path')
+    # Read by models/text_models.py (Text_encoder) for BOTH the BertModel and its
+    # tokenizer -- the encoder every Round 2 / 2b / 3 trainer builds. It must
+    # match the BERT the loaded checkpoint was trained with: a different model
+    # loads without error but tokenizes with the wrong vocabulary.
+    parser.add_argument('--bert_model_name', type=str, default='emilyalsentzer/Bio_ClinicalBERT',
+                        help='Hugging Face BERT for the RR/DN text encoder (model and tokenizer). '
+                             'Default is the paper\'s Bio_ClinicalBERT.')
     parser.add_argument('--classifier', type=str, default=None, help='state dir path')
     parser.add_argument('--loss', type=str, default=None, help='state dir path')
     parser.add_argument('--output_dim_cxr', type=int, default=512, help='state dir path')

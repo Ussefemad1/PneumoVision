@@ -9,6 +9,52 @@ Newest first.
 
 ---
 
+## 2026-10-05 — `--bert_model_name`, BERT lineage, real-data prep (phenotyping)
+
+**Why:** Farida trained the real RR/DN Round 1 readers with
+`dmis-lab/biobert-v1.1`. medpatch's text encoder defaulted to
+`emilyalsentzer/Bio_ClinicalBERT` with no way to change it from the command
+line. Loading her checkpoints that way raises no error (same BERT-base shapes)
+but tokenizes with the wrong vocabulary and runs the wrong pretrained weights.
+
+**`medpatch/`:**
+
+8. **`--bert_model_name`** (`arguments.py`, default
+   `emilyalsentzer/Bio_ClinicalBERT`, so every verified virtual run is
+   unchanged). `models/text_models.py` already read `args.bert_model_name` for
+   both `BertModel` and `BertTokenizerFast`; it just had no flag. That
+   `Text_encoder` is what Round 2 (`MSMA_Trainer`), Round 2b (`calibration`)
+   and Round 3 (`c-msma`/`c-e-msma`, also `MSMA_Trainer`) build. Not changed:
+   ~20 other trainers (ensembles, DHF, staged, …) and `models/rr_encoder.py`
+   hardcode Bio_ClinicalBERT; none is on the r2/r2b/r3 path.
+
+**`tools/pv`:**
+
+- Manifest column `bert_model_name` (last, so older files keep their order). An
+  older manifest is upgraded in place on the next append (temp file + atomic
+  replace); older rows read as empty. `bert_model_name_of(row)`: virtual rr/dn
+  rows without a value used the default; real rows without one are "unknown".
+- `import_checkpoint --bert-model-name`: required for real rr/dn (no silent
+  default), refused for ehr/cxr.
+- `run.py`: r2/r2b inherit the parent's BERT and pass `--bert_model_name`. An
+  explicit `--bert-model-name` that differs from the parent's is refused, and a
+  real rr/dn parent with no recorded BERT is refused. Recorded in `run.json`
+  and the new manifest row.
+- `run.py --dry-run`: verifies the parent (stage, reader, data kind, file,
+  sha256) and prints the parent, the BERT and the exact `fusion_main.py`
+  argv, then exits. It creates no folder.
+- Tests: `tests/test_bert_model_name.py` (18, non-training; `from_pretrained`
+  stubbed).
+
+**Docs:** `docs/REAL_RUNS.md` — Colab steps for real data, including the
+downstream-BERT warning. Round 3 and the website's inference service (which
+hardcodes Bio_ClinicalBERT in `services/inference/app/main.py`, not changed
+here) must use the checkpoints' BERT.
+
+**Not in this change:** mortality support in `tools/pv`.
+
+---
+
 ## 2026-09-28 — transformers 4.44.2 → 4.45.2 (Colab on Python 3.13)
 
 **Why:** Colab's runtime moved to Python 3.13. `transformers==4.44.2` requires

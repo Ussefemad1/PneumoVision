@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -48,6 +49,7 @@ from tools.pv.paper_scripts import (  # noqa: E402
     SCRIPT_FOR,
     build_argv,
     script_settings,
+    to_pairs,
 )
 
 #: Settings a virtual smoke run may change, and to what. Everything else is the paper's.
@@ -110,6 +112,39 @@ def data_seed(args) -> str:
         return ""
 
 
+def resolve_bert_model_name(
+    reader: str, explicit: str | None, parent: dict[str, str] | None
+) -> str:
+    """The --bert_model_name a run must use ("" for ehr/cxr), or ManifestError.
+
+    rr/dn checkpoints embed a BERT, and a different model name loads without
+    error but tokenizes with the wrong vocabulary. So r2/r2b inherit the
+    parent's name, and an explicit value that disagrees is refused rather than
+    silently overriding it. A run with no parent (r1) uses the explicit value or
+    medpatch's default, and records it.
+    """
+    if reader not in manifest.TEXT_READERS:
+        if explicit:
+            raise manifest.ManifestError(f"--bert-model-name is only for rr/dn, not {reader}.")
+        return ""
+    if parent is None:
+        return explicit or manifest.DEFAULT_BERT
+    inherited = manifest.bert_model_name_of(parent)
+    if not inherited:
+        raise manifest.ManifestError(
+            f"Parent {parent['id']} has no bert_model_name recorded, so the BERT its weights "
+            "were trained with is unknown. Re-register the r1 file with "
+            "`python -m tools.pv.import_checkpoint ... --bert-model-name <model>`."
+        )
+    if explicit and explicit != inherited:
+        raise manifest.ManifestError(
+            f"--bert-model-name {explicit} differs from parent {parent['id']}'s {inherited}. "
+            "A text checkpoint only works with the BERT it was trained with; omit the flag "
+            "to inherit it."
+        )
+    return inherited
+
+
 def plan(args) -> dict:
     """Everything about the run except executing it."""
     stage, reader = args.stage, args.reader
@@ -131,6 +166,12 @@ def plan(args) -> dict:
             )
         parent_file = manifest.verify_parent(parent, reader, args.data, expected_stage=parent_stage)
         overrides[LOAD_FLAG[reader]] = str(parent_file)
+
+    bert_model_name = resolve_bert_model_name(
+        reader, getattr(args, "bert_model_name", None), parent
+    )
+    if bert_model_name:
+        overrides["--bert_model_name"] = bert_model_name
 
     run_id = args.run_id or manifest.next_id(stage, reader)
     save_dir = (manifest.runs_root() / stage / reader / run_id).resolve()
@@ -163,6 +204,9 @@ def plan(args) -> dict:
         "reader": reader,
         "data": args.data,
         "parent_id": parent["id"] if parent else "",
+        "parent_file": overrides.get(LOAD_FLAG[reader]) or "",
+        "parent_sha256": parent["sha256"] if parent else "",
+        "bert_model_name": bert_model_name,
         "save_dir": str(save_dir),
         "script": str(SCRIPT_FOR[stage](reader).relative_to(REPO_ROOT)).replace("\\", "/"),
         "argv": argv,
@@ -277,6 +321,7 @@ def record(run: dict, best: Path, who: str) -> dict[str, str]:
             "val_auroc": "" if scores.auroc != scores.auroc else f"{scores.auroc:.4f}",
             "val_auprc": "" if scores.auprc != scores.auprc else f"{scores.auprc:.4f}",
             "notes": "; ".join(notes),
+            "bert_model_name": run.get("bert_model_name", ""),
         }
     )
     run["manifest_row"] = row
@@ -300,6 +345,44 @@ def calibration_notes(run: dict, best: Path, after_val) -> list[str]:
         f"ECE val {before_val.ece:.4f}->{after_val.ece:.4f} (fit split)",
         f"ECE test {before_test.ece:.4f}->{after_test.ece:.4f} (held out)",
     ]
+
+
+def describe(run: dict) -> str:
+    """Human-readable dry-run report: the parent check and the exact command.
+
+    By the time this runs, plan() has already verified the parent (stage,
+    reader, data kind, file present, sha256), so reaching here means it passed.
+    """
+    lines = [
+        f"[dry-run] {run['id']}  stage {run['stage']}  reader {run['reader']}  "
+        f"data {run['data']}  (nothing will be trained)",
+        f"  script        : {run['script']}",
+    ]
+    if run["parent_id"]:
+        parent = manifest.find(run["parent_id"]) or {}
+        lines += [
+            f"  parent        : {run['parent_id']}  (stage {parent.get('stage', '?')}, "
+            f"{parent.get('data', '?')} data, by {parent.get('who') or '?'})",
+            f"  parent file   : {run['parent_file']}",
+            f"  parent sha256 : {run['parent_sha256']}  -- matches the file: OK",
+        ]
+    else:
+        lines.append("  parent        : none (r1)")
+    if run["bert_model_name"]:
+        source = "inherited from parent" if run["parent_id"] else "recorded for this r1"
+        lines.append(f"  BERT          : {run['bert_model_name']}  ({source})")
+    lines.append(f"  save_dir      : {run['save_dir']}")
+    if run["deviations"]:
+        lines.append(f"  deviations    : {'; '.join(run['deviations'])}")
+    lines.append("  argv (cwd = medpatch/):")
+    argv = ["python", "fusion_main.py", *run["argv"]]
+    pairs = to_pairs(run["argv"])
+    lines.append("    python fusion_main.py \\")
+    for i, (flag, value) in enumerate(pairs):
+        end = " \\" if i < len(pairs) - 1 else ""
+        lines.append(f"      {flag}{'' if value is None else ' ' + shlex.quote(value)}{end}")
+    lines.append(f"  as one line   : {shlex.join(argv)}")
+    return "\n".join(lines)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -333,7 +416,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="AUROC CI resamples (paper 1000; virtual r1 default 20, recorded)",
     )
     p.add_argument("--num-workers", dest="num_workers", type=int)
-    p.add_argument("--dry-run", action="store_true", help="print the command and exit")
+    p.add_argument(
+        "--bert-model-name",
+        dest="bert_model_name",
+        help="rr/dn only. r2/r2b inherit the parent's BERT; a different value is refused. "
+        "For r1 it is recorded (default: medpatch's Bio_ClinicalBERT).",
+    )
+    p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="verify the parent and print the exact fusion_main command, then exit (no training)",
+    )
     return p
 
 
@@ -341,7 +434,7 @@ def main(argv: list[str] | None = None) -> dict[str, str] | None:
     args = build_parser().parse_args(argv)
     run = plan(args)
     if args.dry_run:
-        print(json.dumps(run, indent=2))
+        print(describe(run))
         return None
     started = time.time()
     best = execute(run)
