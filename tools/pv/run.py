@@ -184,6 +184,22 @@ def resolve_bert_model_name(
     return inherited
 
 
+def cache_frozen_logits(args, stage: str, reader: str) -> bool:
+    """Whether a run passes --cache_frozen_logits (Round 2b only).
+
+    On by default for rr/dn, whose Round 2b re-ran BioBERT over every
+    validation note every epoch (hours per run); off by default for ehr/cxr so
+    the finished EHR/CXR runs stay comparable. --cache-frozen-logits /
+    --no-cache-frozen-logits override.
+    """
+    explicit = getattr(args, "cache_frozen_logits", None)
+    if explicit is None:
+        return stage == "r2b" and reader in manifest.TEXT_READERS
+    if explicit and stage != "r2b":
+        raise manifest.ManifestError("--cache-frozen-logits is for r2b runs only.")
+    return bool(explicit)
+
+
 def plan(args) -> dict:
     """Everything about the run except executing it."""
     stage, reader = args.stage, args.reader
@@ -233,6 +249,8 @@ def plan(args) -> dict:
         # mode (BERT dropout off), as it was when the reader was trained and
         # evaluated; the released code leaves it on. No effect on EHR/CXR.
         overrides["--frozen_readers_eval"] = None
+    if cache_frozen_logits(args, stage, reader):
+        overrides["--cache_frozen_logits"] = None
 
     deviations = []
     defaults = dict(VIRTUAL_DEFAULTS[stage]) if args.data == "virtual" else {}
@@ -251,6 +269,8 @@ def plan(args) -> dict:
         overrides["--num_workers"] = str(args.num_workers)
     if "--frozen_readers_eval" in overrides:
         deviations.append("frozen_readers_eval (frozen reader in eval: BERT dropout off)")
+    if "--cache_frozen_logits" in overrides:
+        deviations.append("cached frozen logits (numerically equivalent)")
     if stage == "r2" and reader == "dn" and paper.get("--load_rr") is not None:
         deviations.append("--load_dn instead of the script's --load_rr (see model_track_notes)")
 
@@ -408,6 +428,11 @@ def _run_fusion_main(run: dict, env: dict[str, str], log_path: Path) -> int:
                     "Loaded",
                     "RESUM",
                     "size:",
+                    "progress ",  # progress HH:MM:SS epoch E train step i/n
+                    "tarting train",  # "starting train epoch", "Starting training epoch"
+                    "tarting inference",
+                    "cached frozen logits",
+                    "refused",
                 )
             ):
                 print(f"  {line.rstrip()[:160]}")
@@ -571,6 +596,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         help="verify the parent and print the exact fusion_main command, then exit (no training)",
+    )
+    p.add_argument(
+        "--cache-frozen-logits",
+        dest="cache_frozen_logits",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="r2b: compute the frozen reader's logits once and replay them each epoch "
+        "(numerically equivalent). Default: on for rr/dn, off for ehr/cxr.",
     )
     p.add_argument(
         "--record-only",
