@@ -268,6 +268,25 @@ No smoke overrides apply on real data. These are the paper's settings (100
 epochs, batch 16), so expect hours per reader on a GPU. Each run prints its id
 (e.g. `r2-rr-001`) at the start.
 
+**Measured on an L4:** a note reader (RR/DN) takes about **70–85 min per
+Round 2 epoch**.
+
+**Loop order** (`MSMA_trainer.train`), every epoch:
+
+1. **validate**. The first validation is of the untrained head. The best
+   checkpoint is written when the validation loss improves;
+2. **train** one pass over the train split;
+3. **save `last`**, which is what `--run-id` resumes from.
+
+So `--epochs N` gives N validations and N training passes, and the last pass
+is **never validated**. Its weights are only in `last_checkpoint_…`, never in
+`best_…`.
+
+**Progress lines.** Each training pass prints
+`progress HH:MM:SS epoch E train step i/n` at step 0 and every 200 steps, and
+`run.py` shows them. Before this, a 70-minute pass printed nothing between
+"starting train epoch" and the next validation, which looked like a hang.
+
 `run.py` adds `--frozen_readers_eval` to every Round 2 and 2b command. The
 released code puts the whole model in train mode for each training epoch, which
 turns the frozen BERT's dropout (p = 0.1) on while the head trains. Farida's
@@ -302,6 +321,41 @@ Each picks the latest real **r2** row for its reader (BERT inherited again).
 epoch 0. Start each r2b run when you can keep the session alive until it
 finishes. It trains only on the validation split, so it is much shorter than
 Round 2.
+
+**Loop order** (`Calibration.train`):
+
+1. one inference pass over val, which gives the "before" ECE and tables;
+2. then, every epoch, one **training pass over val**. The ECE is computed from
+   the probabilities that pass produced, while the temperature moves batch by
+   batch. The best checkpoint is written when the mean ECE improves.
+
+There is no separate validation, no `last` checkpoint and no early stop, so
+`--epochs N` is N training passes plus the one inference pass before them.
+
+**Cached frozen logits (`--cache_frozen_logits`, on for rr/dn).** In Round 2b
+only the temperature trains. With `--frozen_readers_eval`, the reader,
+classifier and confidence head are deterministic, so the pre-temperature
+confidence logits never change.
+
+- **Without the cache,** the released loop re-ran BioBERT over every val note
+  each epoch. That is about 6–10 min per epoch on an L4, so 10–17 h for 100
+  epochs.
+- **With the cache,** those logits are captured once during the inference pass
+  (under `no_grad`, kept on CPU). Every epoch then replays them through the
+  same temperature, loss, optimizer step, ECE tables and checkpoint code,
+  batch for batch in `val_dl` order (`shuffle=False`).
+- **Output:** the log prints
+  `cached frozen logits: <batches> batches, <samples> samples, <MB> MB on CPU, single pass <s>`.
+- **Refusals:** the trainer refuses the flag without `--frozen_readers_eval`,
+  if any parameter other than the temperature would train, or if any dropout
+  or batch-norm layer stays in train mode.
+- **Defaults:** `run.py` passes it for rr and dn. For ehr and cxr it is off by
+  default, so the finished EHR/CXR runs stay comparable; turn it on with
+  `--cache-frozen-logits`, or off with `--no-cache-frozen-logits`. It is
+  recorded as "cached frozen logits (numerically equivalent)".
+- **Checking equivalence on Colab:** `python -m pytest -m round2b_cache -s`
+  runs both versions for 2 epochs on virtual data and compares them. Set
+  `PV_CHECK_TASK=in-hospital-mortality` for mortality.
 
 **A run that finished training but crashed before the manifest.** If
 `best_checkpoint_…` is in the run's folder but no row was written (for example

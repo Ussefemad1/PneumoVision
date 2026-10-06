@@ -9,6 +9,55 @@ Newest first.
 
 ---
 
+## 2026-10-06 — Round 2b cached frozen logits; progress lines
+
+Real Round 2b on Colab re-ran BioBERT over ~4,500 val notes every epoch (about
+6–10 min per epoch on an L4, so 10–17 h per 100-epoch run), although only the
+temperature trains.
+
+11. **`--cache_frozen_logits`** (`arguments.py`, default off = released
+    behaviour; Round 2b only).
+    - **Capture** (`trainers/Calibration.py`): during the existing pre-training
+      inference pass, a forward hook on `<reader>_confidence_predictor` stores
+      its output under `torch.no_grad()` on CPU. That output is the tensor the
+      temperature divides in `TempCUnimodal*.forward` (`fusion.py:1009`,
+      `:1061`, `:1110`, `:1168`). The labels for each batch are stored with it.
+    - **Replay:** each epoch applies
+      `raw / temperature[:L].clamp_min(1e-9).unsqueeze(0)`, the same
+      expression as `forward`, batch by batch in `val_dl` order. `val_dl` is
+      `shuffle=False` (`DataFusion.py:513`) and val uses the deterministic CXR
+      transforms.
+    - **Shared code:** everything after the model call (`pad_to_length`, loss,
+      optimizer step, ECE, tables, checkpoints and their names) is the same
+      code for both paths. `train_epoch` now takes `(pred, y)` from
+      `confidence_batches()`.
+    - **Refusal** (`check_logit_cache`): it raises `SystemExit` unless
+      `--frozen_readers_eval` is on, the temperature is the only parameter
+      with `requires_grad`, and no Dropout/BatchNorm stays in train mode.
+    - **Tests:**
+      - `tests/test_logit_cache.py` runs the real `calibration.train()` for
+        3 epochs on a stub reader, both tasks. Cached and uncached give
+        temperatures within 1e-6, the same best epoch, the same checkpoint
+        tensors and the same ECE tables. The reader runs once instead of once
+        per epoch.
+      - A 0.1 % change to the replayed temperature fails it.
+      - Refusals are tested too.
+      - `tests/round2b/test_round2b_cache.py` (marker `round2b_cache`, trains,
+        Colab only) does the same through `tools.pv.run` on virtual data.
+    - **Plans:** `tools/pv/run.py` passes the flag on r2b plans for rr/dn
+      (`--cache-frozen-logits` / `--no-cache-frozen-logits` override; off by
+      default for ehr/cxr), with the deviation "cached frozen logits
+      (numerically equivalent)". **Plan diff:** 6 of 42 plans change (r2b rr
+      and dn phenotyping, r2b rr mortality, virtual and real), each gaining
+      only `--cache_frozen_logits` and that note.
+12. **Progress lines** (output only). `Trainer.progress()` prints
+    `progress HH:MM:SS epoch E <train|inference> step i/n` at step 0 and every
+    200 steps. It is called from `MSMA_Trainer.train_epoch` and
+    `calibration.train_epoch`, and `tools/pv/run.py` lets these lines (and
+    "starting train epoch") through its output filter.
+
+---
+
 ## 2026-10-06 — Real-data pre-flight: frozen-reader dropout, strict weight check, Round 3 findings
 
 **Confirmed facts (teammates, 2026-10-05/06).**
