@@ -43,8 +43,11 @@ task. **In-hospital mortality** uses the same flow with `--task mortality`; see
   | phenotyping | 42,328 | 4,756 | 11,845 |
   | mortality   | 19,064 | 2,161 | 5,302  |
 
-- Every reader's Round 2 / 2b / 3 uses these **filtered** train lists; the
-  Colab notebook rebuilds them.
+- Every reader's Round 2 / 2b / 3 uses these **filtered** train lists.
+  `python -m tools.pv.prepare_lists` builds them (section 3b), not the notebook.
+- Stay **30007216** is dropped from train as well: its chest X-ray is a
+  permanent 404 upstream, so any loader that asks for it raises `KeyError` in
+  `cxr_dataset.py`. Phenotyping train is then 42,327.
 - Caroll's EHR and Norhan's CXR Round 1 were trained on the **unfiltered**
   train lists. Their weights are fine to load; just remember that their
   Round 1 numbers come from a larger train set than everything after.
@@ -138,6 +141,39 @@ Below, `EHR`, `CXR` and `NOTES` stand for those three paths, e.g.
 ```python
 DATA = '--ehr-data-dir /content/data/<ehr folder> --cxr-data-dir /content/data/<cxr folder> --notes-data-dir /content/data/<notes folder>'
 ```
+
+## 3b. Build the filtered train lists
+
+Run once per task after unzipping (and again after any re-unzip, which
+restores the original list):
+
+```python
+!python -m tools.pv.prepare_lists --task phenotyping --listfile-dir /content/data/<ehr folder>
+!python -m tools.pv.prepare_lists --task mortality   --listfile-dir /content/data/<ehr folder>
+```
+
+In `<ehr folder>/<task>/` it:
+
+1. copies `train_listfile.csv` aside as `train_listfile.full.csv` the first
+   time. That copy is never overwritten, and every later run rebuilds from it,
+   so rerunning is safe;
+2. keeps only train rows whose subject is in `testset_iv.csv` (Farida's filter);
+3. drops the excluded stays by `stay_id` (default `--exclude-stay 30007216`).
+   At most one row per excluded stay may go, or it stops;
+4. leaves `val_listfile.csv` and `test_listfile.csv` unchanged.
+
+It prints counts and md5 sums only, never rows, and refuses to write if the
+counts differ from the confirmed ones:
+
+| Task        | Train after filter | Train written                     | Val   | Test   |
+| ----------- | ------------------ | --------------------------------- | ----- | ------ |
+| phenotyping | 42,328             | 42,327                            | 4,756 | 11,845 |
+| mortality   | 19,064             | 19,064 − 1 if 30007216 is present | 2,161 | 5,302  |
+
+For mortality it reports whether 30007216 was _present in train, dropped_ or
+_absent from train_; copy that line into the team Sheet. It also warns if an
+excluded stay appears in val or test (those files are left as they are).
+`--allow-count-mismatch` writes anyway, for a deliberate change only.
 
 ## 4. Check the weights, then register the real Round 1 files
 
@@ -266,6 +302,26 @@ Each picks the latest real **r2** row for its reader (BERT inherited again).
 epoch 0. Start each r2b run when you can keep the session alive until it
 finishes. It trains only on the validation split, so it is much shorter than
 Round 2.
+
+**A run that finished training but crashed before the manifest.** If
+`best_checkpoint_…` is in the run's folder but no row was written (for example
+the old cross-device crash below), record it without training. Use the same
+arguments plus the run's id:
+
+```python
+!python -m tools.pv.run r2b --reader ehr --data real {DATA} --run-id r2b-ehr-001 --record-only
+```
+
+It refuses if the id is already in the manifest, or if the best checkpoint is
+missing (wrong id or arguments). It moves the run's leftover calibration files
+from `medpatch/` into its folder, scores the checkpoint on val and writes the
+row, exactly as a normal finish does. It works for `r2` too.
+
+The cross-device crash itself (`OSError [Errno 18] Invalid cross-device link`
+while moving `calibration_curve_class_*.png` from `/content/PneumoVision/medpatch`
+to Drive) is fixed: those files are now moved with `shutil.move` (copy then
+delete across filesystems), and a file that still cannot be moved is only a
+warning. It can no longer change a run's outcome.
 
 ## 8. Check and record
 
