@@ -330,6 +330,20 @@ class Trainer():
         eta = f"{d.day-1} Days {d.hour}:{d.minute}:{d.second}"
 
         return eta
+    #: Steps between progress lines in a training pass (plus one at step 0).
+    PROGRESS_EVERY = 200
+
+    def progress(self, phase, done, total):
+        """Print 'progress HH:MM:SS epoch E <phase> step done/total' at step 0 and every 200.
+
+        A Round 2 epoch of a note reader takes over an hour on an L4 and used to
+        print nothing between 'starting train epoch' and the next validation,
+        which looked like a hang. Output only; no effect on training.
+        """
+        if done % self.PROGRESS_EVERY == 0:
+            stamp = time.strftime('%H:%M:%S')
+            print(f'progress {stamp} epoch {self.epoch} {phase} step {done}/{total}', flush=True)
+
     def keep_frozen_readers_in_eval(self):
         """With --frozen_readers_eval, put every fully frozen subtree in eval mode.
 

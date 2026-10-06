@@ -178,6 +178,13 @@ def args_parser():
                              'confidence per patch) instead of the CLS vector (one per image, '
                              'the released code). Applies to Round 2, 2b and 3 together. '
                              'Off by default; a planned ablation.')
+    parser.add_argument('--cache_frozen_logits', action='store_true',
+                        help='Round 2b only (temp_c-unimodal_*): run the frozen reader and '
+                             'confidence head over the validation split once, keep the '
+                             'pre-temperature confidence logits on CPU and replay them every '
+                             'epoch instead of re-running the reader. Numerically equivalent '
+                             '(same batches, order, loss, ECE, checkpoints); needs '
+                             '--frozen_readers_eval. Off by default (released behaviour).')
 
 
     # args = argParser.parse_args()

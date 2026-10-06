@@ -18,6 +18,8 @@ from models.loss_set import Loss
 from .trainer import Trainer
 import pandas as pd
 import os
+import time
+from contextlib import nullcontext
 
 import numpy as np
 from sklearn import metrics
@@ -73,6 +75,87 @@ class calibration(Trainer):
         self.loss = Loss(args)
         self.optimizer = optim.Adam(self.model.parameters(), args.lr, betas=(0.9, self.args.beta_1))
         self.scheduler = ReduceLROnPlateau(self.optimizer, factor=0.5, patience=10, mode='min')
+        # --cache_frozen_logits: [(pre-temperature logits, labels)] per val batch, on CPU.
+        self.logit_cache = None
+
+    # -- --cache_frozen_logits ------------------------------------------------
+    # Only the temperature trains in Round 2b, so with the reader in eval mode
+    # (--frozen_readers_eval) everything before the temperature is a fixed
+    # function of the sample: the confidence predictor's output. It is captured
+    # once, during the pre-training pass over val_dl (shuffle=False, so the
+    # same batches in the same order every epoch), and each epoch applies the
+    # temperature exactly as TempCUnimodal*.forward does. Everything after the
+    # model call -- loss, optimizer step, ECE, checkpoints -- is the same code.
+
+    def reader(self):
+        return self.args.fusion_type.rsplit('_', 1)[-1]
+
+    def temperature(self):
+        return getattr(self.model.fusion_model, f'{self.reader()}_temperature')
+
+    def check_logit_cache(self):
+        """Refuse --cache_frozen_logits unless replaying cached logits is exact."""
+        def refuse(why):
+            raise SystemExit(f'--cache_frozen_logits refused: {why}')
+
+        if not self.args.fusion_type.startswith('temp_c-unimodal_'):
+            refuse(f'only for Round 2b (temp_c-unimodal_*), not {self.args.fusion_type}.')
+        if not getattr(self.args, 'frozen_readers_eval', False):
+            refuse('needs --frozen_readers_eval; without it the frozen reader runs in train '
+                   'mode (BERT dropout on), so its logits differ every epoch.')
+        temperature = f'fusion_model.{self.reader()}_temperature'
+        trainable = [n for n, p in self.model.named_parameters()
+                     if p.requires_grad and n != temperature]
+        if trainable:
+            refuse(f'parameters other than {temperature} would receive gradients: '
+                   f'{trainable[:5]}')
+        self.model.train()
+        self.keep_frozen_readers_in_eval()
+        stochastic = [n for n, m in self.model.named_modules() if m.training and isinstance(
+            m, (nn.modules.dropout._DropoutNd, nn.modules.batchnorm._BatchNorm))]
+        if stochastic:
+            refuse(f'dropout / batch-norm layers stay in train mode: {stochastic[:5]}')
+
+    def confidence_batches(self, inference):
+        """(pred, y) for each val batch, in val_dl order: from the model or the cache."""
+        if self.logit_cache is not None:
+            temperature = self.temperature()
+            for raw, y in self.logit_cache:
+                raw = raw.to(self.device)
+                # As in TempCUnimodal*.forward.
+                scaled = raw / temperature[:raw.shape[1]].clamp_min(1e-9).unsqueeze(0)
+                yield self.confidence_logits({self.args.fusion_type: scaled}), y
+            return
+
+        building = inference and getattr(self.args, 'cache_frozen_logits', False)
+        captured, cache = [], []
+        hook = None
+        if building:
+            predictor = getattr(self.model.fusion_model, f'{self.reader()}_confidence_predictor')
+            hook = predictor.register_forward_hook(
+                lambda _m, _i, out: captured.append(out.detach().cpu()))
+            started = time.time()
+        try:
+            for (x, img, dn, rr, y_ehr, y_cxr, seq_lengths, pairs, *_) in self.val_dl:
+                y = self.get_gt(y_ehr, y_cxr)
+                x = torch.from_numpy(x).float()
+                x = x.to(self.device)
+                img = img.to(self.device)
+                with torch.no_grad() if building else nullcontext():
+                    output = self.model(x, seq_lengths, img, pairs, rr, dn)
+                if building:
+                    cache.append((captured.pop(), y))
+                yield self.confidence_logits(output), y
+        finally:
+            if hook is not None:
+                hook.remove()
+        if building:
+            self.logit_cache = cache
+            size = sum(r.numel() * r.element_size() + t.numel() * t.element_size()
+                       for r, t in cache)
+            print(f'cached frozen logits: {len(cache)} batches, '
+                  f'{sum(r.shape[0] for r, _ in cache)} samples, {size / 2**20:.1f} MB on CPU, '
+                  f'single pass {time.time() - started:.1f}s', flush=True)
 
     def pad_to_length(self, tensor, max_len=2646):
         # tensor shape: [batch_size, token_dim, num_classes]
@@ -109,19 +192,17 @@ class calibration(Trainer):
         outPRED = []
         outPROB = []
         epoch_loss = 0
-        
-        for i, (x, img, dn, rr, y_ehr, y_cxr, seq_lengths, pairs, *_ ) in enumerate(self.val_dl):
-            y = self.get_gt(y_ehr, y_cxr)
-            x = torch.from_numpy(x).float()
-            x = x.to(self.device)
-            y = y.to(self.device)
-            img = img.to(self.device)
+        phase = 'inference' if inference else 'train'
+        steps = len(self.logit_cache) if self.logit_cache is not None else len(self.val_dl)
+        self.progress(phase, 0, steps)
 
-            output = self.model(x, seq_lengths, img, pairs, rr, dn)
-            # Not a bare .squeeze(): that also dropped the single token of the
-            # default CXR input ([B, 1, 25] -> [B, 25]), so the repeat below
-            # built a [B, 25, 25] target. Same fix as Round 2 (Trainer base).
-            pred = self.confidence_logits(output)
+        # Model call (or, with --cache_frozen_logits, the cached logits with the
+        # current temperature) in confidence_batches; the rest is unchanged.
+        # pred: not a bare .squeeze(): that also dropped the single token of the
+        # default CXR input ([B, 1, 25] -> [B, 25]), so the repeat below
+        # built a [B, 25, 25] target. Same fix as Round 2 (Trainer base).
+        for i, (pred, y) in enumerate(self.confidence_batches(inference)):
+            y = y.to(self.device)
             probs = torch.sigmoid(pred)
             
             if 'c-unimodal' in self.args.fusion_type:
@@ -160,7 +241,8 @@ class calibration(Trainer):
                 self.optimizer.zero_grad()
                 loss.backward()
                 self.optimizer.step()
-        
+            self.progress(phase, i + 1, steps)
+
         outPROB = torch.cat(outPROB, dim=0)
         outGT = torch.cat(outGT, dim=0)
                 
@@ -321,7 +403,10 @@ class calibration(Trainer):
         Main training loop specialized for 'c-unimodal' usage.
         """
         print(f'Running training for fusion_type {self.args.fusion_type}')
-        # Compute ECE before training (inference mode)
+        if getattr(self.args, 'cache_frozen_logits', False):
+            self.check_logit_cache()
+        # Compute ECE before training (inference mode). With --cache_frozen_logits
+        # this pass also fills the cache the training epochs replay.
         probs, labels = self.train_epoch(inference=True)
         pre_ece = self.flat_ece(probs, labels)
         self.plot_calibration_curve(probs.reshape(-1, self.args.num_classes),

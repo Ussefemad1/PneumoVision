@@ -166,16 +166,19 @@ def _calibration():
 def test_calibration_trains_on_val_only_by_construction():
     """Static guard: the calibration loop may read val_dl and nothing else."""
     cal = _calibration()
-    for method in (cal.train_epoch, cal.train):
+    # confidence_batches holds the model call (or the --cache_frozen_logits replay).
+    for method in (cal.train_epoch, cal.train, cal.confidence_batches):
         src = inspect.getsource(method)
         assert "self.train_dl" not in src and "self.test_dl" not in src, method.__name__
-    assert "self.val_dl" in inspect.getsource(cal.train_epoch)
+    assert "self.val_dl" in inspect.getsource(cal.confidence_batches)
 
 
 def test_calibration_uses_the_shared_token_axis_fix():
-    src = inspect.getsource(_calibration().train_epoch)
+    cal = _calibration()
+    src = inspect.getsource(cal.train_epoch) + inspect.getsource(cal.confidence_batches)
     code = "\n".join(line.split("#")[0] for line in src.splitlines())  # ignore comments
-    assert "self.confidence_logits(output)" in code
+    assert "self.confidence_logits(output)" in code  # the model path
+    assert "self.confidence_logits({self.args.fusion_type: scaled})" in code  # the cache
     assert ".squeeze()" not in code
 
 

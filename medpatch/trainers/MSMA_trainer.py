@@ -116,6 +116,7 @@ class MSMA_Trainer(Trainer):
             outPRED_combined = torch.FloatTensor().to(self.device)
             outPRED_less_combined = torch.FloatTensor().to(self.device)
         steps = len(self.train_dl)
+        self.progress('train', 0, steps)
         for i, (x, img, dn, rr, y_ehr, y_cxr, seq_lengths, pairs, age, gender, ethnicity, hadm_id) in enumerate (self.train_dl, 1):
             y = self.get_gt(y_ehr, y_cxr)
             x = torch.from_numpy(x).float()
@@ -185,6 +186,7 @@ class MSMA_Trainer(Trainer):
             loss.backward()
             self.optimizer.step()
 
+            self.progress('train', i, steps)
             if i % 100 == 9:
                 eta = self.get_eta(self.epoch, i)
                 print(f" epoch [{self.epoch:04d} / {self.args.epochs:04d}] [{i:04}/{steps}] eta: {eta:<20}  lr: \t{self.optimizer.param_groups[0]['lr']:0.4E} loss: \t{epoch_loss/i:0.5f} loss align {epoch_loss_align/i:0.4f}")
