@@ -18,6 +18,12 @@ Replaced, and recorded in run.json and the manifest:
 r2 refuses to start unless its parent is an r1 row, and r2b unless its parent is
 an r2 row, for the same reader and the same kind of data, whose file still
 matches the recorded sha256 (manifest.PARENT_STAGE).
+
+    python -m tools.pv.run r2b --reader ehr --data real ... --run-id r2b-ehr-001 --record-only
+
+--record-only (r2 / r2b) trains nothing: it records a run that finished training
+but whose process died before reaching the manifest, from the best checkpoint
+already in its save_dir. Pass the same arguments as the original run.
 """
 
 from __future__ import annotations
@@ -26,6 +32,7 @@ import argparse
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -283,7 +290,12 @@ def execute(run: dict) -> Path:
     try:
         code = _run_fusion_main(run, env, log_path)
     finally:
-        _collect_stray_outputs(before, save_dir / "medpatch_outputs")
+        # Housekeeping only: it must neither mask the training exit code (or an
+        # exception already propagating) nor turn a finished run into a crash.
+        try:
+            _collect_stray_outputs(before, save_dir / "medpatch_outputs")
+        except Exception as exc:  # noqa: BLE001
+            print(f"  WARNING could not collect files written into medpatch/: {exc!r}")
     if code != 0:
         raise SystemExit(f"[pv] fusion_main.py failed (exit {code}); see {log_path}")
     best = checkpoint_path(parse_args(run["argv"]))
@@ -301,12 +313,72 @@ def _collect_stray_outputs(before: set[str], dest: Path) -> None:
     source tree.
     """
     new = [p for p in MEDPATCH.iterdir() if p.name not in before and p.is_file()]
-    if not new:
-        return
-    dest.mkdir(parents=True, exist_ok=True)
-    for path in new:
-        path.replace(dest / path.name)
-    print(f"  moved {len(new)} file(s) written into medpatch/ to {dest}")
+    _move_outputs(new, dest)
+
+
+#: What the trainers write into their working directory (medpatch/): Calibration.py's
+#: calibration curves, ECE tables and per-token probability CSVs.
+STRAY_PATTERNS = (
+    "calibration_curve_class_*.png",
+    "*_ece_table_epoch_*.csv",
+    "per_token_probabilities_*.csv",
+)
+
+
+def _stray_outputs_of(save_dir: Path) -> list[Path]:
+    """Trainer outputs left in medpatch/ by a run that died before collecting them.
+
+    Without the run's "before" listing, take the files matching STRAY_PATTERNS
+    written since the run started (run.json is written first, by execute()).
+    """
+    started = None
+    try:
+        started = (save_dir / "run.json").stat().st_mtime
+    except OSError:
+        pass
+    found = []
+    for pattern in STRAY_PATTERNS:
+        for path in MEDPATCH.glob(pattern):
+            try:
+                if path.is_file() and (started is None or path.stat().st_mtime >= started):
+                    found.append(path)
+            except OSError:
+                continue
+    return sorted(set(found))
+
+
+def _move_outputs(paths: list[Path], dest: Path) -> int:
+    """Move each file into dest; never raises. Returns how many were moved.
+
+    shutil.move, not Path.replace: on Colab the repo is on local disk and runs on
+    Drive, and os.replace cannot cross filesystems (OSError EXDEV). If the move
+    still fails, copy then unlink; a file that cannot be moved is reported and
+    skipped.
+    """
+    if not paths:
+        return 0
+    try:
+        dest.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(f"  WARNING cannot create {dest} ({exc}); {len(paths)} file(s) left in medpatch/")
+        return 0
+    moved = 0
+    for path in paths:
+        target = dest / path.name
+        try:
+            shutil.move(str(path), str(target))
+            moved += 1
+            continue
+        except OSError:
+            pass
+        try:
+            shutil.copy2(path, target)
+            path.unlink()
+            moved += 1
+        except OSError as exc:
+            print(f"  WARNING could not move {path.name} to {dest}: {exc}")
+    print(f"  moved {moved} file(s) written into medpatch/ to {dest}")
+    return moved
 
 
 def _run_fusion_main(run: dict, env: dict[str, str], log_path: Path) -> int:
@@ -500,17 +572,50 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="verify the parent and print the exact fusion_main command, then exit (no training)",
     )
+    p.add_argument(
+        "--record-only",
+        dest="record_only",
+        action="store_true",
+        help="r2/r2b: train nothing; record a run (--run-id) that finished training but "
+        "crashed before reaching the manifest, from the best checkpoint in its save_dir. "
+        "Use the same arguments as the original run.",
+    )
     return p
 
 
+def record_only(run: dict) -> Path:
+    """Checks for --record-only; returns the existing best checkpoint, or SystemExit."""
+    if run["stage"] not in manifest.PARENT_STAGE:
+        raise SystemExit("--record-only is for r2 and r2b runs.")
+    existing = manifest.find(run["id"])
+    if existing is not None:
+        raise SystemExit(
+            f"[pv] {run['id']} is already in {manifest.manifest_path()} "
+            f"(file {existing.get('file_path')}); nothing to record."
+        )
+    best = checkpoint_path(parse_args(run["argv"]))
+    if not best.is_file():
+        raise SystemExit(
+            f"[pv] --record-only: no best checkpoint at {best}. Check --run-id and that "
+            "the other arguments match the original run; to train, drop --record-only."
+        )
+    save_dir = Path(run["save_dir"])
+    _move_outputs(_stray_outputs_of(save_dir), save_dir / "medpatch_outputs")
+    run["deviations"] = [*run["deviations"], "recorded with --record-only after a crash"]
+    return best
+
+
 def main(argv: list[str] | None = None) -> dict[str, str] | None:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.record_only and not args.run_id:
+        parser.error("--record-only needs --run-id (the id of the run to record)")
     run = plan(args)
     if args.dry_run:
         print(describe(run))
         return None
     started = time.time()
-    best = execute(run)
+    best = record_only(run) if args.record_only else execute(run)
     row = record(run, best, args.who)
     print(
         f"[pv] {row['id']} done in {time.time() - started:.0f}s  "
