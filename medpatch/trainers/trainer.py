@@ -77,7 +77,10 @@ class Trainer():
     def load_state(self, state_path=None):
         if state_path is None:
             return
-        checkpoint = torch.load(state_path)
+        # map_location: a checkpoint saved on a GPU (Colab/cluster) failed to load
+        # on a CPU-only machine. On the device it was saved from, this is the
+        # same as before. Trainers without a `device` keep torch's default.
+        checkpoint = torch.load(state_path, map_location=getattr(self, 'device', None))
 
 
         own_state = self.model.state_dict()
@@ -185,7 +188,8 @@ class Trainer():
             label = self.class_names[i] if getattr(self, 'class_names', None) \
                 and i < len(self.class_names) else f'class {i}'
             (test_auprc, upper_auprc, lower_auprc), (test_auroc, upper_auroc, lower_auroc) = \
-                get_model_performance(df, label=label)
+                get_model_performance(df, label=label,
+                                      num_iter=getattr(self.args, 'bootstrap_iters', 1000))
             auc_scores.append(test_auroc)
             auprc_scores.append(test_auprc)
             ci_auroc.append((lower_auroc, upper_auroc))
@@ -326,6 +330,73 @@ class Trainer():
         eta = f"{d.day-1} Days {d.hour}:{d.minute}:{d.second}"
 
         return eta
+    #: Steps between progress lines in a training pass (plus one at step 0).
+    PROGRESS_EVERY = 200
+
+    def progress(self, phase, done, total):
+        """Print 'progress HH:MM:SS epoch E <phase> step done/total' at step 0 and every 200.
+
+        A Round 2 epoch of a note reader takes over an hour on an L4 and used to
+        print nothing between 'starting train epoch' and the next validation,
+        which looked like a hang. Output only; no effect on training.
+        """
+        if done % self.PROGRESS_EVERY == 0:
+            stamp = time.strftime('%H:%M:%S')
+            print(f'progress {stamp} epoch {self.epoch} {phase} step {done}/{total}', flush=True)
+
+    def keep_frozen_readers_in_eval(self):
+        """With --frozen_readers_eval, put every fully frozen subtree in eval mode.
+
+        Call right after self.model.train(). That call puts the whole model in
+        train mode, including the frozen reader, so BERT's dropout (p=0.1) was
+        active while Round 2 / 2b trained the head -- unlike how the reader was
+        trained and evaluated. A subtree counts as frozen when it has parameters
+        and none requires grad; trainable modules (the confidence head, the
+        temperature) keep train mode.
+
+        Only for c-unimodal_* / temp_c-unimodal_* (Round 2 / 2b); Round 3
+        (c-msma, c-e-msma) is never touched. Returns the switched module names.
+        """
+        if not getattr(self.args, 'frozen_readers_eval', False):
+            return []
+        if 'c-unimodal' not in self.args.fusion_type:
+            return []
+        switched = []
+
+        def visit(name, module):
+            params = list(module.parameters())
+            if params and not any(p.requires_grad for p in params):
+                module.eval()
+                switched.append(name)
+                return
+            for child_name, child in module.named_children():
+                visit(f'{name}.{child_name}' if name else child_name, child)
+
+        visit('', self.model)
+        return switched
+
+    def confidence_logits(self, output):
+        """A c-unimodal output as [batch, tokens, classes], class axis dropped when 1.
+
+        This used to be a bare `.squeeze()`, which also removed the token axis
+        when there is one token -- the CXR confidence input by default is the
+        CLS vector as a length-1 sequence ([B, 1, D] -> [B, 1, 25]), so the
+        target was then repeated over the class axis and the loss failed on
+        shape. Wherever the old squeeze worked (batch and tokens > 1) the result
+        is identical. See docs/model_track_notes.md, "CXR confidence input".
+
+        Lives on the base Trainer so MSMA_Trainer (Round 2) and calibration
+        (Round 2b) share it without importing each other.
+
+        Only a 3-D output has a class axis to drop. With num_classes 1
+        (mortality) ConfidencePredictor has already squeezed it, so the output
+        is [batch, tokens] -- and for the single default CXR token that is
+        [B, 1], whose last axis is the *token* axis and must be kept. Phenotyping
+        outputs are always 3-D [B, tokens, 25], so they are unaffected.
+        """
+        pred = output[self.args.fusion_type]
+        return pred.squeeze(-1) if pred.dim() == 3 and pred.shape[-1] == 1 else pred
+
     def get_gt(self, y_ehr, y_cxr):
         if 'radiology' in self.args.labels_set :
             return y_cxr

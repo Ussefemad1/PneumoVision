@@ -116,6 +116,7 @@ class MSMA_Trainer(Trainer):
             outPRED_combined = torch.FloatTensor().to(self.device)
             outPRED_less_combined = torch.FloatTensor().to(self.device)
         steps = len(self.train_dl)
+        self.progress('train', 0, steps)
         for i, (x, img, dn, rr, y_ehr, y_cxr, seq_lengths, pairs, age, gender, ethnicity, hadm_id) in enumerate (self.train_dl, 1):
             y = self.get_gt(y_ehr, y_cxr)
             x = torch.from_numpy(x).float()
@@ -158,7 +159,10 @@ class MSMA_Trainer(Trainer):
                 outPRED_less_combined = torch.cat((outPRED_less_combined, pred_less_combined), 0)
                 outGT = torch.cat((outGT, y), 0)
             else:
-                pred = output[self.args.fusion_type].squeeze()
+                if 'c-unimodal' in self.args.fusion_type:
+                    pred = self.confidence_logits(output)
+                else:
+                    pred = output[self.args.fusion_type].squeeze()
                 if 'c-unimodal' in self.args.fusion_type:
                     if self.args.task == 'phenotyping':
                         y = y.unsqueeze(1).repeat(1, pred.shape[1], 1)
@@ -182,6 +186,7 @@ class MSMA_Trainer(Trainer):
             loss.backward()
             self.optimizer.step()
 
+            self.progress('train', i, steps)
             if i % 100 == 9:
                 eta = self.get_eta(self.epoch, i)
                 print(f" epoch [{self.epoch:04d} / {self.args.epochs:04d}] [{i:04}/{steps}] eta: {eta:<20}  lr: \t{self.optimizer.param_groups[0]['lr']:0.4E} loss: \t{epoch_loss/i:0.5f} loss align {epoch_loss_align/i:0.4f}")
@@ -291,7 +296,9 @@ class MSMA_Trainer(Trainer):
                     outGT = torch.cat((outGT, y), 0)
                 else:
                     pred = output[self.args.fusion_type]
-                    if self.args.fusion_type != 'uni_cxr':
+                    if 'c-unimodal' in self.args.fusion_type:
+                        pred = self.confidence_logits(output)
+                    elif self.args.fusion_type != 'uni_cxr':
                         if len(pred.shape) > 1:
                              pred = pred.squeeze()
                     if 'c-unimodal' in self.args.fusion_type:
@@ -465,6 +472,8 @@ class MSMA_Trainer(Trainer):
                     self.patience+=1
 
             self.model.train()
+            # --frozen_readers_eval: the frozen reader keeps eval mode (no BERT dropout).
+            self.keep_frozen_readers_in_eval()
             self.train_epoch()
 
             # Save every epoch, not only on improvement. 'best' is still written

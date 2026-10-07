@@ -125,30 +125,33 @@ medpatch/            EXISTING training code — read only, do not restructure
   ehr_utils/         Discretizer + Normalizer (+ resources/)
   normalizers/       bundled normalizer state
   mimic4extract/     vendored MIMIC benchmark extraction code
+tools/synthetic/     virtual (SYNTHETIC) dataset generator in the fusion_main layout
+tools/pv/            model-track runner: paper-script commands, manifest, r1/r2 runs
 services/inference/  FastAPI inference service (imports preprocessing from medpatch/)
 apps/api/            Express + TypeScript gateway
 apps/web/            React 18 + Vite SPA
 packages/shared/     zod schemas, types and constants shared by api + web
 infra/nginx/         edge reverse proxy (TLS) and SPA static config
 infra/scripts/       gen-certs.sh, gen-ehr-constants.mjs
-checkpoints/ data/ results/   gitignored
+checkpoints/ data/ results/ runs/   gitignored
 ```
 
 ## Commands
 
-| Task                     | Command                                           |
-| ------------------------ | ------------------------------------------------- |
-| Install (JS)             | `npm install`                                     |
-| Typecheck all            | `npm run typecheck`                               |
-| Lint / fix               | `npm run lint` · `npm run lint:fix`               |
-| Format                   | `npm run format`                                  |
-| Test all (JS)            | `npm test`                                        |
-| Test inference           | `cd services/inference && python -m pytest`       |
-| Test ML env              | `python -m pytest` (repo root)                    |
-| Regenerate EHR constants | `npm run gen:ehr`                                 |
-| Dev certs                | `bash infra/scripts/gen-certs.sh`                 |
-| Full stack               | `docker compose up --build` → <https://localhost> |
-| Audit deps               | `npm run audit:js` · `npm run audit:py`           |
+| Task                     | Command                                                                                                    |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| Install (JS)             | `npm install`                                                                                              |
+| Typecheck all            | `npm run typecheck`                                                                                        |
+| Lint / fix               | `npm run lint` · `npm run lint:fix`                                                                        |
+| Format                   | `npm run format`                                                                                           |
+| Test all (JS)            | `npm test`                                                                                                 |
+| Test inference           | `cd services/inference && python -m pytest`                                                                |
+| Test ML env              | `python -m pytest` (repo root)                                                                             |
+| Round 2 smoke (virtual)  | `python -m tools.pv.smoke_round2` · checks: `python -m pytest -m round2 -s` (see `docs/TESTING_ROUND2.md`) |
+| Regenerate EHR constants | `npm run gen:ehr`                                                                                          |
+| Dev certs                | `bash infra/scripts/gen-certs.sh`                                                                          |
+| Full stack               | `docker compose up --build` → <https://localhost>                                                          |
+| Audit deps               | `npm run audit:js` · `npm run audit:py`                                                                    |
 
 The ML side uses the repo-root `.venv` (Python 3.11): activate it before
 running `pytest` or any `fusion_main.py` command.

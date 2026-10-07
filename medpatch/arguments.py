@@ -54,6 +54,13 @@ def args_parser():
     parser.add_argument('--cxr_encoder', type=str, default=None, help='state dir path')
     parser.add_argument('--ehr_encoder', type=str, default=None, help='state dir path')
     parser.add_argument('--text_encoder', type=str, default=None, help='state dir path')
+    # Read by models/text_models.py (Text_encoder) for BOTH the BertModel and its
+    # tokenizer -- the encoder every Round 2 / 2b / 3 trainer builds. It must
+    # match the BERT the loaded checkpoint was trained with: a different model
+    # loads without error but tokenizes with the wrong vocabulary.
+    parser.add_argument('--bert_model_name', type=str, default='emilyalsentzer/Bio_ClinicalBERT',
+                        help='Hugging Face BERT for the RR/DN text encoder (model and tokenizer). '
+                             'Default is the paper\'s Bio_ClinicalBERT.')
     parser.add_argument('--classifier', type=str, default=None, help='state dir path')
     parser.add_argument('--loss', type=str, default=None, help='state dir path')
     parser.add_argument('--output_dim_cxr', type=int, default=512, help='state dir path')
@@ -155,6 +162,29 @@ def args_parser():
     parser.add_argument('--num_workers', type=int, default=_default_num_workers(),
                         help='DataLoader worker processes. Defaults to 0 on Windows, where the '
                              'spawn start method makes worker processes expensive and fragile.')
+    parser.add_argument('--bootstrap_iters', type=int, default=1000,
+                        help='Bootstrap resamples per class for the AUROC/AUPRC confidence '
+                             'intervals (Trainer.computeAUROC). 1000 is the paper setting; '
+                             'lower it only for smoke tests on synthetic data.')
+    parser.add_argument('--frozen_readers_eval', action='store_true',
+                        help='Round 2 / 2b only (c-unimodal_*, temp_c-unimodal_*): keep every '
+                             'fully frozen submodule (the reader -- BERT, LSTM, ViT) in eval mode '
+                             'while the head trains, so frozen-BERT dropout stays off as it was '
+                             'when the reader was trained and evaluated. Off by default (released '
+                             'behaviour: model.train() turns that dropout on). Never affects '
+                             'Round 3.')
+    parser.add_argument('--cxr_token_confidence', action='store_true',
+                        help='Feed the CXR confidence predictor the ViT patch tokens (one '
+                             'confidence per patch) instead of the CLS vector (one per image, '
+                             'the released code). Applies to Round 2, 2b and 3 together. '
+                             'Off by default; a planned ablation.')
+    parser.add_argument('--cache_frozen_logits', action='store_true',
+                        help='Round 2b only (temp_c-unimodal_*): run the frozen reader and '
+                             'confidence head over the validation split once, keep the '
+                             'pre-temperature confidence logits on CPU and replay them every '
+                             'epoch instead of re-running the reader. Numerically equivalent '
+                             '(same batches, order, loss, ECE, checkpoints); needs '
+                             '--frozen_readers_eval. Off by default (released behaviour).')
 
 
     # args = argParser.parse_args()
