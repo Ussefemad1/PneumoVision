@@ -1,0 +1,21 @@
+{
+ "seeds": [
+  1002,
+  2002,
+  3002,
+  4002,
+  5002
+ ],
+ "lr": 0.00012225031390095305,
+ "val_auroc_mean": 0.7618,
+ "test_auroc_mean": 0.7297,
+ "test_auroc_range": [
+  0.7275,
+  0.7322
+ ],
+ "test_auprc_mean": 0.2726,
+ "test_auprc_range": [
+  0.265,
+  0.2766
+ ]
+}

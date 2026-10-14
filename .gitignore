@@ -55,3 +55,8 @@ errlogs/
 
 # Local tool caches
 .cache/
+
+# patient data - never upload
+caroll's work/
+hand_check_*.txt
+

@@ -1,0 +1,6 @@
+# 2026-10-02 05:15  code md5: 3a441245e5033b2ed698793931a137f9
+python /content/fast_text/train_head.py --repo /content/medpatch --cache "/content/drive/MyDrive/PneumoVision_farida/cache/taskB_dn_biobert" --out "/content/drive/MyDrive/PneumoVision_farida/runs/fast_taskB_unimodal_dn_biobert_seed1002" --seed 1002 --n_sweeps 10 --epochs 100
+
+# 2026-10-02 11:39  code md5: 3a441245e5033b2ed698793931a137f9
+python /content/fast_text/train_head.py --repo /content/medpatch --cache "/content/drive/MyDrive/PneumoVision_farida/cache/taskB_dn_biobert" --out "/content/drive/MyDrive/PneumoVision_farida/runs/fast_taskB_unimodal_dn_biobert_seed1002" --seed 1002 --n_sweeps 10 --epochs 100
+

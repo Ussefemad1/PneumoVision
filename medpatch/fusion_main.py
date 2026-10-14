@@ -47,7 +47,8 @@ if args.missing_token is not None:
 path = Path(args.save_dir)
 path.mkdir(parents=True, exist_ok=True)
 
-seed = 1002
+seed = 1002 if args.seed is None else args.seed
+print(f"SEED (fusion_main): {seed}")
 torch.manual_seed(seed)
 np.random.seed(seed)
 torch.cuda.manual_seed(seed)

@@ -29,7 +29,7 @@ def bootstraping_eval(df, num_iter):
 
 def computing_confidence_intervals(list_,true_value):
     """This function calcualts the 95% Confidence Intervals"""
-    delta = (true_value - list_)
+    delta = (true_value - np.asarray(list_))  # newer sklearn returns a Python float, which can't subtract a list
     list(np.sort(delta))
     delta_lower = np.percentile(delta, 97.5)
     delta_upper = np.percentile(delta, 2.5)

@@ -1,0 +1,35 @@
+{
+ "command": "my_work/fast_text/train_head.py --repo medpatch --cache data/text_cache/biobert_rr_mortality --out my_work/runs/2026-10-02_mortality_rr_biobert_fast_5seeds/seed3002 --lrs 0.00012225031390095305 --seed 3002",
+ "git_commit": "ed255d2",
+ "cache_meta": {
+  "model": "dmis-lab/biobert-v1.1",
+  "modality": "RR",
+  "notes_file": "radiology.csv",
+  "task": "in-hospital-mortality",
+  "splits": {
+   "train": {
+    "stays": 16796,
+    "chunks": 36506,
+    "minutes": 18.89
+   },
+   "val": {
+    "stays": 1904,
+    "chunks": 4094,
+    "minutes": 2.12
+   },
+   "test": {
+    "stays": 4650,
+    "chunks": 10180,
+    "minutes": 5.26
+   }
+  }
+ },
+ "lrs": [
+  0.00012225031390095305
+ ],
+ "lr_distribution": "explicit",
+ "seed": 3002,
+ "epochs": 100,
+ "patience": 15,
+ "batch_size": 16
+}

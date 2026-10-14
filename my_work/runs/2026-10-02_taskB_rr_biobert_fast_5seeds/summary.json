@@ -1,0 +1,30 @@
+{
+ "seeds": [
+  1002,
+  2002,
+  3002,
+  4002,
+  5002
+ ],
+ "lr": 0.00012225031390095305,
+ "test_auroc_mean": 0.7783,
+ "test_auroc_range": [
+  0.778,
+  0.7787
+ ],
+ "test_auprc_mean": 0.474,
+ "test_auprc_range": [
+  0.4721,
+  0.4756
+ ],
+ "pneumonia_auroc_mean": 0.8593,
+ "pneumonia_auroc_range": [
+  0.858,
+  0.8602
+ ],
+ "pneumonia_auprc_mean": 0.4869,
+ "pneumonia_auprc_range": [
+  0.4841,
+  0.489
+ ]
+}

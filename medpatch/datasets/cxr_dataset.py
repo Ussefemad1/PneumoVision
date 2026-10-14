@@ -104,11 +104,23 @@ def get_transforms(args):
 
     return train_transforms, test_transforms
 
+class EmptyCXR:
+    """Stand-in used when CXR is not in --modalities: no X-ray files are opened."""
+    filenames_loaded = []
+
+    def __len__(self):
+        return 0
+
+
 def get_cxr_datasets(args):
+    if 'CXR' not in args.modalities:
+        print('CXR not in modalities -> skipping all X-ray files')
+        return EmptyCXR(), EmptyCXR(), EmptyCXR()
+
     train_transforms, test_transforms = get_transforms(args)
 
     data_dir = args.cxr_data_dir
-    
+
     paths = glob.glob(f'{data_dir}/resized/**/*.jpg', recursive=True)
     
     dataset_train = MIMICCXR(paths, args, split='train', transform=train_transforms)

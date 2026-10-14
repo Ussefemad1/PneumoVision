@@ -22,6 +22,7 @@ class Text_encoder(nn.Module):
         output_dim_rr = getattr(args, 'output_dim_rr', 512)
 
         # Pretrained BERT model and tokenizer
+        print(f"TEXT ENCODER MODEL: {pretrained_model_name}")
         self.bert = BertModel.from_pretrained(pretrained_model_name)
         self.tokenizer = BertTokenizerFast.from_pretrained(pretrained_model_name)
 

@@ -32,7 +32,8 @@ class MSMA_Trainer(Trainer):
         self.start_epoch = 0
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
-        self.seed = 379647
+        self.seed = 379647 if args.seed is None else args.seed
+        print(f"SEED (trainer): {self.seed}")
         torch.manual_seed(self.seed)
         np.random.seed(self.seed)
         
@@ -401,9 +402,62 @@ class MSMA_Trainer(Trainer):
                     })
         return
     
+    def _last_checkpoint_path(self):
+        save_dir = f'{self.args.save_dir}/{self.args.task}/{self.args.fusion_type}'
+        return f'{save_dir}/last_checkpoint_{self.args.lr}_{self.args.task}_{self.args.fusion_type}_{self.args.modalities}_{self.args.data_pairs}.pth.tar'
+
+    def _save_last_checkpoint(self):
+        """Full training state after each epoch, so an interrupted run (e.g. Colab) can --resume."""
+        path = self._last_checkpoint_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        state = {
+            'next_epoch': self.epoch + 1,
+            'state_dict': self.model.state_dict(),
+            'optimizer': self.optimizer.state_dict(),
+            'scheduler': self.scheduler.state_dict(),
+            'best_auroc': self.best_auroc,
+            'best_stats': self.best_stats,
+            'patience': self.patience,
+            'rng_torch': torch.get_rng_state(),
+            'rng_cuda': torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+            'rng_numpy': np.random.get_state(),
+        }
+        if hasattr(self, 'weights'):
+            state['weights'] = self.weights.detach().cpu()
+        # write to a temp file first so a disconnect mid-save cannot corrupt the checkpoint
+        torch.save(state, path + '.tmp')
+        os.replace(path + '.tmp', path)
+        print(f"saved last checkpoint (next epoch {self.epoch + 1}): {path}")
+
+    def _resume_from_last_checkpoint(self):
+        path = self._last_checkpoint_path()
+        if not os.path.exists(path):
+            print(f"--resume: no last checkpoint at {path}, starting from scratch")
+            return
+        state = torch.load(path, map_location=self.device, weights_only=False)
+        self.model.load_state_dict(state['state_dict'])
+        self.optimizer.load_state_dict(state['optimizer'])
+        self.scheduler.load_state_dict(state['scheduler'])
+        self.best_auroc = state['best_auroc']
+        self.best_stats = state['best_stats']
+        self.patience = state['patience']
+        self.start_epoch = state['next_epoch']
+        torch.set_rng_state(state['rng_torch'].cpu())
+        if state['rng_cuda'] is not None and torch.cuda.is_available():
+            torch.cuda.set_rng_state_all([s.cpu() for s in state['rng_cuda']])
+        np.random.set_state(state['rng_numpy'])
+        if 'weights' in state and hasattr(self, 'weights'):
+            self.weights.data.copy_(state['weights'].to(self.weights.device))
+        print(f"RESUMED from {path}: next epoch {self.start_epoch}, best so far {self.best_auroc}, patience {self.patience}")
+
     def train(self):
         test = False
         print(f'running for fusion_type {self.args.fusion_type}')
+        if self.args.resume:
+            self._resume_from_last_checkpoint()
+            if self.patience >= self.args.patience:
+                print("--resume: early stopping was already reached, skipping training")
+                self.start_epoch = self.args.epochs
         for self.epoch in range(self.start_epoch, self.args.epochs):
             self.model.eval()
             if self.args.fusion_type == 'c-msma' or self.args.fusion_type == 'c-e-msma':
@@ -456,6 +510,7 @@ class MSMA_Trainer(Trainer):
 
             self.model.train()
             self.train_epoch()
+            self._save_last_checkpoint()
 
             if self.patience >= self.args.patience:
                 break

@@ -101,7 +101,10 @@ def args_parser():
     parser.add_argument('--mode', type=str, default="train",
                         help='mode: train or test')
     parser.add_argument('--batch_size', type=int, default=64)
-    parser.add_argument('--resume', dest='resume', help='resume training from state to load', action='store_true')
+    parser.add_argument('--resume', dest='resume', help='resume from last_checkpoint in save_dir if it exists', action='store_true')
+    parser.add_argument('--bert_model_name', type=str, default='emilyalsentzer/Bio_ClinicalBERT',
+                        help='HF model for RR/DN text encoder. Repo default is Bio_ClinicalBERT; the paper says BioBERT (dmis-lab/biobert-v1.1)')
+    parser.add_argument('--seed', type=int, default=None, help='overrides the hard-coded seeds (1002 data / 379647 trainer) when set')
     parser.add_argument('--dropout', type=float, default=0.0)
     parser.add_argument('--num_classes', type=int, default=25)
     parser.add_argument('--patience', type=int, default=15, help='number of epoch to wait for best')

@@ -159,7 +159,11 @@ class MIMIC_CXR_EHR_RR_DN(Dataset):
         
 def loadmetadata(args, discharge_notes, radiology_reports, cxr_reports):
     data_dir = args.cxr_data_dir
-    cxr_metadata = pd.read_csv(f'{data_dir}/mimic-cxr-2.0.0-metadata.csv')
+    # X-ray metadata is only used when CXR is a modality or for partial pairing
+    if 'CXR' in args.modalities or args.data_pairs == 'partial':
+        cxr_metadata = pd.read_csv(f'{data_dir}/mimic-cxr-2.0.0-metadata.csv')
+    else:
+        cxr_metadata = pd.DataFrame()
     icu_stay_metadata = pd.read_csv(f'{args.ehr_data_dir}/root/all_stays.csv')
     columns = ['subject_id', 'stay_id', 'intime', 'outtime', 'hadm_id', 'age', 'ethnicity', 'gender']
     
@@ -448,8 +452,18 @@ def loadmetadata(args, discharge_notes, radiology_reports, cxr_reports):
 
 def load_cxr_ehr_rr_dn(args, ehr_train_ds, ehr_val_ds, cxr_train_ds, cxr_val_ds, ehr_test_ds, cxr_test_ds):
     notes_dir = args.notes_data_dir
-    discharge_notes = pd.read_csv(os.path.join(notes_dir, 'discharge.csv'))
-    radiology_reports = pd.read_csv(os.path.join(notes_dir, 'radiology.csv'))
+    # Only read the (multi-GB) note files the run actually uses
+    note_cols = ['subject_id', 'hadm_id', 'charttime', 'text']
+    is_partial = args.data_pairs == 'partial'
+    if 'DN' in args.modalities or is_partial:
+        discharge_notes = pd.read_csv(os.path.join(notes_dir, 'discharge.csv'), usecols=note_cols)
+    else:
+        discharge_notes = pd.DataFrame(columns=note_cols)
+    if 'RR' in args.modalities or is_partial:
+        radiology_reports = pd.read_csv(os.path.join(notes_dir, 'radiology.csv'), usecols=note_cols)
+    else:
+        radiology_reports = pd.DataFrame(columns=note_cols)
+    print(f"Notes loaded: discharge {discharge_notes.shape}, radiology {radiology_reports.shape}")
     cxr_reports= None
 
     cxr_merged_icustays = loadmetadata(args, discharge_notes, radiology_reports, cxr_reports) 

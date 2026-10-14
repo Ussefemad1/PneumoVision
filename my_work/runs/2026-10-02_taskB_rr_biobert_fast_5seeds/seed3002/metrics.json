@@ -1,0 +1,408 @@
+{
+ "chosen_lr": 0.00012225031390095305,
+ "chosen_val_auroc": 0.779,
+ "test_mean_auroc": 0.7781,
+ "test_mean_auprc": 0.4744,
+ "per_label": [
+  {
+   "label": "Acute and unspecified renal failure",
+   "auroc": 0.7925,
+   "auroc_ci": [
+    0.7835,
+    0.8024
+   ],
+   "auprc": 0.5989,
+   "auprc_ci": [
+    0.5784,
+    0.6177
+   ]
+  },
+  {
+   "label": "Acute cerebrovascular disease",
+   "auroc": 0.9479,
+   "auroc_ci": [
+    0.9389,
+    0.9561
+   ],
+   "auprc": 0.6745,
+   "auprc_ci": [
+    0.6393,
+    0.7108
+   ]
+  },
+  {
+   "label": "Acute myocardial infarction",
+   "auroc": 0.7916,
+   "auroc_ci": [
+    0.7759,
+    0.8074
+   ],
+   "auprc": 0.3035,
+   "auprc_ci": [
+    0.2702,
+    0.3389
+   ]
+  },
+  {
+   "label": "Cardiac dysrhythmias",
+   "auroc": 0.6889,
+   "auroc_ci": [
+    0.679,
+    0.6992
+   ],
+   "auprc": 0.5032,
+   "auprc_ci": [
+    0.4867,
+    0.5223
+   ]
+  },
+  {
+   "label": "Chronic kidney disease",
+   "auroc": 0.7619,
+   "auroc_ci": [
+    0.7514,
+    0.7733
+   ],
+   "auprc": 0.5019,
+   "auprc_ci": [
+    0.4826,
+    0.5243
+   ]
+  },
+  {
+   "label": "Chronic obstructive pulmonary disease and bronchiectasis",
+   "auroc": 0.7357,
+   "auroc_ci": [
+    0.722,
+    0.7498
+   ],
+   "auprc": 0.366,
+   "auprc_ci": [
+    0.3405,
+    0.3922
+   ]
+  },
+  {
+   "label": "Complications of surgical procedures or medical care",
+   "auroc": 0.7562,
+   "auroc_ci": [
+    0.7448,
+    0.767
+   ],
+   "auprc": 0.4141,
+   "auprc_ci": [
+    0.3934,
+    0.4369
+   ]
+  },
+  {
+   "label": "Conduction disorders",
+   "auroc": 0.8326,
+   "auroc_ci": [
+    0.8172,
+    0.8467
+   ],
+   "auprc": 0.5462,
+   "auprc_ci": [
+    0.5116,
+    0.5782
+   ]
+  },
+  {
+   "label": "Congestive heart failure; nonhypertensive",
+   "auroc": 0.819,
+   "auroc_ci": [
+    0.8095,
+    0.8273
+   ],
+   "auprc": 0.6407,
+   "auprc_ci": [
+    0.6222,
+    0.6582
+   ]
+  },
+  {
+   "label": "Coronary atherosclerosis and other heart disease",
+   "auroc": 0.7912,
+   "auroc_ci": [
+    0.7826,
+    0.8003
+   ],
+   "auprc": 0.6615,
+   "auprc_ci": [
+    0.6457,
+    0.6795
+   ]
+  },
+  {
+   "label": "Diabetes mellitus with complications",
+   "auroc": 0.7102,
+   "auroc_ci": [
+    0.6958,
+    0.725
+   ],
+   "auprc": 0.2841,
+   "auprc_ci": [
+    0.2613,
+    0.3094
+   ]
+  },
+  {
+   "label": "Diabetes mellitus without complication",
+   "auroc": 0.6116,
+   "auroc_ci": [
+    0.5983,
+    0.6243
+   ],
+   "auprc": 0.2354,
+   "auprc_ci": [
+    0.222,
+    0.2505
+   ]
+  },
+  {
+   "label": "Disorders of lipid metabolism",
+   "auroc": 0.6886,
+   "auroc_ci": [
+    0.6796,
+    0.698
+   ],
+   "auprc": 0.5894,
+   "auprc_ci": [
+    0.5748,
+    0.6046
+   ]
+  },
+  {
+   "label": "Essential hypertension",
+   "auroc": 0.6424,
+   "auroc_ci": [
+    0.6322,
+    0.6533
+   ],
+   "auprc": 0.5465,
+   "auprc_ci": [
+    0.5308,
+    0.5615
+   ]
+  },
+  {
+   "label": "Fluid and electrolyte disorders",
+   "auroc": 0.7479,
+   "auroc_ci": [
+    0.7387,
+    0.7572
+   ],
+   "auprc": 0.6282,
+   "auprc_ci": [
+    0.6124,
+    0.6439
+   ]
+  },
+  {
+   "label": "Gastrointestinal hemorrhage",
+   "auroc": 0.7974,
+   "auroc_ci": [
+    0.781,
+    0.8141
+   ],
+   "auprc": 0.3056,
+   "auprc_ci": [
+    0.2735,
+    0.3415
+   ]
+  },
+  {
+   "label": "Hypertension with complications and secondary hypertension",
+   "auroc": 0.7606,
+   "auroc_ci": [
+    0.7497,
+    0.771
+   ],
+   "auprc": 0.4921,
+   "auprc_ci": [
+    0.4709,
+    0.5134
+   ]
+  },
+  {
+   "label": "Other liver diseases",
+   "auroc": 0.828,
+   "auroc_ci": [
+    0.8157,
+    0.8404
+   ],
+   "auprc": 0.5456,
+   "auprc_ci": [
+    0.5176,
+    0.5728
+   ]
+  },
+  {
+   "label": "Other lower respiratory disease",
+   "auroc": 0.7093,
+   "auroc_ci": [
+    0.6933,
+    0.7252
+   ],
+   "auprc": 0.2343,
+   "auprc_ci": [
+    0.2132,
+    0.2587
+   ]
+  },
+  {
+   "label": "Other upper respiratory disease",
+   "auroc": 0.7645,
+   "auroc_ci": [
+    0.7397,
+    0.7889
+   ],
+   "auprc": 0.2635,
+   "auprc_ci": [
+    0.2276,
+    0.3064
+   ]
+  },
+  {
+   "label": "Pleurisy; pneumothorax; pulmonary collapse",
+   "auroc": 0.8428,
+   "auroc_ci": [
+    0.8276,
+    0.8557
+   ],
+   "auprc": 0.3825,
+   "auprc_ci": [
+    0.3473,
+    0.4224
+   ]
+  },
+  {
+   "label": "Pneumonia (except that caused by tuberculosis or sexually transmitted disease)",
+   "auroc": 0.8592,
+   "auroc_ci": [
+    0.8496,
+    0.8684
+   ],
+   "auprc": 0.4874,
+   "auprc_ci": [
+    0.4599,
+    0.5179
+   ]
+  },
+  {
+   "label": "Respiratory failure; insufficiency; arrest (adult)",
+   "auroc": 0.8501,
+   "auroc_ci": [
+    0.8404,
+    0.8592
+   ],
+   "auprc": 0.5861,
+   "auprc_ci": [
+    0.561,
+    0.6095
+   ]
+  },
+  {
+   "label": "Septicemia (except in labor)",
+   "auroc": 0.8609,
+   "auroc_ci": [
+    0.8516,
+    0.8696
+   ],
+   "auprc": 0.5571,
+   "auprc_ci": [
+    0.5321,
+    0.5823
+   ]
+  },
+  {
+   "label": "Shock",
+   "auroc": 0.8614,
+   "auroc_ci": [
+    0.8511,
+    0.872
+   ],
+   "auprc": 0.5116,
+   "auprc_ci": [
+    0.4818,
+    0.5398
+   ]
+  }
+ ],
+ "sweeps": [
+  {
+   "lr": 0.00012225031390095305,
+   "best_val_auroc": 0.779,
+   "best_epoch": 49,
+   "epochs_run": 65,
+   "val_auroc_by_epoch": [
+    0.482,
+    0.7502,
+    0.7594,
+    0.7641,
+    0.7663,
+    0.7687,
+    0.7693,
+    0.7713,
+    0.7723,
+    0.7722,
+    0.7734,
+    0.7732,
+    0.7747,
+    0.7747,
+    0.7756,
+    0.7741,
+    0.7755,
+    0.7762,
+    0.7757,
+    0.7762,
+    0.7768,
+    0.777,
+    0.7772,
+    0.7775,
+    0.7771,
+    0.777,
+    0.7776,
+    0.7775,
+    0.7768,
+    0.7778,
+    0.7779,
+    0.7783,
+    0.778,
+    0.7776,
+    0.7783,
+    0.7787,
+    0.7781,
+    0.7781,
+    0.7789,
+    0.7785,
+    0.7783,
+    0.7783,
+    0.7784,
+    0.7789,
+    0.7783,
+    0.7786,
+    0.7785,
+    0.7786,
+    0.7783,
+    0.779,
+    0.7783,
+    0.7788,
+    0.7785,
+    0.7789,
+    0.7788,
+    0.7782,
+    0.7789,
+    0.7787,
+    0.7787,
+    0.7786,
+    0.7786,
+    0.7784,
+    0.7788,
+    0.7786,
+    0.7786
+   ]
+  }
+ ]
+}
