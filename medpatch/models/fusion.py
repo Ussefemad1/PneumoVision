@@ -82,6 +82,42 @@ def cxr_pool(feats, use_cls_token):
         return feats[:, 0, :]
     return feats.mean(dim=1)
 
+def cxr_projection_dims(cxr_model, args):
+    """(d_in, d_out, source) for Round 3's cxr_high_proj / cxr_low_proj.
+
+    CMSMAFusion / EMSMAFusion size these from
+    cxr_model.cxr_encoder.projection_layer and equalize() copies its weights
+    into them. No CXR encoder in this repo has that attribute -- CXR_encoder()
+    returns CXRTransformer, whose features go straight to the heads -- so
+    construction raised AttributeError and Round 3 could not be built with a
+    CXR reader. Without it, the projections map the confidence input width
+    (full_feats_dim, 384 for vit_small_patch16_384) to args.patch_output_dim
+    (512, the width the EHR and text pools use) with nn.Linear's default init,
+    and equalize() leaves them as initialised. `source` is None in that case.
+    See docs/model_track_notes.md, "Round 3: F1".
+    """
+    proj = getattr(getattr(cxr_model, 'cxr_encoder', None), 'projection_layer', None)
+    if proj is not None:
+        return proj.in_features, proj.out_features, proj
+    print(f'[F1] CXR encoder has no cxr_encoder.projection_layer: cxr_high_proj / '
+          f'cxr_low_proj = Linear({cxr_model.full_feats_dim}, {args.patch_output_dim}), '
+          f'default init, not copied by equalize()')
+    return cxr_model.full_feats_dim, args.patch_output_dim, None
+
+
+def reorder_by_modalities(modalities, order, *lists):
+    """Put per-modality lists in `modalities` order (F4).
+
+    forward() runs the DN block before the RR block, so its per-modality lists
+    came out EHR, CXR, DN, RR, while the missingness matrix and the late-fusion
+    weights follow args.modalities (EHR-CXR-RR-DN): the RR mask was applied to
+    the DN prediction and the reverse. `order` is the modality of each list
+    entry as appended. See docs/model_track_notes.md, "Round 3: F4".
+    """
+    index = [order.index(m) for m in modalities if m in order]
+    return [[lst[i] for i in index] for lst in lists]
+
+
 class Fusion(nn.Module):
     def __init__(self, args, ehr_model=None, cxr_model=None, text_model=None):
         super(Fusion, self).__init__()
@@ -1196,8 +1232,9 @@ class CMSMAFusion(nn.Module):
         if 'CXR' in self.modalities:
             self.cxr_classifier = Classifier(self.cxr_model.feats_dim, self.args)
             self.cxr_confidence_predictor = ConfidencePredictor(self.args, self.cxr_model.full_feats_dim)
-            d_in = self.cxr_model.cxr_encoder.projection_layer.in_features
-            d_out = self.cxr_model.cxr_encoder.projection_layer.out_features
+            # F1: our CXR encoder has no projection_layer (see cxr_projection_dims).
+            d_in, d_out, source = cxr_projection_dims(self.cxr_model, self.args)
+            self.cxr_has_projection = source is not None
             
             self.cxr_high_proj = nn.Linear(d_in, d_out)
             self.cxr_low_proj  = nn.Linear(d_in, d_out)
@@ -1383,11 +1420,12 @@ class CMSMAFusion(nn.Module):
             if 'EHR' in self.modalities:
                 if self.ehr_model_fixed:
                     self.ehr_model_fixed.load_state_dict(self.ehr_model.state_dict())
-            if 'CXR' in self.modalities:
+            if 'CXR' in self.modalities and self.cxr_has_projection:  # F1: else default init
                 self.cxr_high_proj.weight.copy_(self.cxr_model.cxr_encoder.projection_layer.weight)
                 self.cxr_high_proj.bias.copy_(self.cxr_model.cxr_encoder.projection_layer.bias)
                 self.cxr_low_proj.weight.copy_(self.cxr_model.cxr_encoder.projection_layer.weight)
                 self.cxr_low_proj.bias.copy_(self.cxr_model.cxr_encoder.projection_layer.bias)
+            if 'CXR' in self.modalities:
                 
                 if self.cxr_model_fixed:
                     self.cxr_model_fixed.load_state_dict(self.cxr_model.state_dict())
@@ -1456,7 +1494,9 @@ class CMSMAFusion(nn.Module):
 
             # 3) take the maximum across classes -> [B, L]
             if self.args.num_classes > 1:
-                ehr_conf_probs = torch.sigmoid(ehr_conf_logits)
+                # F5: was sigmoid(ehr_conf_logits), so the Round 2b EHR temperature
+                # was ignored for num_classes > 1 (CXR, RR, DN use the scaled logits).
+                ehr_conf_probs = torch.sigmoid(scaled_ehr_conf_logits)
                 # ehr_confidences = torch.max(ehr_conf_probs, 1 - ehr_conf_probs).max(dim=-1).values
                 ehr_confidences = torch.max(ehr_conf_probs, 1 - ehr_conf_probs)
             else:
@@ -1499,6 +1539,7 @@ class CMSMAFusion(nn.Module):
             low_pool.append(pooled_low)
             conf_low = (ehr_confidences * mask_ehr_low.float()).sum(dim=1) / (mask_ehr_low.float().sum(dim=1).clamp_min(1e-9))
             low_conf_scores.append(conf_low)
+            modality_names.append('EHR')  # F4
             # print("EHR mask_high sum:", mask_ehr_high.sum(), "mask_low sum:", mask_ehr_low.sum())
             
         if 'CXR' in self.modalities:
@@ -1571,6 +1612,7 @@ class CMSMAFusion(nn.Module):
             high_conf_scores.append(conf_high)
             low_pool.append(pooled_low)
             low_conf_scores.append(conf_low)
+            modality_names.append('CXR')  # F4
             # print("CXR mask_high sum:", mask_high.sum(), "mask_low sum:", mask_low.sum())
         
 
@@ -1632,6 +1674,7 @@ class CMSMAFusion(nn.Module):
             high_conf_scores.append(conf_high)
             low_pool.append(pooled_low)
             low_conf_scores.append(conf_low)
+            modality_names.append('DN')  # F4
             #print("DN mask_high sum:", mask_high.sum(), "mask_low sum:", mask_low.sum())
 
 
@@ -1693,10 +1736,16 @@ class CMSMAFusion(nn.Module):
             high_conf_scores.append(conf_high)
             low_pool.append(pooled_low)
             low_conf_scores.append(conf_low)
+            modality_names.append('RR')  # F4
             #print("RR mask_high sum:", mask_high.sum(), "mask_low sum:", mask_low.sum())
 
 
     
+        # F4: per-modality lists in args.modalities order, the order of the
+        # missingness columns and late-fusion weights (DN ran before RR above).
+        preds, features, high_pool, low_pool, high_conf_scores, low_conf_scores = \
+            reorder_by_modalities(self.modalities, modality_names, preds, features,
+                                  high_pool, low_pool, high_conf_scores, low_conf_scores)
         high_tensor = torch.stack(high_pool, dim=1)  # high modality representations
         low_tensor  = torch.stack(low_pool, dim=1)
         high_conf_tensor = torch.stack(high_conf_scores, dim=1)  # [B, num_mods]
@@ -2198,8 +2247,9 @@ class EMSMAFusion(nn.Module):
         if 'CXR' in self.modalities:
             self.cxr_classifier = Classifier(self.cxr_model.feats_dim, self.args)
             self.cxr_confidence_predictor = ConfidencePredictor(self.args, self.cxr_model.full_feats_dim)
-            d_in = self.cxr_model.cxr_encoder.projection_layer.in_features
-            d_out = self.cxr_model.cxr_encoder.projection_layer.out_features
+            # F1: our CXR encoder has no projection_layer (see cxr_projection_dims).
+            d_in, d_out, source = cxr_projection_dims(self.cxr_model, self.args)
+            self.cxr_has_projection = source is not None
             
             self.cxr_high_proj = nn.Linear(d_in, d_out)
             self.cxr_low_proj  = nn.Linear(d_in, d_out)
@@ -2385,11 +2435,12 @@ class EMSMAFusion(nn.Module):
             if 'EHR' in self.modalities:
                 if self.ehr_model_fixed:
                     self.ehr_model_fixed.load_state_dict(self.ehr_model.state_dict())
-            if 'CXR' in self.modalities:
+            if 'CXR' in self.modalities and self.cxr_has_projection:  # F1: else default init
                 self.cxr_high_proj.weight.copy_(self.cxr_model.cxr_encoder.projection_layer.weight)
                 self.cxr_high_proj.bias.copy_(self.cxr_model.cxr_encoder.projection_layer.bias)
                 self.cxr_low_proj.weight.copy_(self.cxr_model.cxr_encoder.projection_layer.weight)
                 self.cxr_low_proj.bias.copy_(self.cxr_model.cxr_encoder.projection_layer.bias)
+            if 'CXR' in self.modalities:
                 
                 if self.cxr_model_fixed:
                     self.cxr_model_fixed.load_state_dict(self.cxr_model.state_dict())
@@ -2458,7 +2509,9 @@ class EMSMAFusion(nn.Module):
 
             # 3) take the maximum across classes -> [B, L]
             if self.args.num_classes > 1:
-                ehr_conf_probs = torch.sigmoid(ehr_conf_logits)
+                # F5: was sigmoid(ehr_conf_logits), so the Round 2b EHR temperature
+                # was ignored for num_classes > 1 (CXR, RR, DN use the scaled logits).
+                ehr_conf_probs = torch.sigmoid(scaled_ehr_conf_logits)
                 # ehr_confidences = torch.max(ehr_conf_probs, 1 - ehr_conf_probs).max(dim=-1).values
                 ehr_confidences = - (ehr_conf_probs * torch.log(ehr_conf_probs + 1e-9) + (1 - ehr_conf_probs) * torch.log(1 - ehr_conf_probs + 1e-9))
             else:
@@ -2501,6 +2554,7 @@ class EMSMAFusion(nn.Module):
             low_pool.append(pooled_low)
             conf_low = (ehr_confidences * mask_ehr_low.float()).sum(dim=1) / (mask_ehr_low.float().sum(dim=1).clamp_min(1e-9))
             low_conf_scores.append(conf_low)
+            modality_names.append('EHR')  # F4
             # print("EHR mask_high sum:", mask_ehr_high.sum(), "mask_low sum:", mask_ehr_low.sum())
             
         if 'CXR' in self.modalities:
@@ -2573,6 +2627,7 @@ class EMSMAFusion(nn.Module):
             high_conf_scores.append(conf_high)
             low_pool.append(pooled_low)
             low_conf_scores.append(conf_low)
+            modality_names.append('CXR')  # F4
             # print("CXR mask_high sum:", mask_high.sum(), "mask_low sum:", mask_low.sum())
         
 
@@ -2633,6 +2688,7 @@ class EMSMAFusion(nn.Module):
             high_conf_scores.append(conf_high)
             low_pool.append(pooled_low)
             low_conf_scores.append(conf_low)
+            modality_names.append('DN')  # F4
             #print("DN mask_high sum:", mask_high.sum(), "mask_low sum:", mask_low.sum())
 
 
@@ -2693,10 +2749,16 @@ class EMSMAFusion(nn.Module):
             high_conf_scores.append(conf_high)
             low_pool.append(pooled_low)
             low_conf_scores.append(conf_low)
+            modality_names.append('RR')  # F4
             #print("RR mask_high sum:", mask_high.sum(), "mask_low sum:", mask_low.sum())
 
 
     
+        # F4: per-modality lists in args.modalities order, the order of the
+        # missingness columns and late-fusion weights (DN ran before RR above).
+        preds, features, high_pool, low_pool, high_conf_scores, low_conf_scores = \
+            reorder_by_modalities(self.modalities, modality_names, preds, features,
+                                  high_pool, low_pool, high_conf_scores, low_conf_scores)
         high_tensor = torch.stack(high_pool, dim=1)  # high modality representations
         low_tensor  = torch.stack(low_pool, dim=1)
         high_conf_tensor = torch.stack(high_conf_scores, dim=1)  # [B, num_mods]

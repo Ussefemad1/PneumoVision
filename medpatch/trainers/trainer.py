@@ -108,6 +108,10 @@ class Trainer():
             own_state[name].copy_(param)
             not_found.remove(name)  # Successfully loaded, so remove from missing list
         
+        # F3: the head chosen on validation at the best epoch (c-msma / c-e-msma).
+        if 'best_head' in checkpoint:
+            self.best_head = checkpoint['best_head']
+
         # Load weights for 'c-msma' fusion type
         if self.args.fusion_type == 'c-msma' and 'weights' in checkpoint:
             self.weights = nn.Parameter(checkpoint['weights'].to(self.device))
@@ -135,10 +139,105 @@ class Trainer():
 
         print(f'loaded cxr checkpoint from {load_state}')
         
+    #: F2 -- the state_dict keys each Round 2b parent supplies to Round 3 (prefixes).
+    READER_KEYS = {
+        'ehr': ('ehr_model.', 'fusion_model.ehr_model.', 'fusion_model.ehr_classifier.',
+                'fusion_model.ehr_confidence_predictor.', 'fusion_model.ehr_temperature'),
+        'cxr': ('cxr_model.', 'fusion_model.cxr_model.', 'fusion_model.cxr_classifier.',
+                'fusion_model.cxr_confidence_predictor.', 'fusion_model.cxr_temperature'),
+        'rr': ('text_model.fc_rr.', 'text_model.bert.', 'fusion_model.text_model.fc_rr.',
+               'fusion_model.text_model.bert.', 'fusion_model.rr_'),
+        'dn': ('text_model.fc_dn.', 'text_model.bert.', 'fusion_model.text_model.fc_dn.',
+               'fusion_model.text_model.bert.', 'fusion_model.dn_'),
+    }
+    #: Round 3 modules no parent has: trained from scratch (or set by equalize()).
+    ROUND3_NEW = ('_high_proj.', '_low_proj.')
+
+    @classmethod
+    def reader_key(cls, key, reader):
+        return key.startswith(cls.READER_KEYS[reader]) and not any(
+            n in key for n in cls.ROUND3_NEW)
+
+    def load_reader_parents(self, args):
+        """F2: load each Round 2b parent into Round 3 with only its own reader's keys.
+
+        load_state() copies every key whose name matches, in the order ehr, cxr,
+        rr, dn, and Tensor.copy_ broadcasts. Round 3 is the first run that loads
+        several files into one model (whose encoders are registered at top level
+        and inside fusion_model, and whose *_fixed copies are the same modules),
+        so a parent carrying another reader's weights would silently overwrite
+        that reader. Here each parent supplies only READER_KEYS[reader]: every
+        such model key must be in the file with the same shape and vice versa,
+        rr and dn must carry identical BERT weights, and after all parents are
+        in, every reader tensor of the model (aliases included) must be
+        bit-identical to its parent file. Anything else raises.
+        See docs/model_track_notes.md, "Round 3: F2".
+        """
+        if args.task == 'in-hospital-mortality' and (args.load_dn or 'DN' in args.modalities):
+            raise SystemExit('[F2] discharge notes (DN) are never used for in-hospital '
+                             'mortality: they leak the outcome.')
+        own = self.model.state_dict()
+        loaded = {}
+        for reader in ('ehr', 'cxr', 'rr', 'dn'):
+            path = getattr(args, f'load_{reader}')
+            if not path:
+                if reader.upper() in args.modalities.split('-'):
+                    print(f'[F2] WARNING no --load_{reader}: the {reader} reader keeps its '
+                          'initial weights')
+                continue
+            checkpoint = torch.load(path, map_location=getattr(self, 'device', None))
+            state = checkpoint['state_dict']
+            mine = {k: v for k, v in state.items() if self.reader_key(k, reader)}
+            wanted = {k for k in own if self.reader_key(k, reader)}
+            ignored = {}
+            for k in state:
+                if k not in mine:
+                    ignored[k.split('.')[0]] = ignored.get(k.split('.')[0], 0) + 1
+            problems = [f'missing in the file: {k}' for k in sorted(wanted - set(mine))]
+            problems += [f'not in the model: {k}' for k in sorted(set(mine) - wanted)]
+            problems += [f'shape {tuple(v.shape)} in the file, {tuple(own[k].shape)} in the '
+                         f'model: {k}' for k, v in mine.items()
+                         if k in own and tuple(v.shape) != tuple(own[k].shape)]
+            if problems:
+                raise SystemExit(f'[F2] {reader} parent {path} does not fit Round 3 '
+                                 f'({len(problems)}):\n  ' + '\n  '.join(problems[:20]))
+            for other in ('rr', 'dn'):
+                if reader in ('rr', 'dn') and other in loaded and other != reader:
+                    bert = [k for k in mine if '.bert.' in f'.{k}']
+                    differ = [k for k in bert
+                              if not torch.equal(mine[k], loaded[other][1][k])]
+                    if differ:
+                        raise SystemExit(f'[F2] BERT weights differ between the {other} and '
+                                         f'{reader} parents ({len(differ)} tensors, e.g. '
+                                         f'{differ[0]}); both must be the same frozen BERT.')
+            with torch.no_grad():
+                for k, v in mine.items():
+                    own[k].copy_(v)  # same shape (checked): no broadcasting
+            loaded[reader] = (path, mine)
+            print(f'[F2] {reader}: {len(mine)} keys from {path}; ignored other keys in the '
+                  f'file: {ignored or "none"}')
+
+        own = self.model.state_dict()
+        for reader, (path, mine) in loaded.items():
+            checked = 0
+            for k, tensor in own.items():
+                source = k.replace('_model_fixed.', '_model.')  # same modules, second name
+                if not self.reader_key(source, reader):
+                    continue
+                if source not in mine or not torch.equal(tensor, mine[source].to(tensor.device)):
+                    raise SystemExit(f'[F2] {reader}: {k} is not bit-identical to {path} '
+                                     f'after loading every parent.')
+                checked += 1
+            print(f'{reader}: {checked} tensors bit-identical to {path}')
+
     def load_model(self, args):
         if args.pretrained_model:
             self.load_state(state_path=args.pretrained_model)
             print('pretrained fusion architecture loaded')
+        if args.fusion_type in ('c-msma', 'c-e-msma'):
+            # F2: Round 3 loads its four parents strictly, one reader each.
+            self.load_reader_parents(args)
+            return
         if args.load_ehr:
             self.load_state(state_path=args.load_ehr)
             print("ehr loaded")
@@ -428,6 +527,9 @@ class Trainer():
         # Save weights only if fusion type is 'c-msma'
         if self.args.fusion_type == 'c-msma' or self.args.fusion_type == 'c-e-msma':
             checkpoint_data['weights'] = self.weights.detach().cpu()
+            # F3: the head chosen on validation, so eval() reports it on test.
+            if getattr(self, 'best_head', None):
+                checkpoint_data['best_head'] = self.best_head
 
         # Write to a temp file and rename, rather than straight to `path`.
         # Training is handed between Colab accounts, and a session can be cut

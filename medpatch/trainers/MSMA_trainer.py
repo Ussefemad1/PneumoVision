@@ -100,6 +100,46 @@ class MSMA_Trainer(Trainer):
             sys.exit(0)
 
     
+    #: The five Round 3 heads, in the order the released code compared them.
+    HEADS = ('high', 'low', 'late', 'combined', 'less_combined')
+
+    def fusion_logits(self, output, key):
+        """A c-msma / c-e-msma output as [B, classes], or [B] with one class (F7).
+
+        This was output[key].squeeze(). Val and test loaders keep the last
+        partial batch, and mortality validation has 2,161 stays = 135 x 16 + 1:
+        the last batch's [1, 1] output became a 0-dim tensor (and a phenotyping
+        batch of one lost its batch axis), so the loss / torch.cat failed.
+        Wherever squeeze() worked the result is identical.
+        """
+        pred = output[key]
+        if self.args.num_classes == 1:
+            return pred.reshape(pred.shape[0])
+        return pred.reshape(pred.shape[0], self.args.num_classes)
+
+    def choose_head_on_validation(self):
+        """F3: the head with the best validation AUROC (the checkpoint-selection rule)."""
+        rets = dict(zip(self.HEADS, self.validate(self.val_dl, False)[:5]))
+        head = max(rets, key=lambda k: rets[k]['auroc_mean'])
+        print(f'[F3] checkpoint records no chosen head: chose {head!r} on validation')
+        return head
+
+    def write_head_table(self, rets, chosen, split='test'):
+        """F3: all five heads on `split`, labelled as a reference table, not the result."""
+        target = 21 if self.args.num_classes == 25 else 0  # pneumonia / mortality
+        path = f'{self.args.save_dir}/{split}_all_heads_{self.args.lr}.csv'
+        lines = [f'# ALL FIVE HEADS ON {split.upper()} -- reference only. The reported result is '
+                 f'the head chosen on validation: {chosen}',
+                 f'head,chosen,auroc_macro,auprc_macro,auroc_class{target},auprc_class{target}']
+        for head, ret in rets.items():
+            lines.append(f"{head},{int(head == chosen)},{ret['auroc_mean']:.6f},"
+                         f"{ret['auprc_mean']:.6f},{np.ravel(ret['auc_scores'])[target]:.6f},"
+                         f"{np.ravel(ret['auprc_scores'])[target]:.6f}")
+        with open(path, 'w') as f:
+            f.write('\n'.join(lines) + '\n')
+        print('\n'.join(lines))
+        print(f'[F3] all-heads table written to {path}')
+
     def train_epoch(self):
         print(f'starting train epoch {self.epoch}')
         epoch_loss = 0
@@ -128,10 +168,11 @@ class MSMA_Trainer(Trainer):
             
             if self.args.fusion_type == 'c-msma' or self.args.fusion_type == 'c-e-msma':
                  # Extract predictions
-                pred_high = output['high_conf'].squeeze()
-                pred_low = output['low'].squeeze()
-                pred_late = output['late'].squeeze()
-    
+                # F7: reshape, not .squeeze() (see fusion_logits).
+                pred_high = self.fusion_logits(output, 'high_conf')
+                pred_low = self.fusion_logits(output, 'low')
+                pred_late = self.fusion_logits(output, 'late')
+
                 # Compute individual losses
                 loss_high = self.loss(pred_high, y)
                 loss_low = self.loss(pred_low, y)
@@ -257,10 +298,11 @@ class MSMA_Trainer(Trainer):
                 
                 if self.args.fusion_type == 'c-msma' or self.args.fusion_type == 'c-e-msma':
                      # Extract predictions
-                    pred_high = output['high_conf'].squeeze()
-                    pred_low = output['low'].squeeze()
-                    pred_late = output['late'].squeeze()
-        
+                    # F7: reshape, not .squeeze() (see fusion_logits).
+                    pred_high = self.fusion_logits(output, 'high_conf')
+                    pred_low = self.fusion_logits(output, 'low')
+                    pred_late = self.fusion_logits(output, 'late')
+
                     # Compute individual losses
                     loss_high = self.loss(pred_high, y)
                     loss_low = self.loss(pred_low, y)
@@ -335,7 +377,6 @@ class MSMA_Trainer(Trainer):
             avg_loss = epoch_loss/i
             
             if self.args.stat_test:
-                # Identify the best AUROC
                 all_rets = {
                     'high': (ret_high, outPRED_high),
                     'low': (ret_low, outPRED_low),
@@ -343,8 +384,16 @@ class MSMA_Trainer(Trainer):
                     'combined': (ret_combined, outPRED_combined),
                     'less_combined': (ret_less_combined, outPRED_less_combined)
                 }
-                best_key, (best_ret, best_pred) = max(all_rets.items(), key=lambda item: item[1][0]['auroc_mean'])
-                
+                # F3: save the head chosen on validation. This picked the best
+                # AUROC on `dl` itself -- on test, that is selection on test.
+                best_key = getattr(self, 'best_head', None)
+                if best_key is None:
+                    if test:
+                        raise SystemExit('[F3] no head chosen on validation; refusing to '
+                                         'pick one on test.')
+                    best_key = max(all_rets, key=lambda k: all_rets[k][0]['auroc_mean'])
+                best_ret, best_pred = all_rets[best_key]
+
                 # Save best predictions and ground truth
                 base_name = f"{self.args.fusion_type}_{self.args.task}_{self.args.modalities}"
                 np.save(f"{base_name}_best_pred.npy", best_pred.data.cpu().numpy())
@@ -382,13 +431,19 @@ class MSMA_Trainer(Trainer):
         self.model.eval()
         
         if self.args.fusion_type == 'c-msma' or self.args.fusion_type == 'c-e-msma':
+            # F3: report the head chosen on validation at the best epoch (stored in
+            # the checkpoint), not the best of five on test, which selected on test.
+            if getattr(self, 'best_head', None) is None:
+                self.best_head = self.choose_head_on_validation()
+                self.epoch = 0
             ret_high, ret_low, ret_late, ret_combined, ret_less_combined, avg_loss = self.validate(self.test_dl, True)
-            
-            
-            ret = max([ret_high, ret_low, ret_late, ret_combined, ret_less_combined], key=lambda x: x['auroc_mean'])
-        
-            self.print_and_write(ret, isbest=True, prefix=f'{self.args.fusion_type} test', filename=f'results_{self.args.lr}_test.txt')
-            
+            rets = dict(zip(self.HEADS, (ret_high, ret_low, ret_late, ret_combined,
+                                         ret_less_combined)))
+            ret = rets[self.best_head]
+
+            self.print_and_write(ret, isbest=True, prefix=f'{self.args.fusion_type} test, head {self.best_head} (chosen on validation)', filename=f'results_{self.args.lr}_test.txt')
+            self.write_head_table(rets, self.best_head)
+
             weight_norm = torch.softmax(self.weights, dim=0)
             
             wandb.log({
@@ -437,7 +492,11 @@ class MSMA_Trainer(Trainer):
                     'Weight_High': weight_norm[0],
                     'Weight_Late': weight_norm[2]
                 })
-                ret = max([ret_high, ret_low, ret_late, ret_combined, ret_less_combined], key=lambda x: x['auroc_mean'])
+                # F3: remember which head won on validation, for the checkpoint.
+                rets = dict(zip(self.HEADS, (ret_high, ret_low, ret_late, ret_combined,
+                                             ret_less_combined)))
+                epoch_head = max(rets, key=lambda k: rets[k]['auroc_mean'])
+                ret = rets[epoch_head]
             else:
                 ret, avg_loss = self.validate(self.val_dl, False)
             if 'c-unimodal' not in self.args.fusion_type:
@@ -449,6 +508,8 @@ class MSMA_Trainer(Trainer):
                 if self.best_auroc < ret['auroc_mean']:
                     self.best_auroc = ret['auroc_mean']
                     self.best_stats = ret
+                    if self.args.fusion_type in ('c-msma', 'c-e-msma'):
+                        self.best_head = epoch_head  # F3: saved with the checkpoint
                     self.save_checkpoint()
                     print("checkpoint")
                     self.print_and_write(ret, isbest=True)
