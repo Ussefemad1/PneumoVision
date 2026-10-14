@@ -131,6 +131,14 @@ def build_argv(
     always removed; the caller supplies the correct one via ``overrides``.
     """
     pairs = to_pairs(read_script_args(script_path(stage, reader, task)))
+    return _apply(pairs, overrides, drop)
+
+
+def _apply(
+    pairs: list[tuple[str, str | None]],
+    overrides: dict[str, str | None],
+    drop: set[str] | None = None,
+) -> list[str]:
     drop = (drop or set()) | (_ALL_LOAD_FLAGS - set(overrides))
     kept = [(f, v) for f, v in pairs if f not in drop and f not in overrides]
     argv: list[str] = []
@@ -143,3 +151,39 @@ def build_argv(
 
 def script_settings(stage: str, reader: str, task: str | None = None) -> dict[str, str | None]:
     return dict(to_pairs(read_script_args(script_path(stage, reader, task))))
+
+
+# ── Round 3 (MedPatch) ───────────────────────────────────────────────────────
+
+#: Round 3 always runs CMSMAFusion. The phenotyping Confidence-Patching.sh passes
+#: c-e-msma (a copy of Entropy-Patching.sh; mortality's passes c-msma). The
+#: entropy variant marks a token "high" when its binary entropy (at most ln 2 =
+#: 0.693) is >= theta, so at theta 0.75 no token is ever high. See
+#: docs/REAL_RUNS.md, "Round 3: use c-msma".
+ROUND3_FUSION = "c-msma"
+ENTROPY_FUSION = "c-e-msma"
+
+
+def round3_script(task: str | None = None) -> Path:
+    return SCRIPTS_ROOT / SCRIPT_DIR[canonical_task(task)] / "MedPatch" / "Confidence-Patching.sh"
+
+
+def round3_argv(
+    task: str | None,
+    overrides: dict[str, str | None],
+    allow_entropy: bool = False,
+) -> list[str]:
+    """Confidence-Patching.sh arguments with ``overrides``; --fusion_type c-msma.
+
+    c-e-msma only when asked for in ``overrides`` *and* ``allow_entropy``.
+    """
+    requested = overrides.get("--fusion_type") or ROUND3_FUSION
+    if requested == ENTROPY_FUSION and not allow_entropy:
+        raise ValueError(
+            "Round 3 runs c-msma. c-e-msma (entropy) marks no token high at threshold "
+            "0.75; pass --allow-entropy to run it deliberately as an ablation."
+        )
+    if requested not in (ROUND3_FUSION, ENTROPY_FUSION):
+        raise ValueError(f"Round 3 fusion type must be c-msma, not {requested!r}")
+    pairs = to_pairs(read_script_args(round3_script(task)))
+    return _apply(pairs, {**overrides, "--fusion_type": requested})

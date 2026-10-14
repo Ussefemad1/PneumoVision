@@ -58,7 +58,17 @@ def run_dir(row: dict[str, str]) -> Path:
 
 
 def state_dict(path: str | Path) -> dict[str, torch.Tensor]:
-    return torch.load(path, map_location="cpu", weights_only=True)["state_dict"]
+    # weights_only=False: these are our own files, listed in the manifest with a
+    # verified sha256. Real Round 1 checkpoints hold more than tensors (e.g.
+    # numpy scalars) and fail to load with weights_only=True.
+    return torch.load(path, map_location="cpu", weights_only=False)["state_dict"]
+
+
+def data_label(row: dict[str, str]) -> str:
+    """How to label a printed number: virtual data is SYNTHETIC, real data is not."""
+    if row.get("data") == "virtual":
+        return "SYNTHETIC -- not a scientific result"
+    return "REAL data"
 
 
 def is_temperature(key: str, reader: str) -> bool:
@@ -206,7 +216,7 @@ def test_e_ece_not_obviously_worse(reader, loaders_cache):
         after = score_checkpoint(args, Path(row["file_path"]), loaders, split=split).ece
         ece[split] = (before, after)
     print(
-        f"\n[{reader}] SYNTHETIC -- not a scientific result: ECE (mean of 25 classes, all "
+        f"\n[{reader}] {data_label(row)}: ECE (mean of the classes, all "
         f"real tokens) val {ece['val'][0]:.4f} -> {ece['val'][1]:.4f} (fitted here)   "
         f"test {ece['test'][0]:.4f} -> {ece['test'][1]:.4f} (held out)"
     )
