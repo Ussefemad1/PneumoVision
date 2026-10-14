@@ -43,17 +43,17 @@ Verified by reading `medpatch/` and by running the real discretizer on
 synthetic input. Several of these contradict the original project brief — the
 code wins.
 
-| Thing          | Reality                                                          | Not                  |
-| -------------- | ---------------------------------------------------------------- | -------------------- |
-| EHR tensor     | `[B, 48, 76]`                                                    | not 48×17            |
-| EHR encoder    | `LSTM`, 1 layer, hidden 512, `input_dim=76`                      | —                    |
-| CXR encoder    | timm `vit_small_patch16_384`, **384×384**                        | not 224×224          |
-| CXR patch grid | **24×24** (+1 CLS token, excluded from heatmaps)                 | not 14×14            |
-| Text encoder   | `emilyalsentzer/Bio_ClinicalBERT`, frozen                        | not dmis-lab BioBERT |
-| Modalities     | **four**: EHR, CXR, RR (radiology reports), DN (discharge notes) | not three            |
-| Fusion model   | `CMSMAFusion` (`--fusion_type c-msma`)                           | —                    |
-| Output         | `{'high_conf', 'low', 'late'}`, all **logits**                   | not probabilities    |
-| θ              | `0.75` (`--*_confidence_threshold`)                              | —                    |
+| Thing          | Reality                                                                                                                                            | Not               |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- |
+| EHR tensor     | `[B, 48, 76]`                                                                                                                                      | not 48×17         |
+| EHR encoder    | `LSTM`, 1 layer, hidden 512, `input_dim=76`                                                                                                        | —                 |
+| CXR encoder    | timm `vit_small_patch16_384`, **384×384**                                                                                                          | not 224×224       |
+| CXR patch grid | **24×24** (+1 CLS token, excluded from heatmaps)                                                                                                   | not 14×14         |
+| Text encoder   | frozen BERT; our trained readers use `dmis-lab/biobert-v1.1` (manifest `bert_model_name`); medpatch's default is `emilyalsentzer/Bio_ClinicalBERT` | —                 |
+| Modalities     | **four**: EHR, CXR, RR (radiology reports), DN (discharge notes)                                                                                   | not three         |
+| Fusion model   | `CMSMAFusion` (`--fusion_type c-msma`)                                                                                                             | —                 |
+| Output         | `{'high_conf', 'low', 'late'}`, all **logits**                                                                                                     | not probabilities |
+| θ              | `0.75` (`--*_confidence_threshold`)                                                                                                                | —                 |
 
 ### The 76-column EHR layout
 
@@ -72,10 +72,10 @@ by `npm run gen:ehr` — never hand-edit it. A test in
 
 ### Tasks
 
-| Platform task | medpatch task           | classes          | modalities    | fusion     |
-| ------------- | ----------------------- | ---------------- | ------------- | ---------- |
-| `mortality`   | `in-hospital-mortality` | 1                | EHR-CXR-RR    | `c-msma`   |
-| `pneumonia`   | `phenotyping`           | 25, **index 21** | EHR-CXR-RR-DN | `c-e-msma` |
+| Platform task | medpatch task           | classes          | modalities    | fusion   |
+| ------------- | ----------------------- | ---------------- | ------------- | -------- |
+| `mortality`   | `in-hospital-mortality` | 1                | EHR-CXR-RR    | `c-msma` |
+| `pneumonia`   | `phenotyping`           | 25, **index 21** | EHR-CXR-RR-DN | `c-msma` |
 
 Pneumonia is the CCS **phenotype** label
 `'Pneumonia (except that caused by tuberculosis or sexually transmitted disease)'`,
@@ -86,6 +86,10 @@ arrest (adult)'` — relevant to the project's framing and available if needed.
 `EHR-CXR-RR` with discharge notes excluded. The API enforces the same rule
 server-side (`NOTE_TYPES_BY_TASK` in `packages/shared`), unit-tested.
 
+Round 3 is `c-msma` for **both** tasks. The phenotyping paper script passes
+`c-e-msma` (entropy), which marks no token high at θ = 0.75; the tools refuse it
+unless `--allow-entropy` (docs/REAL_RUNS.md, "use c-msma").
+
 ### Checkpoints
 
 Saved by `Trainer.save_checkpoint()` as:
@@ -95,21 +99,22 @@ Saved by `Trainer.save_checkpoint()` as:
 ```
 
 A dict with `epoch`, `state_dict`, `best_auroc`, `optimizer`, plus `weights`
-(the learnable α tensor) for `c-msma` / `c-e-msma`. Normalizer state lives in
+(the learnable α tensor) and `best_head` (the head chosen on validation) for
+`c-msma` / `c-e-msma`. Normalizer state lives in
 `medpatch/normalizers/*.normalizer` (pickled `{means, stds}`, 76-wide).
 
 ### Model status — read before wiring real inference
 
-- **`checkpoints/` is empty. No trained weights exist in this repo.** MOCK_MODE
-  is the only mode that runs today; `MOCK_MODE=false` raises at startup by
+- **Trained weights live on the team Drive, not in this repo.** Rounds 1, 2
+  and 2b are finished on real data for both tasks and recorded in the run
+  manifest (`runs/manifest.csv` on Drive, schema in `tools/pv/manifest.py`).
+  `checkpoints/` here stays empty and gitignored. MOCK_MODE is the only mode
+  the inference service runs today; `MOCK_MODE=false` raises at startup by
   design rather than failing obscurely later.
-- **Known upstream defect:** the CXR branch of `CMSMAFusion` references
-  `self.cxr_model.cxr_encoder.projection_layer`
-  ([`fusion.py:1158`](medpatch/models/fusion.py)), which no class in this repo
-  provides — `cxr_models.py` defines a torchvision DenseNet and never reads
-  `--cxr_encoder`. Trimodal `c-msma` therefore cannot be constructed as-is.
-  EHR-only `c-msma` **does** build and run. Fixing this belongs to the ML
-  track; the web platform does not patch `medpatch/`.
+- **The CXR projection defect is fixed.** `CMSMAFusion` used to read
+  `cxr_model.cxr_encoder.projection_layer`, which no encoder here has, so
+  trimodal `c-msma` could not be built. It now builds its CXR projections
+  itself (docs/model_track_notes.md, "Round 3: fixes F1–F7", item F1).
 - `fusion_main.py` defaults the normalizer to the **phenotyping** file
   (`ph_ts{timestep}...`) regardless of task. Pass `--normalizer_state`
   explicitly for mortality runs.

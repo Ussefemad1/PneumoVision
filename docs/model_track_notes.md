@@ -9,6 +9,119 @@ Newest first.
 
 ---
 
+## 2026-10-14 — Round 3 (MedPatch, `c-msma`): fixes F1–F7
+
+Branch `model/round3`. Rounds 1, 2 and 2b are finished on real data. Each
+item below was checked against the code before it was changed. Tests:
+`tests/test_round3_fixes.py`, which uses a real CMSMAFusion / EMSMAFusion with
+the stub readers in `tests/r3_stubs.py`. Each fix's test fails when its fix is
+reverted.
+
+13. **F1: Round 3 builds with our CXR encoder** (`models/fusion.py:85`,
+    used at `:1236` and `:2251`; `equalize()` at `:1423` and `:2438`).
+    - `CMSMAFusion` / `EMSMAFusion` sized `cxr_high_proj` / `cxr_low_proj` from
+      `cxr_model.cxr_encoder.projection_layer`, which `CXRTransformer` does not
+      have, so construction raised `AttributeError`.
+    - Now `cxr_projection_dims()` uses that layer when it exists. Otherwise it
+      builds `Linear(full_feats_dim, patch_output_dim)` (384 → 512) with the
+      default init, prints one `[F1]` line, and `equalize()` skips the CXR
+      copy. RR/DN projections are still copied from `fc_rr` / `fc_dn`.
+14. **F2: strict per-reader parent loading** (`trainers/trainer.py:143-239`).
+    - Round 3 (`c-msma` / `c-e-msma`) no longer goes through the non-strict
+      `load_state` for `--load_*`. `load_reader_parents()` takes from each
+      parent only `READER_KEYS[reader]`:
+      - `ehr_model.*`, `fusion_model.ehr_model.*`,
+        `fusion_model.ehr_{classifier,confidence_predictor}.*` and
+        `fusion_model.ehr_temperature`; the same pattern for `cxr`;
+      - `text_model.{fc_rr,bert}.*` and `fusion_model.rr_*` for `rr`; the same
+        pattern for `dn`.
+
+      Round 3's `*_high_proj` / `*_low_proj` are excluded (no parent has them).
+
+    - It fails on any missing or extra key, or any shape difference; nothing
+      reaches `copy_`'s broadcasting.
+    - It fails if the rr and dn parents carry different BERT weights.
+    - After all parents are in, it compares every reader tensor of the model,
+      including the `*_model_fixed` aliases (the same modules), with its file.
+      It prints `<reader>: N tensors bit-identical to <file>` or fails.
+    - It refuses `--load_dn` or DN modalities for mortality.
+    - `python -m tools.pv.parent_keys --task …` prints, per Round 2b file, the
+      key prefixes the loader takes versus ignores (counts only).
+15. **F3: head chosen on validation** (`trainers/MSMA_trainer.py`).
+    - **Before:** `eval()` reported the best of the five heads (high, low,
+      late, combined, less_combined) _on test_, and `validate(..., stat_test)`
+      saved the best-on-`dl` predictions. Both were selection on the test set.
+    - **Training:** `train()` now records the head that won on validation at
+      the best epoch (`:498`, `:512`, same rule as checkpoint selection).
+      `save_checkpoint` stores it as `best_head` (`trainer.py:532`) and
+      `load_state` restores it (`:112`).
+    - **Eval:** `eval()` reports that head on test (`:442`). It writes all five
+      heads' test numbers to `test_all_heads_<lr>.csv`, headed "reference
+      only", with macro and target-class (pneumonia 21 / mortality) AUROC and
+      AUPRC (`write_head_table`, `:127`).
+    - **Old checkpoints:** a checkpoint without `best_head` gets one chosen on
+      validation (`choose_head_on_validation`, `:120`).
+    - **`stat_test` on test:** refuses to choose a head when none is recorded
+      (`:392`).
+16. **F4: phenotyping late fusion masked the wrong note** (`models/fusion.py:108`,
+    applied at `:1747` and `:2760`).
+    - `forward()` runs the DN block before the RR block, so `preds` (and the
+      pools) came out EHR, CXR, DN, RR. The missingness columns and the
+      late-fusion weights follow `args.modalities` (EHR-CXR-RR-DN), so RR's
+      mask was applied to the DN prediction and the reverse.
+    - Each block now records its modality, and `reorder_by_modalities()` puts
+      `preds`, `features`, the pools and the confidence lists in
+      `args.modalities` order before stacking.
+    - Mortality (no DN) is unchanged.
+    - Test: RR missing and DN present, with constant classifiers; the late
+      output keeps DN's weight.
+17. **F5: phenotyping ignored the EHR temperature** (`models/fusion.py:1499`,
+    `:2514`). For `num_classes > 1` the EHR branch used
+    `sigmoid(ehr_conf_logits)` instead of the temperature-scaled logits (CXR,
+    RR and DN used the scaled ones). It now uses `scaled_ehr_conf_logits`.
+    **Deviation from the released code**, in both CMSMA and EMSMA.
+18. **F6: small items.**
+    - `tools/pv/paper_scripts.py:163` `round3_argv()` builds Round 3 from
+      Confidence-Patching.sh with `--fusion_type c-msma`. It refuses
+      `c-e-msma` (which the phenotyping script passes) unless
+      `allow_entropy=True`. `run r3` (Round 3 tooling) will expose this as
+      `--allow-entropy`.
+    - `tests/round2/test_round2.py` and `tests/round2b/test_round2b.py` load
+      the manifest's files with `weights_only=False`; real Round 1 files fail
+      with `True`. Printed numbers are labelled by the row's data kind
+      (`SYNTHETIC` only for virtual). The mislabel was in Round 2b's
+      `test_e_ece_not_obviously_worse`, not in
+      `test_a_reader_frozen_only_confidence_trained`.
+19. **F7: a final batch of one** (`trainers/MSMA_trainer.py:106`, used at
+    `:172` and `:302`).
+    - Val/test loaders keep the last partial batch (`DataFusion.py:513-514`).
+      Mortality validation has 2,161 = 135 × 16 + 1 stays.
+    - The c-msma path's `.squeeze()` turned the last `[1, 1]` output into a
+      0-dim tensor, and a phenotyping batch of one lost its batch axis.
+    - `fusion_logits()` reshapes to `[B]` (one class) or `[B, classes]` in
+      `train_epoch` and `validate`.
+    - Test: `validate` with batches of 3 and 1, both tasks.
+
+**Upstream behaviour kept (documented, not changed).**
+
+- **EHR high/low pooling has no `seq_lengths` mask** (`fusion.py:1510-1532`).
+  Padded timesteps enter the masked means whenever their confidence puts them
+  in a group.
+- **Missingness head:** `missingness_classifier` is LayerNorm + Linear
+  (`fusion.py:1268`). LayerNorm of a constant row is zero, so an all-present
+  row maps to the head's bias terms only, the same output for every such stay.
+- **Late-fusion weights are normalised over columns × classes together**
+  (`fusion.py:1861`, `:2874`). `modality_weights` is `[B, columns · classes]`
+  and is divided by its sum over that whole axis. For phenotyping each class's
+  weights therefore sum to about 1/25, not 1: `late` is a weighted average
+  shrunk by ~25×. Mortality (one class) is unaffected. Found while writing the
+  F4 test; **not changed** and raised with the team.
+- **Phantom tokens:** empty notes and blank X-rays are still encoded and enter
+  the high/low pools (see REAL_RUNS.md, "Round 3 with `--data_pairs
+partial`").
+
+---
+
 ## 2026-10-06 — Round 2b cached frozen logits; progress lines
 
 Real Round 2b on Colab re-ran BioBERT over ~4,500 val notes every epoch (about
