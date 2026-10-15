@@ -448,7 +448,143 @@ loads without crashing:
 empty note is still run through BERT (`""` tokenizes to `[CLS][SEP]` plus
 padding) and a missing X-ray through the ViT, and those tokens are scored by
 the confidence heads and can enter the joint high/low predictions. That is
-upstream behaviour; it is not changed here.
+upstream behaviour, and the main run keeps it. `--mask-missing-tokens`
+(Round 3 below) is the ablation that excludes an absent modality's tokens.
+
+---
+
+## 9. Round 3 (MedPatch fusion, `c-msma`)
+
+Round 3 trains `CMSMAFusion` on top of the frozen Round 2b readers, with
+`--data_pairs partial`, which keeps every EHR stay and treats a missing X-ray
+or note as a missing modality. `python -m tools.pv.run r3` builds the command
+from `MedPatch/Confidence-Patching.sh`, with these settings:
+
+- `--fusion_type c-msma`. `c-e-msma` is refused unless `--fusion-type c-e-msma
+--allow-entropy`, and then runs live, without the cache.
+- `--data_pairs partial`, and every `--*_confidence_threshold 0.75`.
+- `--bert_model_name` taken from the text parents in the manifest.
+- `--load_*` set to the latest real **r2b** row of each reader; `--parents`
+  overrides this.
+- 100 epochs, batch 16.
+- `--save_dir <RUNS_ROOT>/<task>/r3/<id>`.
+
+Mortality has no DN parent (discharge notes leak the outcome), and every entry
+point refuses one. Use the same `--normalizer-state` as the EHR parent's runs
+(see "EHR normalizer" above).
+
+**Why a cache.** Every reader, confidence head and temperature is frozen in
+Round 3. The released loop still runs the ViT and BioBERT on every stay in
+every epoch, twice for each text encoder, which comes to several hours per
+phenotyping epoch on an L4. `--step cache` runs the readers **once per stay**,
+in eval mode, and stores what the trainable part needs (about 0.5 MB per
+phenotyping stay, about 0.02 MB for mortality). Training then reads only the
+cache. The cached forward gives the same `high_conf` / `low` / `late` outputs
+as the live one: unit-tested to ≤ 1e-5, and checked on real data by
+`--step equivalence`.
+
+**Steps:** `cache` → `equivalence` → `train` → `record`. Without `--step`, the
+command runs all four.
+
+- **cache:** builds shards on the VM disk (`/content/r3_cache/real/<task>`, not
+  Drive). It is **resumable**: rerunning the same command skips finished shards,
+  so a disconnect loses at most one. It prints each shard's size, the cache
+  total and the free space. It copies the cache to Drive only with
+  `--copy-cache-to <dir>`; the phenotyping cache is about 30 GB.
+- **equivalence:** compares cached and live forwards on real validation
+  batches and prints only the maximum differences.
+- **train:**
+  - trains the main run, then the same with `--ablation
+without_missingness_module`, both from the same cache;
+  - `--extra-ablations` adds without_joint_module and without_late_module;
+  - every training run picks its head on validation (F3).
+- **record:**
+  - scores the chosen head on val and test and writes `r3_results.csv` (main
+    and ablation, macro and target AUROC/AUPRC with 95% CIs);
+  - adds the manifest row: stage `r3`, reader `fusion`, `parent_id` = the r2b
+    ids joined with `;`;
+  - `val_auroc` / `val_auprc` are pneumonia (class 21) or mortality, from the
+    chosen head;
+  - the notes also record presence counts and the share ≥ 0.75 per split, the
+    equivalence result and every deviation.
+
+**Before training,** `train` checks the cache's fingerprint against the run:
+parents' sha256, thresholds, task, the lists' md5, the capture code commit and
+the flags. It refuses a cache that differs.
+
+**If the session dies after training,** finish with `--run-id <id>
+--record-only`.
+
+**Deviations recorded with each run:**
+
+- readers in eval mode (BERT dropout off);
+- train X-rays without augmentation;
+- train EHR padding fixed at capture;
+- F5.
+
+**Options, all off by default:**
+
+| Option                      | Effect                                                                   |
+| --------------------------- | ------------------------------------------------------------------------ |
+| `--late-weights-per-class`  | late-fusion weights sum to 1 per class (upstream: 1/25 per class)        |
+| `--mask-missing-tokens`     | absent modalities add no high/low tokens (phantom-token ablation)        |
+| `--missing-image-as-absent` | a selected X-ray missing on disk is treated as absent (counted, noted)   |
+| `--extra-ablations`         | also without_joint_module and without_late_module                        |
+| `--no-ablation`             | skip without_missingness_module                                          |
+| `--preload`                 | keep the cache in RAM while training (needs the RAM: ~21 GB phenotyping) |
+
+Each option is a medpatch flag, so a cached run can be repeated with an option
+in minutes from the same cache.
+
+### Notebook 1 — pre-flight and smoke (≈ 1 h)
+
+Run Cells 1–3 above first, with `!git checkout model/round3` in Cell 1.
+
+```python
+# 1. which reader keys each Round 2b parent carries (counts only)
+!python -m tools.pv.parent_keys --task phenotyping --trust-pickle
+!python -m tools.pv.parent_keys --task mortality   --trust-pickle
+# 2. train lists (once per runtime, after unzipping)
+!python -m tools.pv.prepare_lists --task phenotyping --listfile-dir /content/data/<ehr folder>
+!python -m tools.pv.prepare_lists --task mortality   --listfile-dir /content/data/<ehr folder>
+# 3. pre-flight: counts, missing X-ray files, F2 load, share >= 0.75, cache size
+!python -m tools.pv.r3_preflight --task phenotyping --data real {DATA}
+!python -m tools.pv.r3_preflight --task mortality   --data real {DATA}
+# 4. virtual smoke (SYNTHETIC): every step plus pytest -m round3, < 15 min each
+!python -m tools.pv.smoke_round3 --task mortality
+!python -m tools.pv.smoke_round3 --task phenotyping
+# 5. Rounds 2 / 2b on test: 25-label macro and pneumonia / mortality, 95% CIs
+!python -m tools.pv.score_rounds --task phenotyping --data real --out /content/drive/MyDrive/PneumoVision_shared/round3/phenotyping/r2_r2b_test.csv
+!python -m tools.pv.score_rounds --task mortality   --data real --out /content/drive/MyDrive/PneumoVision_shared/round3/mortality/r2_r2b_test.csv
+```
+
+If a pre-flight prints `STOP … not on disk`, add `--missing-image-as-absent` to
+the pre-flight **and** every `run r3` command of that task.
+
+### Notebook 2 — mortality Round 3
+
+```python
+!python -m tools.pv.run r3 --task mortality --data real {DATA} --dry-run   # prints the next id
+RID = 'r3-fusion-001'   # <- the id the dry run printed; every step below uses it
+!python -m tools.pv.run r3 --task mortality --data real {DATA} --run-id {RID} --step cache   # rerun to resume
+!python -m tools.pv.run r3 --task mortality --data real {DATA} --run-id {RID} --step equivalence --equivalence-batches 2
+!python -m tools.pv.run r3 --task mortality --data real {DATA} --run-id {RID} --step train
+!python -m tools.pv.run r3 --task mortality --data real {DATA} --run-id {RID} --step record
+!PV_CHECK_TASK=in-hospital-mortality python -m pytest -m round3 -s
+!mkdir -p /content/drive/MyDrive/PneumoVision_shared/round3/mortality
+!cp -r "$RUNS_ROOT/in-hospital-mortality/r3/{RID}" /content/drive/MyDrive/PneumoVision_shared/round3/mortality/
+```
+
+If the session dies during `train`, rerun the same `--step train` command: it
+resumes each variant from its `last_checkpoint_…`. If it dies after training
+but before the row is written, use `--step record`, or `--record-only`.
+
+### Notebook 3 — phenotyping Round 3
+
+Same as Notebook 2 with `--task phenotyping`, `PV_CHECK_TASK=phenotyping`,
+the folder `$RUNS_ROOT/phenotyping/r3/<id>` and the shared folder
+`PneumoVision_shared/round3/phenotyping/`. The cache is about 30 GB; check that
+the pre-flight's free-space line allows it.
 
 ---
 

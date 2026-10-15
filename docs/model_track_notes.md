@@ -9,6 +9,100 @@ Newest first.
 
 ---
 
+## 2026-10-15 — Round 3 cache, late-weight / phantom-token / missing-image flags
+
+Decisions (team, 2026-10-15): keep the upstream late weights and phantom
+tokens for the main run and add both as flags; never treat a missing X-ray
+file as absent unless asked.
+
+20. **Round 3 cache** (`models/fusion.py`, CMSMAFusion only; `tools/pv/r3_cache.py`).
+    - **Why:** every reader, confidence head and temperature is frozen in
+      Round 3, yet the loop ran the ViT and BioBERT (each text encoder twice:
+      `text_model` and `text_model_fixed` are the same module) on every stay
+      in every epoch.
+    - **Capture:** with `self._capture` set (`:1318`; `None` = no effect),
+      `forward()` records per batch:
+      - the classifier inputs;
+      - EHR's pooled high/low vectors (`:1625`);
+      - for CXR/RR/DN, via `_capture_tokens` (`:1464`, called at `:1676`,
+        `:1745`, `:1809`): the masked means of the **unprojected** token
+        features per class and group, the token counts, and the mean
+        confidences;
+      - the missingness matrix.
+    - **Replay:** `forward_cached` (`:1504`) rebuilds the pools as
+      `proj(mean) * (count > 0)`. The projections are linear, so this equals
+      upstream's masked mean of the projected tokens, and an empty group stays 0. Everything after the readers moved, unchanged, into `fuse()`
+      (`:1846`), which both `forward()` and `forward_cached()` call. Ablations
+      and fusers therefore behave identically.
+    - **Trainer:** `MSMA_Trainer.batch_outputs` (`trainers/MSMA_trainer.py:106`)
+      runs the full model on a DataLoader batch, exactly as the loops did
+      inline, or `forward_cached` on a cache batch (a dict).
+    - **Building it:** `tools/pv/r3_cache.py` runs each reader once per batch
+      (`reuse_reader_calls`; the `*_fixed` call repeats the first) under
+      `no_grad` in eval mode. It writes shards atomically and resumes, and
+      records a fingerprint (parents' sha256, thresholds, task, lists' md5,
+      capture-code commit, flags); training refuses a cache that differs.
+    - **Tests** (`tests/test_round3_cache.py`): cached vs live, both tasks,
+      every ablation, both fusers, both flags. Max abs difference of
+      `high_conf` / `low` / `late`, gradients and one Adam step ≤ 1e-5.
+      Shards reproduce the live val/test loader batch by batch.
+      `MSMA_Trainer` trains and evaluates on the cache with the readers never
+      called.
+    - **Deviations, recorded in each r3 row:**
+      - readers run in eval mode (BERT dropout off; the released loop trains
+        Round 3 in train mode);
+      - train X-rays are cached once, without augmentation;
+      - the train EHR padding is fixed at capture.
+    - **EHR padding, found while testing:** EHR pooling includes padded hours
+      (upstream), and collate pads to the longest stay in the batch. A stay's
+      EHR pool therefore depends on its batch-mates.
+      - Phenotyping pads to 2,646 hours for nearly every stay, so it is barely
+        affected; mortality pads to the batch maximum (≤ 48).
+      - Shards are made of whole batches (`shard_size` a multiple of the batch
+        size, enforced), so val/test match the live loader exactly.
+      - For train, the live loop re-draws batch-mates every epoch; the cache
+        keeps the capture batches.
+21. **`--late_weights_per_class`** (`arguments.py`; `fusion.py:1966`).
+    Normalises the masked late-fusion weights per class, so each class sums to
+    1 over the present columns. Upstream divides by the total over columns ×
+    classes (each of 25 classes sums to ~1/25). Off by default. For mortality
+    (1 class) the outputs are bit-identical with and without it (tested).
+22. **`--mask_missing_tokens`** (ablation; `fusion.py:1492`). An absent
+    modality's tokens (an empty note's `[CLS]/[SEP]`, a blank X-ray) are
+    excluded from the high/low pools and their confidence scores. Off by
+    default (upstream keeps the phantom tokens). The cache stores the upstream
+    groups, so one cache serves both settings.
+23. **`--missing_image_as_absent`** (`datasets/DataFusion.py:140`). In partial
+    mode, a selected X-ray whose file is not on disk (or that has no CheXpert
+    row) is a missing modality, not a `KeyError`. Off by default; the
+    pre-flight counts these per split and the r3 notes record them.
+24. **Resume guard** (`trainers/MSMA_trainer.py:561`). `--resume` does not
+    restore `best_stats`, so a resumed run with no new best epoch, or one
+    already finished, crashed in the final `print_and_write(None)`. It now
+    skips that print.
+
+**Missingness module (unchanged).** Tests: with a modality absent, its
+late-fusion weight is exactly 0. The remaining weights sum to 1 per class with
+`--late_weights_per_class`, or to the upstream total of 1 over columns ×
+classes without it (phenotyping and mortality). Every r3 run also trains
+`--ablation without_missingness_module` from the same cache, and the manifest
+notes and `r3_results.csv` report both.
+
+**Tools.**
+
+- `python -m tools.pv.run r3`: `tools/pv/round3.py`, steps cache /
+  equivalence / train / record, with `--record-only`.
+- `tools/pv/r3_preflight.py`: counts, missing files, F2, share ≥ 0.75, cache
+  size.
+- `tools/pv/score_rounds.py`: r2/r2b on test, with 25-label macro and target
+  95% CIs; `evaluate.score_checkpoint` now also returns the macro.
+- `tools/pv/smoke_round3.py` with `make_virtual_dataset --round3`: notes
+  dropped, one X-ray file missing, a last validation batch of one.
+- Checks: `tests/round3` (marker `round3`, Colab).
+- The 42 r1/r2/r2b plans are byte-identical to `main`'s.
+
+---
+
 ## 2026-10-14 — Round 3 (MedPatch, `c-msma`): fixes F1–F7
 
 Branch `model/round3`. Rounds 1, 2 and 2b are finished on real data. Each
