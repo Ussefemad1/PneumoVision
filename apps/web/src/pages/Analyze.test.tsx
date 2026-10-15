@@ -20,13 +20,13 @@ vi.mock('../lib/socket.js', () => ({
   getSocket: () => ({ on: vi.fn(), off: vi.fn() }),
 }));
 
-function renderPage(path = '/analyze') {
+function renderPage(path = '/analyze/new') {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
       <MemoryRouter initialEntries={[path]}>
         <Routes>
-          <Route path="/analyze" element={<AnalyzePage />} />
+          <Route path="/analyze/new" element={<AnalyzePage />} />
           <Route path="/predictions/:id" element={<p>report page</p>} />
         </Routes>
       </MemoryRouter>

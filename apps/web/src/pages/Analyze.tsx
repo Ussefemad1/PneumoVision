@@ -160,7 +160,10 @@ export function AnalyzePage() {
   return (
     <div className="mx-auto max-w-6xl space-y-4">
       <div>
-        <p className="text-xs uppercase tracking-wide text-ink-muted">Ad-hoc analysis</p>
+        <Link to="/analyze" className="text-xs text-ink-muted hover:text-ink hover:underline">
+          ← Back to analyses
+        </Link>
+        <p className="mt-2 text-xs uppercase tracking-wide text-ink-muted">New analysis</p>
         <h1 className="mt-1 text-2xl font-semibold text-ink">Analyze multimodal evidence</h1>
         <p className="mt-1 max-w-3xl text-sm text-ink-secondary">
           Submit any combination of EHR, chest X-ray and clinical notes. Missing inputs are handled
@@ -185,7 +188,7 @@ export function AnalyzePage() {
               Attaching to <span className="font-medium">{stay.data.patient.pseudoId}</span> ·{' '}
               {stay.data.ward} · bed {stay.data.bedLabel}. Inputs are added to this stay&apos;s
               record.{' '}
-              <Link to="/analyze" className="underline">
+              <Link to="/analyze/new" className="underline">
                 Analyze without a stay instead
               </Link>
             </>

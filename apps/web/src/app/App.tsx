@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useState } from 'react';
-import { Navigate, Outlet, Route, BrowserRouter, Routes } from 'react-router-dom';
+import { Navigate, Outlet, Route, BrowserRouter, Routes, useSearchParams } from 'react-router-dom';
 
 import { AlertsPage } from '../pages/Alerts.jsx';
 import { AnalysesPage } from '../pages/Analyses.jsx';
@@ -33,8 +33,9 @@ export function App() {
             <Route element={<RequireAuth />}>
               <Route element={<Layout />}>
                 <Route index element={<DashboardPage />} />
-                <Route path="/analyze" element={<AnalyzePage />} />
-                <Route path="/analyses" element={<AnalysesPage />} />
+                <Route path="/analyze" element={<AnalyzeIndex />} />
+                <Route path="/analyze/new" element={<AnalyzePage />} />
+                <Route path="/analyses" element={<Navigate to="/analyze" replace />} />
                 <Route path="/stays/:stayId" element={<StayPage />} />
                 <Route path="/predictions/:predictionId" element={<PredictionReportPage />} />
                 <Route path="/alerts" element={<AlertsPage />} />
@@ -46,6 +47,20 @@ export function App() {
         </AuthProvider>
       </BrowserRouter>
     </QueryClientProvider>
+  );
+}
+
+/**
+ * `/analyze` is the history list; the form lives at `/analyze/new`. Links of
+ * the form `/analyze?stayId=…` predate the split and mean "open the form for
+ * this stay", so they are forwarded there.
+ */
+function AnalyzeIndex() {
+  const [params] = useSearchParams();
+  return params.has('stayId') ? (
+    <Navigate to={`/analyze/new?${params.toString()}`} replace />
+  ) : (
+    <AnalysesPage />
   );
 }
 

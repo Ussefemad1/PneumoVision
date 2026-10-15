@@ -83,7 +83,7 @@ const CONTRIBUTED = 'Contributed to the fused score';
 
 test('CXR + notes, EHR omitted: only EHR is reported missing', async ({ page }) => {
   await signIn(page);
-  await page.goto('/analyze');
+  await page.goto('/analyze/new');
   await chooseTask(page, 'Pneumonia');
   await attachXray(page);
   await addNote(page, RADIOLOGY, 'radiology');
@@ -109,7 +109,7 @@ test('CXR + notes, EHR omitted: only EHR is reported missing', async ({ page }) 
 
 test('EHR + CXR + notes: full multimodal report, no reduced-input banner', async ({ page }) => {
   await signIn(page);
-  await page.goto('/analyze');
+  await page.goto('/analyze/new');
   await chooseTask(page, 'Pneumonia');
   await attachXray(page);
   await loadDeterioratingEhr(page);
@@ -134,7 +134,7 @@ test('mortality + discharge note: the note is excluded and DN never reaches the 
   page,
 }) => {
   await signIn(page);
-  await page.goto('/analyze');
+  await page.goto('/analyze/new');
   await chooseTask(page, 'Mortality');
   await attachXray(page);
   await addNote(page, RADIOLOGY, 'radiology');
