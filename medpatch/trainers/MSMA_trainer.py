@@ -103,6 +103,28 @@ class MSMA_Trainer(Trainer):
     #: The five Round 3 heads, in the order the released code compared them.
     HEADS = ('high', 'low', 'late', 'combined', 'less_combined')
 
+    def batch_outputs(self, dl):
+        """(model output, labels) for each batch of `dl`.
+
+        A DataLoader batch runs the whole model, exactly as the loops did
+        inline before. A dict batch comes from the Round 3 cache
+        (tools/pv/r3_cache.py): the frozen readers have already been applied
+        once per stay, so only CMSMAFusion's trainable part runs
+        (forward_cached). See docs/model_track_notes.md, "Round 3 cache".
+        """
+        for batch in dl:
+            if isinstance(batch, dict):
+                cached = {k: v.to(self.device) for k, v in batch.items() if torch.is_tensor(v)}
+                yield self.model.fusion_model.forward_cached(cached), cached['y']
+                continue
+            x, img, dn, rr, y_ehr, y_cxr, seq_lengths, pairs = batch[:8]
+            y = self.get_gt(y_ehr, y_cxr)
+            x = torch.from_numpy(x).float()
+            x = x.to(self.device)
+            y = y.to(self.device)
+            img = img.to(self.device)
+            yield self.model(x, seq_lengths, img, pairs, rr, dn), y
+
     def fusion_logits(self, output, key):
         """A c-msma / c-e-msma output as [B, classes], or [B] with one class (F7).
 
@@ -157,14 +179,9 @@ class MSMA_Trainer(Trainer):
             outPRED_less_combined = torch.FloatTensor().to(self.device)
         steps = len(self.train_dl)
         self.progress('train', 0, steps)
-        for i, (x, img, dn, rr, y_ehr, y_cxr, seq_lengths, pairs, age, gender, ethnicity, hadm_id) in enumerate (self.train_dl, 1):
-            y = self.get_gt(y_ehr, y_cxr)
-            x = torch.from_numpy(x).float()
-            x = x.to(self.device)
-            y = y.to(self.device)
-            img = img.to(self.device)
-
-            output = self.model(x, seq_lengths, img, pairs, rr, dn)
+        # The model call moved into batch_outputs (unchanged for DataLoader
+        # batches; Round 3 cache batches run only the trainable part).
+        for i, (output, y) in enumerate(self.batch_outputs(self.train_dl), 1):
             
             if self.args.fusion_type == 'c-msma' or self.args.fusion_type == 'c-e-msma':
                  # Extract predictions
@@ -287,14 +304,8 @@ class MSMA_Trainer(Trainer):
             outPRED_less_combined = torch.FloatTensor().to(self.device)
 
         with torch.no_grad():
-            for i, (x, img, dn, rr, y_ehr, y_cxr, seq_lengths, pairs, age, gender, ethnicity, hadm_id) in enumerate (dl, 1):
-                y = self.get_gt(y_ehr, y_cxr)
-
-                x = torch.from_numpy(x).float()
-                x = Variable(x.to(self.device), requires_grad=False)
-                y = Variable(y.to(self.device), requires_grad=False)
-                img = img.to(self.device)
-                output = self.model(x, seq_lengths, img, pairs, rr, dn)
+            # Model call in batch_outputs, as in train_epoch.
+            for i, (output, y) in enumerate(self.batch_outputs(dl), 1):
                 
                 if self.args.fusion_type == 'c-msma' or self.args.fusion_type == 'c-e-msma':
                      # Extract predictions
@@ -545,5 +556,7 @@ class MSMA_Trainer(Trainer):
 
             if self.patience >= self.args.patience:
                 break
-        if 'c-unimodal' not in self.args.fusion_type:
+        # best_stats is not restored by --resume: a resumed run with no new best
+        # epoch (or one already finished) has None here, which crashed.
+        if 'c-unimodal' not in self.args.fusion_type and self.best_stats is not None:
             self.print_and_write(self.best_stats , isbest=True)

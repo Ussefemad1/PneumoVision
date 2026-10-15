@@ -1313,6 +1313,9 @@ class CMSMAFusion(nn.Module):
         
         # Initialize the weights parameter with dynamic dimension:
         self.weights = nn.Parameter(torch.ones(self.num_modalities + num_extra, self.args.num_classes))
+        # Round 3 cache (tools/pv/r3_cache.py): when a dict, forward() also
+        # records the frozen readers' outputs it needs; None = no effect.
+        self._capture = None
         
         def count_parameters(model):
             return sum(p.numel() for p in model.parameters())
@@ -1458,6 +1461,85 @@ class CMSMAFusion(nn.Module):
                 for param in self.text_model_fixed.parameters():
                     param.requires_grad = False
     
+    def _capture_tokens(self, name, raw, feats, confidences, mask_high, mask_low):
+        """Round 3 cache: masked means of the *unprojected* token features, per group.
+
+        The high/low projections are linear, so for a non-empty group
+        masked_mean(W x + b) = W masked_mean(x) + b, and forward() gives 0 for
+        an empty group (sum / clamp_min(1e-9)). forward_cached() rebuilds both
+        cases from these means and the per-group token counts. The masks are the
+        upstream ones (before --mask_missing_tokens), so one cache serves both.
+        """
+        if self._capture is None:
+            return
+        if self.args.num_classes > 1:
+            raw_e, m_high, m_low = raw.unsqueeze(2), mask_high.float().unsqueeze(-1), mask_low.float().unsqueeze(-1)
+        else:
+            raw_e, m_high, m_low = raw, mask_high.unsqueeze(-1).float(), mask_low.unsqueeze(-1).float()
+        n_high, n_low = m_high.sum(dim=1), m_low.sum(dim=1)
+        self._capture.update({
+            f'{name}_feats': feats,
+            f'{name}_high_mean': (raw_e * m_high).sum(dim=1) / n_high.clamp_min(1e-9),
+            f'{name}_low_mean': (raw_e * m_low).sum(dim=1) / n_low.clamp_min(1e-9),
+            f'{name}_n_high': n_high,  # tokens per group; > 0 = non-empty
+            f'{name}_n_low': n_low,
+            f'{name}_conf_high': (confidences * mask_high.float()).sum(dim=1)
+                                 / mask_high.float().sum(dim=1).clamp_min(1e-9),
+            f'{name}_conf_low': (confidences * mask_low.float()).sum(dim=1)
+                                / mask_low.float().sum(dim=1).clamp_min(1e-9),
+        })
+
+    def _mask_absent(self, mask_high, mask_low, missingness_matrix, modality):
+        """--mask_missing_tokens (ablation): an absent modality adds no high/low tokens.
+
+        Upstream (flag off) still encodes an empty note or a blank X-ray and
+        lets those "phantom" tokens into the high/low pools.
+        """
+        if not getattr(self.args, 'mask_missing_tokens', False):
+            return mask_high, mask_low
+        present = missingness_matrix[:, self.modalities.index(modality)].to(mask_high.device).bool()
+        present = present.view(-1, *([1] * (mask_high.dim() - 1)))
+        return mask_high & present, mask_low & present
+
+    def forward_cached(self, c):
+        """forward() from cached frozen-reader outputs (tools/pv/r3_cache.py).
+
+        Every reader, confidence head and temperature is frozen in Round 3, so
+        what they produce per stay is fixed; only the classifiers, projections,
+        fusers, missingness head and weights train. `c` holds, per batch, what
+        _capture_tokens / the EHR block recorded. Same outputs as forward()
+        with the readers in eval mode.
+        """
+        batch_size = c['ehr_feats'].shape[0]
+        missingness_matrix = c['missingness']
+        mask_absent = getattr(self.args, 'mask_missing_tokens', False)
+        preds, high_pool, low_pool, high_conf_scores, low_conf_scores = [], [], [], [], []
+        for modality in self.modalities:
+            name = modality.lower()
+            preds.append(getattr(self, f'{name}_classifier')(c[f'{name}_feats']))
+            if modality == 'EHR':
+                high, low = c['ehr_high'], c['ehr_low']
+                conf_high, conf_low = c['ehr_conf_high'], c['ehr_conf_low']
+            else:
+                any_high = (c[f'{name}_n_high'] > 0).float()
+                any_low = (c[f'{name}_n_low'] > 0).float()
+                conf_high, conf_low = c[f'{name}_conf_high'], c[f'{name}_conf_low']
+                if mask_absent:
+                    present = missingness_matrix[:, self.modalities.index(modality)]
+                    present = present.to(any_high.device).float()
+                    any_high = any_high * present.view(-1, *([1] * (any_high.dim() - 1)))
+                    any_low = any_low * present.view(-1, *([1] * (any_low.dim() - 1)))
+                    conf_high = conf_high * present.view(-1, *([1] * (conf_high.dim() - 1)))
+                    conf_low = conf_low * present.view(-1, *([1] * (conf_low.dim() - 1)))
+                high = getattr(self, f'{name}_high_proj')(c[f'{name}_high_mean']) * any_high
+                low = getattr(self, f'{name}_low_proj')(c[f'{name}_low_mean']) * any_low
+            high_pool.append(high)
+            low_pool.append(low)
+            high_conf_scores.append(conf_high)
+            low_conf_scores.append(conf_low)
+        return self.fuse(preds, high_pool, low_pool, high_conf_scores, low_conf_scores,
+                         missingness_matrix, batch_size)
+
     def forward(self, x=None, seq_lengths=None, img=None, pairs=None, rr=None, dn=None):
         #print("[Forward] Starting forward pass")
         batch_size = None
@@ -1540,6 +1622,12 @@ class CMSMAFusion(nn.Module):
             conf_low = (ehr_confidences * mask_ehr_low.float()).sum(dim=1) / (mask_ehr_low.float().sum(dim=1).clamp_min(1e-9))
             low_conf_scores.append(conf_low)
             modality_names.append('EHR')  # F4
+            if self._capture is not None:  # Round 3 cache: EHR has no projection
+                self._capture.update(ehr_feats=ehr_feats, ehr_high=pooled_high, ehr_low=pooled_low,
+                                     ehr_conf_high=conf_high, ehr_conf_low=conf_low,
+                                     ehr_n_high=mask_ehr_high_f.sum(dim=1),
+                                     ehr_n_low=mask_ehr_low_f.sum(dim=1),
+                                     missingness=missingness_matrix)
             # print("EHR mask_high sum:", mask_ehr_high.sum(), "mask_low sum:", mask_ehr_low.sum())
             
         if 'CXR' in self.modalities:
@@ -1585,6 +1673,8 @@ class CMSMAFusion(nn.Module):
             # Create per-token masks (they already have the proper shape if num_classes==1)
             mask_high = (cxr_confidences >= self.args.cxr_confidence_threshold)  # [B, L, (num_classes)]
             mask_low  = ~mask_high
+            self._capture_tokens('cxr', full_cxr_feats, cxr_feats, cxr_confidences, mask_high, mask_low)
+            mask_high, mask_low = self._mask_absent(mask_high, mask_low, missingness_matrix, 'CXR')
         
             # Expand the mask only if needed
             if self.args.num_classes > 1:
@@ -1652,6 +1742,8 @@ class CMSMAFusion(nn.Module):
         
             mask_high = (dn_confidences >= self.args.dn_confidence_threshold)
             mask_low  = ~mask_high
+            self._capture_tokens('dn', full_dn_feats, dn_feats, dn_confidences, mask_high, mask_low)
+            mask_high, mask_low = self._mask_absent(mask_high, mask_low, missingness_matrix, 'DN')
             
             if self.args.num_classes > 1:
                 mask_high_f = mask_high.float().unsqueeze(-1)  # [B, L, num_classes, 1]
@@ -1714,6 +1806,8 @@ class CMSMAFusion(nn.Module):
         
             mask_high = (rr_confidences >= self.args.rr_confidence_threshold)
             mask_low  = ~mask_high
+            self._capture_tokens('rr', full_rr_feats, rr_feats, rr_confidences, mask_high, mask_low)
+            mask_high, mask_low = self._mask_absent(mask_high, mask_low, missingness_matrix, 'RR')
             
             if self.args.num_classes > 1:
                 mask_high_f = mask_high.float().unsqueeze(-1)  # [B, L, num_classes, 1]
@@ -1746,6 +1840,17 @@ class CMSMAFusion(nn.Module):
         preds, features, high_pool, low_pool, high_conf_scores, low_conf_scores = \
             reorder_by_modalities(self.modalities, modality_names, preds, features,
                                   high_pool, low_pool, high_conf_scores, low_conf_scores)
+        return self.fuse(preds, high_pool, low_pool, high_conf_scores, low_conf_scores,
+                         missingness_matrix, batch_size)
+
+    def fuse(self, preds, high_pool, low_pool, high_conf_scores, low_conf_scores,
+             missingness_matrix, batch_size):
+        """Everything after the readers: joint high/low heads, missingness head, late fusion.
+
+        Split out of forward() unchanged, so that forward() and
+        forward_cached() (Round 3 cache) run exactly the same trainable code.
+        The lists are per modality, in args.modalities order.
+        """
         high_tensor = torch.stack(high_pool, dim=1)  # high modality representations
         low_tensor  = torch.stack(low_pool, dim=1)
         high_conf_tensor = torch.stack(high_conf_scores, dim=1)  # [B, num_mods]
@@ -1858,7 +1963,18 @@ class CMSMAFusion(nn.Module):
             modality_weights = normalized_weights
         else:
             modality_weights = normalized_weights * extended_missingness_matrix
-        modality_weights = modality_weights / (modality_weights.sum(dim=1, keepdim=True) + 1e-8)
+        if getattr(self.args, 'late_weights_per_class', False):
+            # --late_weights_per_class: normalise each class's weights over the
+            # present columns, so they sum to 1 per class. Upstream (below)
+            # divides by the sum over columns x classes together, so with 25
+            # classes each class's weights sum to ~1/25. Identical for 1 class.
+            per_class = modality_weights.view(batch_size, -1, self.args.num_classes)
+            per_class = per_class / (per_class.sum(dim=1, keepdim=True) + 1e-8)
+            modality_weights = per_class.view(batch_size, -1)
+        else:
+            modality_weights = modality_weights / (modality_weights.sum(dim=1, keepdim=True) + 1e-8)
+        # [B, columns, classes], for inspection and tests only.
+        self.last_late_weights = modality_weights.detach().view(batch_size, -1, self.args.num_classes)
         
         # Reshape predictions and weights to separate the class dimension.
         masked_preds = masked_preds.view(batch_size, -1, self.args.num_classes)

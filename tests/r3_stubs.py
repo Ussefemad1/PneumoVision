@@ -99,6 +99,7 @@ def r3_args(task: str = "phenotyping", fusion_type: str = "c-msma", **extra):
         "--num_classes", "25" if task == "phenotyping" else "1",
         "--classifier", "mlp",
         "--loss", "bce",
+        "--labels_set", "pheno" if task == "phenotyping" else "mortality",
         "--patch_output_dim", str(D),
         "--ehr_confidence_threshold", "0.75",
         "--cxr_confidence_threshold", "0.75",

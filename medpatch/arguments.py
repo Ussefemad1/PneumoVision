@@ -185,6 +185,20 @@ def args_parser():
                              'epoch instead of re-running the reader. Numerically equivalent '
                              '(same batches, order, loss, ECE, checkpoints); needs '
                              '--frozen_readers_eval. Off by default (released behaviour).')
+    parser.add_argument('--late_weights_per_class', action='store_true',
+                        help='Round 3 (c-msma): normalise the masked late-fusion weights per '
+                             'class, so each class sums to 1 over the present columns. Off by '
+                             'default: upstream normalises over columns x classes together '
+                             '(each of 25 classes then sums to ~1/25). No effect with 1 class.')
+    parser.add_argument('--mask_missing_tokens', action='store_true',
+                        help='Round 3 (c-msma) ablation: an absent modality (empty note, '
+                             'blank X-ray) adds no tokens to the high/low pools. Off by default '
+                             '(upstream: their "phantom" tokens enter the pools).')
+    parser.add_argument('--missing_image_as_absent', action='store_true',
+                        help='--data_pairs partial: a selected X-ray whose file is not on disk '
+                             '(or has no CheXpert row) is treated as a missing modality '
+                             '(zero image, pairs False) '
+                             'instead of raising KeyError. Off by default; record its use.')
 
 
     # args = argParser.parse_args()
