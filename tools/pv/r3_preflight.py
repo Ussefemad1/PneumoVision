@@ -22,6 +22,7 @@ was not given (it is never turned on silently), or if a count check fails.
 
 from __future__ import annotations
 
+import argparse
 import shutil
 import sys
 from pathlib import Path
@@ -31,7 +32,7 @@ if __package__ in (None, ""):
 
 import torch  # noqa: E402
 
-from tools.pv import r3_cache, round3  # noqa: E402
+from tools.pv import logtee, r3_cache, round3  # noqa: E402
 
 
 def note_present(value) -> bool:
@@ -71,7 +72,7 @@ def per_stay_bytes(captured: dict[str, torch.Tensor]) -> float:
     return sum(v.numel() * 4 for v in captured.values()) / n
 
 
-def main(argv: list[str] | None = None) -> int:
+def _run(argv: list[str] | None = None) -> int:
     parser = round3.build_parser()
     parser.prog = "python -m tools.pv.r3_preflight"
     parser.add_argument("--sample", type=int, default=256, help="validation stays for step 4")
@@ -152,6 +153,26 @@ def main(argv: list[str] | None = None) -> int:
         print("   STOP: not enough free space for the cache")
     print("PREFLIGHT " + ("OK" if ok else "FAILED (see STOP lines)"))
     return 0 if ok else 1
+
+
+NAME = "r3_preflight"
+
+
+def _log_path(argv: list[str], name: str) -> tuple[Path, list[str]]:
+    """--log PATH (default <RUNS_ROOT>/logs/<name>_<task>_<time>.log) and the other args."""
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--log", type=Path)
+    known, rest = pre.parse_known_args(argv)
+    task = argv[argv.index("--task") + 1] if "--task" in argv[:-1] else "phenotyping"
+    return known.log or logtee.default_log(f"{name}_{task}"), rest
+
+
+def main(argv: list[str] | None = None) -> int:
+    """_run, with the whole output (subprocesses and any traceback too) in a log file."""
+    argv = list(sys.argv[1:] if argv is None else argv)
+    path, rest = _log_path(argv, NAME)
+    with logtee.tee_to_log(path):
+        return _run(rest)
 
 
 if __name__ == "__main__":

@@ -11,7 +11,7 @@ Steps (``--step``; ``all`` runs them in this order):
 - ``cache``        run the frozen readers once per stay (tools/pv/r3_cache.py),
                    resumable, on the Colab disk;
 - ``equivalence``  cached vs live forward on real validation batches (max abs
-                   differences of high_conf / low / late, gradients, one Adam step);
+                   differences of high_conf / low / late, gradients, one SGD step);
 - ``train``        MSMA_Trainer on the cache: the main run, then the same with
                    ``--ablation without_missingness_module`` (and, with
                    ``--extra-ablations``, without_joint_module / without_late_module);

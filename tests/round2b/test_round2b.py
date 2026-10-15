@@ -271,5 +271,12 @@ def test_f_calibration_reads_only_val(reader, loaders_cache):
         )
         trainer.train_epoch(inference=True)  # the pre-training ECE pass
         trainer.train_epoch()  # one real calibration epoch
-    assert iterated["val"] == 2
-    print(f"\n[{reader}] calibration read val twice; train and test never iterated")
+    # --cache_frozen_logits (rr/dn plans): the pre-training pass fills the cache
+    # and the epoch replays it, so val is read once by design; otherwise twice.
+    cached = bool(getattr(args, "cache_frozen_logits", False))
+    expected = 1 if cached else 2
+    assert iterated["val"] == expected, (iterated["val"], expected)
+    print(
+        f"\n[{reader}] calibration read val {expected}x (cache_frozen_logits={cached}); "
+        "train and test never iterated"
+    )

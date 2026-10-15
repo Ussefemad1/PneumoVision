@@ -27,11 +27,12 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from unittest import mock
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from tools.pv import manifest, r3_preflight, round3  # noqa: E402
+from tools.pv import logtee, manifest, r3_preflight, round3  # noqa: E402
 from tools.pv.medpatch_bridge import REPO_ROOT  # noqa: E402
 from tools.pv.paper_scripts import READERS_FOR_TASK, canonical_task  # noqa: E402
 
@@ -44,7 +45,7 @@ def batch_size_for(n: int) -> int:
     return max(2, n - 1)
 
 
-def main(argv: list[str] | None = None) -> int:
+def _run(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="python -m tools.pv.smoke_round3", description=__doc__.splitlines()[0]
     )
@@ -94,7 +95,7 @@ def main(argv: list[str] | None = None) -> int:
         "--task", args.task, "--data", "virtual", "--data-root", str(root),
         "--batch-size", str(batch), "--missing-image-as-absent",
     ]  # fmt: skip
-    code = step("r3_preflight", lambda: r3_preflight.main([*common, "--sample", "32"]))
+    code = step("r3_preflight", lambda: r3_preflight._run([*common, "--sample", "32"]))
     if code:
         return code
     row = step("run r3 (cache, equivalence, train + ablations, record)", lambda: round3.main([
@@ -116,6 +117,26 @@ def main(argv: list[str] | None = None) -> int:
           f"{'PASSED' if code == 0 else 'FAILED'}   "
           f"manifest: {manifest.manifest_path()}")  # fmt: skip
     return code
+
+
+NAME = "smoke_round3"
+
+
+def _log_path(argv: list[str], name: str) -> tuple[Path, list[str]]:
+    """--log PATH (default <RUNS_ROOT>/logs/<name>_<task>_<time>.log) and the other args."""
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--log", type=Path)
+    known, rest = pre.parse_known_args(argv)
+    task = argv[argv.index("--task") + 1] if "--task" in argv[:-1] else "phenotyping"
+    return known.log or logtee.default_log(f"{name}_{task}"), rest
+
+
+def main(argv: list[str] | None = None) -> int:
+    """_run, with the whole output (subprocesses and any traceback too) in a log file."""
+    argv = list(sys.argv[1:] if argv is None else argv)
+    path, rest = _log_path(argv, NAME)
+    with logtee.tee_to_log(path), mock.patch.object(subprocess, "call", logtee.run_logged):
+        return _run(rest)
 
 
 if __name__ == "__main__":
