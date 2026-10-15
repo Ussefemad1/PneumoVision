@@ -58,17 +58,17 @@ class StubCXR(nn.Module):
 
 
 class StubText(nn.Module):
-    def __init__(self, modalities: str):
+    def __init__(self, modalities: str, out_dim: int = D):
         super().__init__()
         self.modalities = modalities.split("-")
-        self.feats_dim_rr = self.feats_dim_dn = D
+        self.feats_dim_rr = self.feats_dim_dn = out_dim
         self.full_feats_dim_rr = self.full_feats_dim_dn = H
         self.bert = nn.Linear(H, H)
         self.bert.config = SimpleNamespace(hidden_size=H)
         if "DN" in self.modalities:
-            self.fc_dn = nn.Linear(H, D)
+            self.fc_dn = nn.Linear(H, out_dim)
         if "RR" in self.modalities:
-            self.fc_rr = nn.Linear(H, D)
+            self.fc_rr = nn.Linear(H, out_dim)
 
     def tokens(self, notes):
         out = []
@@ -111,12 +111,25 @@ def r3_args(task: str = "phenotyping", fusion_type: str = "c-msma", **extra):
     return parse_args(argv)
 
 
-def r3_model(task: str = "phenotyping", fusion_type: str = "c-msma", seed: int = 0, **extra):
+def r3_model(
+    task: str = "phenotyping",
+    fusion_type: str = "c-msma",
+    seed: int = 0,
+    real_ehr: bool = False,
+    **extra,
+):
+    """`real_ehr`: medpatch's own EHR_encoder (the 1-layer LSTM, hidden 512; nothing
+    to download) instead of StubEHR, with the pools widened to 512 to match."""
+    from models.ehr_models import EHR_encoder  # noqa: PLC0415
     from models.fusion import Fusion  # noqa: PLC0415
 
+    if real_ehr:
+        extra = {"ehr_encoder": "lstm", "patch_output_dim": 512, **extra}
     args = r3_args(task, fusion_type, **extra)
     torch.manual_seed(seed)
-    model = Fusion(args, StubEHR(), StubCXR(), StubText(args.modalities))
+    ehr = EHR_encoder(args) if real_ehr else StubEHR()
+    text = StubText(args.modalities, out_dim=512 if real_ehr else D)
+    model = Fusion(args, ehr, StubCXR(), text)
     return args, model
 
 

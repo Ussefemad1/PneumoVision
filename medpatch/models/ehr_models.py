@@ -60,7 +60,11 @@ class LSTM(nn.Module):
             if self.do is not None:
                 x = self.do(x)  # Apply dropout
             
-        ehr_feats = ht.squeeze()
+        # squeeze(0), not squeeze(): ht is [1, B, H] (one layer per nn.LSTM), and
+        # a batch of one (the last val/test batch: mortality val is 135 x 16 + 1)
+        # lost its batch axis -> [H], so CMSMAFusion took batch_size = H.
+        # Identical for B > 1.
+        ehr_feats = ht.squeeze(0)
         if self.do is not None:
             ehr_feats = self.do(ehr_feats)
         

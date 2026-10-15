@@ -219,6 +219,10 @@ class MSMA_Trainer(Trainer):
             else:
                 if 'c-unimodal' in self.args.fusion_type:
                     pred = self.confidence_logits(output)
+                elif self.args.fusion_type.startswith('unimodal_'):
+                    # Round 1: reshape, not squeeze() -- a batch of one lost its
+                    # batch axis (same as F7). Identical for B > 1.
+                    pred = self.fusion_logits(output, self.args.fusion_type)
                 else:
                     pred = output[self.args.fusion_type].squeeze()
                 if 'c-unimodal' in self.args.fusion_type:
@@ -351,6 +355,8 @@ class MSMA_Trainer(Trainer):
                     pred = output[self.args.fusion_type]
                     if 'c-unimodal' in self.args.fusion_type:
                         pred = self.confidence_logits(output)
+                    elif self.args.fusion_type.startswith('unimodal_'):
+                        pred = self.fusion_logits(output, self.args.fusion_type)  # as in train_epoch
                     elif self.args.fusion_type != 'uni_cxr':
                         if len(pred.shape) > 1:
                              pred = pred.squeeze()

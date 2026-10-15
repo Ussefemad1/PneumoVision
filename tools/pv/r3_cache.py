@@ -142,7 +142,12 @@ def _loss(trainer_args, out, y, num_classes):
 
 
 def compare_live_cached(model, batch, device, lr: float = 1e-3) -> dict[str, float]:
-    """Max |live - cached| for high_conf / low / late, their gradients, and one Adam step.
+    """Max |live - cached| for high_conf / low / late, their gradients, and one SGD step.
+
+    The step is plain SGD, linear in the gradient. Adam's first step is about
+    lr * sign(g), so a near-zero gradient that differs only by float round-off
+    (~1e-8) can move a weight by a sizeable fraction of lr -- noise, not a cache
+    difference. The gradients themselves are compared directly.
 
     Readers in eval mode for both. Starts from the same trainable weights
     (deep copies); returns differences only -- no data.
@@ -162,8 +167,8 @@ def compare_live_cached(model, batch, device, lr: float = 1e-3) -> dict[str, flo
 
     num_classes = model.args.num_classes
     trainable = [n for n, p in live_model.named_parameters() if p.requires_grad]
-    opt_live = torch.optim.Adam([p for p in live_model.parameters() if p.requires_grad], lr)
-    opt_cached = torch.optim.Adam([p for p in cached_model.parameters() if p.requires_grad], lr)
+    opt_live = torch.optim.SGD([p for p in live_model.parameters() if p.requires_grad], lr)
+    opt_cached = torch.optim.SGD([p for p in cached_model.parameters() if p.requires_grad], lr)
     _loss(None, out_live, y, num_classes).backward()
     _loss(None, out_cached, y, num_classes).backward()
     live_params = dict(live_model.named_parameters())
