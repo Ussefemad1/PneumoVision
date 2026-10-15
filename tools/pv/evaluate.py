@@ -92,6 +92,13 @@ class Scores:
     auprc: float
     confidence: dict | None  # token models (r2/r2b) only: confidence statistics
     ece: float = math.nan  # token models only: mean per-class ECE over real tokens
+    # Every class (25 phenotypes, or the one mortality label): the paper's tables
+    # report the macro average over classes with both labels present.
+    macro_auroc: float = math.nan
+    macro_auprc: float = math.nan
+    classes_scored: int = 0
+    scores_all: np.ndarray | None = None
+    labels_all: np.ndarray | None = None
 
 
 def is_token_model(fusion_type: str) -> bool:
@@ -129,6 +136,7 @@ def score_checkpoint(args, checkpoint: Path, loaders=None, split: str = "val") -
     is_token = is_token_model(trainer.args.fusion_type)
     target = TARGET_CLASS[trainer.args.task]
     labels, scores, gammas = [], [], []
+    labels_all, scores_all = [], []
     token_probs, token_labels = [], []
     for batch in dl:
         logits, seq_lengths = model_output(trainer, batch)
@@ -143,6 +151,10 @@ def score_checkpoint(args, checkpoint: Path, loaders=None, split: str = "val") -
             prob = torch.sigmoid(logits[..., target])
             per_stay = (prob * mask).sum(1) / mask.sum(1).clamp(min=1)
             scores.append(per_stay.cpu().numpy())
+            prob_all = torch.sigmoid(logits) * mask[..., None]
+            scores_all.append(
+                (prob_all.sum(1) / mask.sum(1, keepdim=True).clamp(min=1)).cpu().numpy()
+            )
             p_all = torch.sigmoid(logits)[mask]  # [n_tokens, classes]
             gammas.append(torch.maximum(p_all, 1 - p_all).flatten().cpu().numpy())
             token_probs.append(p_all.cpu())
@@ -150,7 +162,9 @@ def score_checkpoint(args, checkpoint: Path, loaders=None, split: str = "val") -
             token_labels.append(y_tok[mask.cpu()])
         else:
             scores.append(logits.reshape(len(y), -1)[:, target].cpu().numpy())
+            scores_all.append(logits.reshape(len(y), -1).cpu().numpy())
         labels.append(y)
+        labels_all.append(y_all.numpy())
 
     labels_np, scores_np = np.concatenate(labels), np.concatenate(scores)
     auroc, auprc = _metrics(labels_np, scores_np)
@@ -166,4 +180,21 @@ def score_checkpoint(args, checkpoint: Path, loaders=None, split: str = "val") -
             "n": int(g.size),
         }
         ece = expected_calibration_error(torch.cat(token_probs), torch.cat(token_labels))
-    return Scores(labels_np, scores_np, auroc, auprc, confidence, ece)
+    macro = macro_metrics(np.concatenate(labels_all), np.concatenate(scores_all))
+    return Scores(
+        labels_np, scores_np, auroc, auprc, confidence, ece, *macro,
+        np.concatenate(scores_all), np.concatenate(labels_all),
+    )  # fmt: skip
+
+
+def macro_metrics(labels_all: np.ndarray, scores_all: np.ndarray) -> tuple[float, float, int]:
+    """(macro AUROC, macro AUPRC, classes scored): mean over classes with both labels."""
+    per_class = [_metrics(labels_all[:, c], scores_all[:, c]) for c in range(labels_all.shape[1])]
+    valid = [(a, p) for a, p in per_class if not math.isnan(a)]
+    if not valid:
+        return math.nan, math.nan, 0
+    return (
+        float(np.mean([a for a, _ in valid])),
+        float(np.mean([p for _, p in valid])),
+        len(valid),
+    )

@@ -730,6 +730,59 @@ def generate_mortality(out: Path, preset_name: str, seed: int = 0) -> dict:
     return summary
 
 
+def make_round3_variant(out: Path, task: str = "phenotyping", seed: int = 0) -> dict:
+    """Turn a freshly generated folder into the Round 3 smoke set (--data_pairs partial).
+
+    Round 3 keeps every EHR stay and treats a missing X-ray or note as a
+    missing modality. Post-processes the files ``generate`` / ``generate_mortality``
+    just wrote, with its own seeded generator (the base data is unchanged):
+
+    - ~20% of stays lose all radiology reports;
+    - phenotyping: another ~20% lose their discharge note;
+    - one validation stay's X-ray stays listed but its image file is removed
+      (a selected X-ray missing on disk: --missing_image_as_absent).
+    """
+    rng = np.random.default_rng(seed + 7_919)
+    notes, cxr = out / "notes", out / "cxr"
+    task_dir = MORTALITY_TASK if task != "phenotyping" else "phenotyping"
+    stays = pd.read_csv(out / "ehr" / "root" / "all_stays.csv")
+    hadm = stays["hadm_id"].to_numpy()
+    shuffled = rng.permutation(hadm)
+    fifth = max(2, len(hadm) // 5)
+    no_rr, no_dn = set(shuffled[:fifth].tolist()), set(shuffled[fifth : 2 * fifth].tolist())
+
+    rad = pd.read_csv(notes / "radiology.csv")
+    rad = rad[~rad["hadm_id"].isin(no_rr)]
+    rad.to_csv(notes / "radiology.csv", index=False)
+    dropped_dn = 0
+    if task == "phenotyping":
+        dis = pd.read_csv(notes / "discharge.csv")
+        dropped_dn = int(dis["hadm_id"].isin(no_dn).sum())
+        dis[~dis["hadm_id"].isin(no_dn)].to_csv(notes / "discharge.csv", index=False)
+
+    split = pd.read_csv(cxr / "mimic-cxr-ehr-split.csv")
+    val_images = split.loc[split["split"] == "validate", "dicom_id"].tolist()
+    removed = []
+    if val_images:
+        dicom = str(rng.choice(val_images))
+        for path in (cxr / "resized").rglob(f"{dicom}.jpg"):
+            path.unlink()
+            removed.append(dicom)
+    variant = {
+        "round3_variant": True,
+        "stays_without_rr": len(no_rr),
+        "stays_without_dn": len(no_dn) if task == "phenotyping" else "n/a (mortality)",
+        "discharge_notes_dropped": dropped_dn,
+        "val_images_missing_on_disk": len(removed),
+        "listfile_dir": task_dir,
+    }
+    summary = json.loads((out / "summary.json").read_text(encoding="utf-8"))
+    summary.update(variant)
+    (out / "README.md").write_text(readme(summary), encoding="utf-8")
+    (out / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    return summary
+
+
 def readme(summary: dict) -> str:
     return f"""# {SYNTHETIC_STAMP}
 
@@ -757,6 +810,11 @@ def main(argv: list[str] | None = None) -> None:
         help="phenotyping (default) or in-hospital mortality (EHR, CXR, RR; no discharge notes)",
     )
     parser.add_argument(
+        "--round3",
+        action="store_true",
+        help="Round 3 smoke set: some stays without notes, one X-ray missing on disk",
+    )
+    parser.add_argument(
         "--out",
         type=Path,
         default=None,
@@ -764,9 +822,12 @@ def main(argv: list[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
     suffix = "-mortality" if args.task == "mortality" else ""
-    out = args.out or REPO_ROOT / "data" / "virtual" / f"{args.preset}{suffix}"
+    r3 = "-r3" if args.round3 else ""
+    out = args.out or REPO_ROOT / "data" / "virtual" / f"{args.preset}{r3}{suffix}"
     build = generate_mortality if args.task == "mortality" else generate
     summary = build(out, args.preset, args.seed)
+    if args.round3:
+        summary = make_round3_variant(out, args.task, args.seed)
     sys.stdout.reconfigure(encoding="utf-8")
     print(f"{SYNTHETIC_STAMP}\nwrote {out}\n{json.dumps(summary, indent=2)}")
 
