@@ -32,11 +32,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   });
 
   const logout = async () => {
-    await postData('/auth/logout');
+    await postData('/auth/logout').catch(() => {
+      // Signed out locally even if the request failed: the user asked to leave.
+    });
     disconnectSocket();
-    // Drop every cached patient record on sign-out, not just the session.
-    queryClient.clear();
+    // Mark the session gone first, on the query the AuthProvider observes.
+    // `queryClient.clear()` used to run before this, which detached that
+    // observer, so `user` stayed stale and /login bounced back to the
+    // dashboard, whose refetch then showed "Not signed in".
     queryClient.setQueryData(['auth', 'me'], null);
+    // Then drop every cached patient record, not just the session.
+    queryClient.removeQueries({ predicate: (query) => query.queryKey[0] !== 'auth' });
   };
 
   return (

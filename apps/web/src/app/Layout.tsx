@@ -49,7 +49,8 @@ export function Layout() {
               <div className="text-xs font-medium text-ink">{user?.name}</div>
               <div className="text-[11px] capitalize text-ink-muted">{user?.role}</div>
             </div>
-            <Button size="sm" variant="ghost" onClick={() => { void logout().then(() => navigate('/login')); }}>Sign out</Button>
+            {/* No navigate here: RequireAuth redirects once the session is cleared. */}
+            <Button size="sm" variant="ghost" onClick={() => void logout()}>Sign out</Button>
           </div>
         </div>
       </header>

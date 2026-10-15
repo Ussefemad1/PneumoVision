@@ -64,7 +64,7 @@ function AnalyzeIndex() {
   );
 }
 
-function RequireAuth() {
+export function RequireAuth() {
   const { user, isLoading } = useAuth();
 
   if (isLoading) {
