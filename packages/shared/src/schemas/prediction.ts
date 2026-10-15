@@ -261,6 +261,27 @@ export const analyzeResponse = z.object({
 });
 export type AnalyzeResponse = z.infer<typeof analyzeResponse>;
 
+/**
+ * One row of `GET /analyses`: an ad-hoc run the current user submitted.
+ * A summary only — the full result is one click away on the report.
+ */
+export const analysisSummary = z.object({
+  predictionId: objectId,
+  stayId: objectId,
+  pseudoId: z.string(),
+  task: taskSchema,
+  status: predictionStatus,
+  /** Null until the prediction is done, and on failure. */
+  probability: probability.nullable(),
+  inputsUsed: z.array(modalitySchema),
+  /** Inputs withheld by F8 (discharge notes for mortality). */
+  excludedCount: z.number().int().min(0),
+  modelVersion: z.string(),
+  error: z.string().nullable(),
+  createdAt: isoDateTime,
+});
+export type AnalysisSummary = z.infer<typeof analysisSummary>;
+
 export const predictionsQuery = z.object({
   task: taskSchema.optional(),
 });

@@ -10,6 +10,7 @@ import { useAuth } from './auth.jsx';
 const NAV: { to: string; label: string; end?: boolean | undefined }[] = [
   { to: '/', label: 'Ward', end: true },
   { to: '/analyze', label: 'Analyze' },
+  { to: '/analyses', label: 'Analyses' },
   { to: '/alerts', label: 'Alerts' },
   { to: '/replay', label: 'ICU Replay' },
 ];

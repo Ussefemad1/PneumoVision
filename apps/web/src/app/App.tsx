@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { Navigate, Outlet, Route, BrowserRouter, Routes } from 'react-router-dom';
 
 import { AlertsPage } from '../pages/Alerts.jsx';
+import { AnalysesPage } from '../pages/Analyses.jsx';
 import { AnalyzePage } from '../pages/Analyze.jsx';
 import { DashboardPage } from '../pages/Dashboard.jsx';
 import { LoginPage } from '../pages/Login.jsx';
@@ -33,6 +34,7 @@ export function App() {
               <Route element={<Layout />}>
                 <Route index element={<DashboardPage />} />
                 <Route path="/analyze" element={<AnalyzePage />} />
+                <Route path="/analyses" element={<AnalysesPage />} />
                 <Route path="/stays/:stayId" element={<StayPage />} />
                 <Route path="/predictions/:predictionId" element={<PredictionReportPage />} />
                 <Route path="/alerts" element={<AlertsPage />} />

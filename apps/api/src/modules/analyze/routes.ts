@@ -10,9 +10,11 @@ import {
   analyzeFields,
   analyzeNote,
   estimateTokens,
+  paginationQuery,
   parseEhrCsv,
   validateEhrHour,
   validateVitalsValues,
+  type AnalysisSummary,
   type AnalyzeExcluded,
   type AnalyzeResponse,
   type EhrIssue,
@@ -26,7 +28,14 @@ import { Types } from 'mongoose';
 import { z } from 'zod';
 
 import type { Env } from '../../config/env.js';
-import { ImageModel, NoteModel, PatientModel, StayModel, VitalsModel } from '../../db/models.js';
+import {
+  ImageModel,
+  NoteModel,
+  PatientModel,
+  PredictionModel,
+  StayModel,
+  VitalsModel,
+} from '../../db/models.js';
 import { asyncHandler, ok } from '../../lib/http.js';
 import { sha256Hex, sniffImage, writeImage, type SniffedImage } from '../../lib/imageStore.js';
 import { readMultipart, type MultipartFile, type MultipartSpec } from '../../lib/multipart.js';
@@ -441,6 +450,86 @@ export function analyzeRoutes(
       };
       res.status(202);
       ok(res, body);
+    }),
+  );
+
+  /**
+   * `GET /analyses` — the current user's ad-hoc runs, newest first.
+   *
+   * Ad-hoc stays are hidden from the ward dashboard, so without this list a
+   * report is lost as soon as the user navigates away from it. Runs attached
+   * to an existing stay (`?stayId=`) live on that stay's Predictions tab.
+   */
+  router.get(
+    '/analyses',
+    clinical,
+    asyncHandler(async (req, res) => {
+      const { page, limit } = paginationQuery.parse(req.query);
+      const requestedBy = new Types.ObjectId(req.user!.id);
+
+      const [facet] = await PredictionModel.aggregate<{
+        items: {
+          _id: Types.ObjectId;
+          stayId: Types.ObjectId;
+          task: AnalysisSummary['task'];
+          status: AnalysisSummary['status'];
+          result: { probability: number } | null;
+          inputsUsed: AnalysisSummary['inputsUsed'];
+          excludedInputs: unknown[];
+          modelVersion: string;
+          error: string | null;
+          createdAt: Date;
+          patient: { pseudoId: string }[];
+        }[];
+        total: { n: number }[];
+      }>([
+        { $match: { requestedBy } },
+        {
+          $lookup: {
+            from: StayModel.collection.name,
+            localField: 'stayId',
+            foreignField: '_id',
+            as: 'stay',
+          },
+        },
+        { $unwind: '$stay' },
+        { $match: { 'stay.status': 'adhoc' } },
+        { $sort: { createdAt: -1, _id: -1 } },
+        {
+          $facet: {
+            items: [
+              { $skip: (page - 1) * limit },
+              { $limit: limit },
+              {
+                $lookup: {
+                  from: PatientModel.collection.name,
+                  localField: 'stay.patientId',
+                  foreignField: '_id',
+                  as: 'patient',
+                },
+              },
+            ],
+            total: [{ $count: 'n' }],
+          },
+        },
+      ]);
+
+      const total = facet?.total[0]?.n ?? 0;
+      const items: AnalysisSummary[] = (facet?.items ?? []).map((doc) => ({
+        predictionId: String(doc._id),
+        stayId: String(doc.stayId),
+        pseudoId: doc.patient[0]?.pseudoId ?? '—',
+        task: doc.task,
+        status: doc.status,
+        probability: doc.result?.probability ?? null,
+        inputsUsed: doc.inputsUsed,
+        excludedCount: doc.excludedInputs.length,
+        modelVersion: doc.modelVersion,
+        error: doc.error,
+        createdAt: doc.createdAt.toISOString(),
+      }));
+
+      ok(res, items, { page, limit, total, totalPages: Math.ceil(total / limit) });
     }),
   );
 

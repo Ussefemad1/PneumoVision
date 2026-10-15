@@ -169,6 +169,8 @@ const predictionSchema = new Schema(
 
 // History tables and the risk trajectory both read newest-first per task.
 predictionSchema.index({ stayId: 1, task: 1, cutoffTime: -1 });
+// The Analyses history: one user's runs, newest first.
+predictionSchema.index({ requestedBy: 1, createdAt: -1 });
 
 export type PredictionDoc = HydratedDocument<InferSchemaType<typeof predictionSchema>>;
 export const PredictionModel = model('Prediction', predictionSchema);

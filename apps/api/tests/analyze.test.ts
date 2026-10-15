@@ -440,6 +440,102 @@ describe('POST /analyze — ad-hoc stays', () => {
   });
 });
 
+// ── History ───────────────────────────────────────────────────────────────────
+
+describe('GET /analyses', () => {
+  const runNote = () =>
+    analyze()
+      .field('task', 'pneumonia')
+      .field('notesJson', JSON.stringify([{ type: 'radiology', text: RADIOLOGY }]));
+
+  it('lists the user’s ad-hoc runs newest first, with the pseudoId and result', async () => {
+    const first = await runNote();
+    await predictionFor(first);
+    const second = await analyze()
+      .field('task', 'mortality')
+      .field(
+        'notesJson',
+        JSON.stringify([
+          { type: 'radiology', text: RADIOLOGY },
+          { type: 'discharge', text: DISCHARGE },
+        ]),
+      );
+    await predictionFor(second);
+
+    const res = await request(app).get('/api/v1/analyses').set('Cookie', cookie);
+    expect(res.status).toBe(200);
+    expect(res.body.meta).toEqual({ page: 1, limit: 25, total: 2, totalPages: 1 });
+
+    const [newest, oldest] = res.body.data;
+    expect(newest.predictionId).toBe(second.body.data.predictionId);
+    expect(newest.task).toBe('mortality');
+    expect(newest.excludedCount).toBe(1);
+    expect(oldest.predictionId).toBe(first.body.data.predictionId);
+    expect(oldest).toMatchObject({
+      stayId: first.body.data.stayId,
+      status: 'done',
+      probability: 0.4,
+      inputsUsed: ['rr'],
+      excludedCount: 0,
+    });
+    const stay = await StayModel.findById(first.body.data.stayId).lean();
+    const patient = await PatientModel.findById(stay!.patientId).lean();
+    expect(oldest.pseudoId).toBe(patient!.pseudoId);
+  });
+
+  it('leaves out runs attached to an admitted stay', async () => {
+    const stay = await StayModel.create({
+      patientId: new mongoose.Types.ObjectId(),
+      ward: 'MICU',
+      bedLabel: 'M-03',
+      admittedAt: new Date(Date.now() - 86_400_000),
+      availability: { ehr: false, cxr: false, notes: false },
+    });
+    await predictionFor(await runNote().field('stayId', String(stay._id)));
+
+    const res = await request(app).get('/api/v1/analyses').set('Cookie', cookie);
+    expect(res.body.data).toEqual([]);
+    expect(res.body.meta.total).toBe(0);
+  });
+
+  it('shows each user only their own runs', async () => {
+    await predictionFor(await runNote());
+
+    await UserModel.create({
+      email: 'other@pneumovision.local',
+      passwordHash: await hashPassword(PASSWORD),
+      name: 'Dr Other',
+      role: 'clinician',
+    });
+    const login = await request(app)
+      .post('/api/v1/auth/login')
+      .send({ email: 'other@pneumovision.local', password: PASSWORD });
+    const otherCookie = (login.headers['set-cookie'] as unknown as string[])
+      .map((c) => c.split(';')[0])
+      .join('; ');
+
+    const res = await request(app).get('/api/v1/analyses').set('Cookie', otherCookie);
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual([]);
+  });
+
+  it('pages with ?page&limit', async () => {
+    for (let i = 0; i < 3; i++) await predictionFor(await runNote());
+
+    const res = await request(app)
+      .get('/api/v1/analyses')
+      .query({ page: 2, limit: 2 })
+      .set('Cookie', cookie);
+    expect(res.body.data).toHaveLength(1);
+    expect(res.body.meta).toEqual({ page: 2, limit: 2, total: 3, totalPages: 2 });
+  });
+
+  it('requires sign-in', async () => {
+    const res = await request(app).get('/api/v1/analyses');
+    expect(res.status).toBe(401);
+  });
+});
+
 // ── Validation and limits (Bug E) ─────────────────────────────────────────────
 
 describe('POST /analyze — validation', () => {
