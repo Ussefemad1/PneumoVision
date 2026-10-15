@@ -9,6 +9,59 @@ Newest first.
 
 ---
 
+## 2026-10-16 — A last batch of one; tokenizer fork warnings; full logs
+
+Notebook 1 on Colab (88b38ec): lists, `parent_keys` and `r3_preflight` passed
+on real data for both tasks. Both `smoke_round3` runs failed.
+
+25. **LSTM batch of one** (`models/ehr_models.py:63`).
+    - **Cause:** `ehr_feats = ht.squeeze()`. `ht` is `[1, B, 512]`, so a batch
+      of one stay became `[512]`. CMSMAFusion then took `batch_size = 512`,
+      and `high_tensor.view(batch_size, -1)` crashed the joint classifier
+      (`normalized_shape=[51200]`, input `[512, 100]`).
+    - **Who hits it:** the last val/test batch keeps its partial size.
+      Mortality validation is 2,161 = 135 × 16 + 1, and the smoke set ends on a
+      batch of one on purpose.
+    - **Fix:** `squeeze(0)`. Identical for B > 1, so Rounds 1–2b are
+      unaffected.
+    - **Round 1's other squeeze:** `MSMA_trainer.train_epoch` / `validate` on
+      `unimodal_*` squeezed the outputs too and now reshape to `[B, classes]`
+      / `[B]`, as F7 does for c-msma.
+    - **The rest of the path:** text (stacked per note), CXR (token axis
+      kept), ConfidencePredictor (`squeeze(-1)` only), the classifiers, and
+      the cache capture/replay all keep the batch axis.
+    - **Tests** (`tests/test_batch_of_one.py`) use medpatch's real
+      `EHR_encoder` (LSTM; nothing to download):
+      - features `[B, 512]` for B = 1, 3, and identical to the old
+        `squeeze()` for B = 3;
+      - Round 3 live and cached with val batches of 3 then 1, both tasks;
+      - `validate` live and on the cache;
+      - Round 1/2/2b forwards and Round 1 `validate` at B = 1.
+
+      They fail with the old line.
+
+    - **Equivalence step:** `compare_live_cached` now takes its one-step
+      comparison with plain SGD. Adam's first step is about `lr × sign(g)`:
+      a near-zero gradient that differs by ~1e-8 of float round-off moved a
+      weight by ~2e-5 with the real LSTM. That is noise, not a cache
+      difference; the gradients themselves agree to ~1e-7.
+26. **Tokenizer fork warnings** (`fusion_main.py`, `tools/pv/medpatch_bridge.py`).
+    `TOKENIZERS_PARALLELISM=false` (`setdefault`, so an explicit value is
+    kept) before transformers loads. HF tokenizers otherwise print one "process
+    just got forked" warning per DataLoader worker. Thousands of them truncated
+    the Colab output and hid the mortality smoke's error, very likely the same
+    batch-of-one crash.
+27. **Full logs** (`tools/pv/logtee.py`). `smoke_round3` and `r3_preflight`
+    write everything to `<RUNS_ROOT>/logs/<tool>_<task>_<UTC time>.log`, or to
+    `--log PATH`, and print the path at the start and end. That includes
+    stderr, subprocess output (pytest, Round 2b smoke) and the traceback of a
+    crash.
+28. **Round 2b check:** `tests/round2b/test_round2b.py::test_f_calibration_reads_only_val`
+    expects val to be read once with `--cache_frozen_logits` (the rr/dn plans)
+    and twice without.
+
+---
+
 ## 2026-10-15 — Round 3 cache, late-weight / phantom-token / missing-image flags
 
 Decisions (team, 2026-10-15): keep the upstream late weights and phantom
@@ -44,7 +97,8 @@ file as absent unless asked.
       capture-code commit, flags); training refuses a cache that differs.
     - **Tests** (`tests/test_round3_cache.py`): cached vs live, both tasks,
       every ablation, both fusers, both flags. Max abs difference of
-      `high_conf` / `low` / `late`, gradients and one Adam step ≤ 1e-5.
+      `high_conf` / `low` / `late`, gradients and one SGD step ≤ 1e-5
+      (see item 25 for why SGD).
       Shards reproduce the live val/test loader batch by batch.
       `MSMA_Trainer` trains and evaluates on the cache with the readers never
       called.

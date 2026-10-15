@@ -558,6 +558,11 @@ Run Cells 1–3 above first, with `!git checkout model/round3` in Cell 1.
 !python -m tools.pv.score_rounds --task mortality   --data real --out /content/drive/MyDrive/PneumoVision_shared/round3/mortality/r2_r2b_test.csv
 ```
 
+`r3_preflight` and `smoke_round3` also write their whole output, tracebacks
+included, to `$RUNS_ROOT/logs/<tool>_<task>_<time>.log` (path printed at the
+start and end; `--log PATH` to choose). If a cell's output is cut off, open
+that file.
+
 If a pre-flight prints `STOP … not on disk`, add `--missing-image-as-absent` to
 the pre-flight **and** every `run r3` command of that task.
 
