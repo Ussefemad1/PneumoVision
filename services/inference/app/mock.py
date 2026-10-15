@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import random
+from dataclasses import dataclass
 
 from .cxr import DecodedCxr, decode_cxr
 from .schemas import (
@@ -26,6 +27,7 @@ from .schemas import (
     FractionAbove,
     JointScores,
     Missingness,
+    ModalitySource,
     NoteSpan,
     PredictRequest,
     PredictionResult,
@@ -33,11 +35,21 @@ from .schemas import (
     ReceivedCxr,
     ReceivedEhr,
     ReceivedNote,
+    Sources,
     UnimodalScores,
 )
 from .text import chunk_count, estimate_tokens
 
 MOCK_MODEL_VERSION = "mock-0.1.0"
+
+
+@dataclass(frozen=True)
+class ReaderScore:
+    """A real unimodal probability from a trained reader (see ``readers.py``)."""
+
+    probability: float
+    model: str
+    test_auroc: float | None
 
 # Which encoder each note type feeds. Radiology reports and the other in-stay
 # notes go to the RR branch; discharge notes to DN. Matches the modality split
@@ -119,7 +131,9 @@ def _ehr_severity(ehr: object) -> float | None:
     return sum(scores) / len(scores)
 
 
-def build_received(req: PredictRequest, cxr: DecodedCxr | None) -> Received:
+def build_received(
+    req: PredictRequest, cxr: DecodedCxr | None, mode: str = "mock"
+) -> Received:
     """Summarise what this request actually carried.
 
     Counts and hashes only — note text is measured, never copied, so the
@@ -146,16 +160,26 @@ def build_received(req: PredictRequest, cxr: DecodedCxr | None) -> Received:
         ehr=ehr,
         cxr=ReceivedCxr(sha256=cxr.sha256, width=cxr.width, height=cxr.height) if cxr else None,
         notes=notes,
-        mode="mock",
+        mode=mode,  # type: ignore[arg-type]
     )
 
 
-def build_mock_result(req: PredictRequest, cxr: DecodedCxr | None = None) -> PredictionResult:
+def build_mock_result(
+    req: PredictRequest,
+    cxr: DecodedCxr | None = None,
+    readers: dict[str, ReaderScore] | None = None,
+) -> PredictionResult:
     """Produce a complete, internally consistent MedPatch-shaped result.
 
     ``cxr`` is the already-decoded radiograph; when omitted it is decoded here,
     so a malformed image fails the same way whichever caller builds the result.
+
+    ``readers`` holds real unimodal probabilities from trained single-modality
+    readers, keyed by modality. They replace the simulated unimodal score for
+    that modality and feed the (still simulated) fusion, and ``sources``
+    records which numbers are which.
     """
+    readers = readers or {}
     if req.cxr is not None and cxr is None:
         cxr = decode_cxr(req.cxr)
     notes = req.notes or []
@@ -177,13 +201,26 @@ def build_mock_result(req: PredictRequest, cxr: DecodedCxr | None = None) -> Pre
     baseline = rng.uniform(0.06, 0.34)
     severity = _ehr_severity(req.ehr)
     base = baseline if severity is None else min(0.94, 0.25 * baseline + 0.85 * severity)
+    # With trained readers present, centre the simulated fusion on their mean,
+    # so the (labelled) simulated fused score does not contradict the real
+    # unimodal scores shown beside it.
+    real = [r.probability for m, r in readers.items() if availability.get(m)]
+    if real:
+        base = min(0.94, max(0.02, sum(real) / len(real)))
 
-    unimodal = UnimodalScores(
-        ehr=_jitter(rng, base, 0.12) if has_ehr else None,
-        cxr=_jitter(rng, base, 0.15) if has_cxr else None,
-        rr=_jitter(rng, base, 0.14) if has_rr else None,
-        dn=_jitter(rng, base, 0.14) if has_dn else None,
-    )
+    # Draw every simulated score first, so the rng sequence (and so every
+    # other number) is the same whether or not a trained reader answered.
+    simulated = {
+        "ehr": _jitter(rng, base, 0.12) if has_ehr else None,
+        "cxr": _jitter(rng, base, 0.15) if has_cxr else None,
+        "rr": _jitter(rng, base, 0.14) if has_rr else None,
+        "dn": _jitter(rng, base, 0.14) if has_dn else None,
+    }
+    scores = {
+        m: (readers[m].probability if m in readers and availability[m] else v)
+        for m, v in simulated.items()
+    }
+    unimodal = UnimodalScores(**scores)
 
     joint = JointScores(high=_jitter(rng, base, 0.08), low=_jitter(rng, base, 0.18))
     missingness = Missingness(vector=availability, prediction=_jitter(rng, base, 0.2))
@@ -221,6 +258,16 @@ def build_mock_result(req: PredictRequest, cxr: DecodedCxr | None = None) -> Pre
     probability = min(0.999, max(0.001, probability))
 
     confidence = _build_confidence(req, rng, availability, notes)
+
+    def source(modality: str) -> ModalitySource | None:
+        if not availability[modality]:
+            return None
+        reader = readers.get(modality)
+        if reader is None:
+            return ModalitySource(kind="mock")
+        return ModalitySource(kind="trained", model=reader.model, test_auroc=reader.test_auroc)
+
+    used_readers = any(m in readers and availability[m] for m in availability)
     return PredictionResult(
         probability=probability,
         unimodal=unimodal,
@@ -228,7 +275,14 @@ def build_mock_result(req: PredictRequest, cxr: DecodedCxr | None = None) -> Pre
         missingness=missingness,
         alphas=alphas,
         confidence=confidence,
-        received=build_received(req, cxr),
+        received=build_received(req, cxr, mode="readers" if used_readers else "mock"),
+        sources=Sources(
+            fusion="mock",
+            ehr=source("ehr"),
+            cxr=source("cxr"),
+            rr=source("rr"),
+            dn=source("dn"),
+        ),
     )
 
 

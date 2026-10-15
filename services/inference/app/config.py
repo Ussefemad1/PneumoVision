@@ -21,8 +21,13 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=None, extra="ignore")
 
     # ── Mode ────────────────────────────────────────────────────────────────
-    # No trained checkpoints exist in this repo yet, so MOCK_MODE defaults to
-    # true. Flipping it to false requires CHECKPOINT_DIR to hold real weights.
+    # INFERENCE_MODE:
+    #   mock    — every number simulated; no torch needed (Railway default).
+    #   readers — the team's trained single-modality readers (EHR, RR, DN)
+    #             score their own modality; fusion stays simulated until the
+    #             fusion checkpoints exist. Needs torch and CHECKPOINT_DIR.
+    # When unset, MOCK_MODE (the original flag) decides: true means mock.
+    inference_mode: Literal["mock", "readers"] | None = Field(default=None, alias="INFERENCE_MODE")
     mock_mode: bool = Field(default=True, alias="MOCK_MODE")
 
     torch_device: Literal["auto", "cpu", "cuda"] = Field(default="auto", alias="TORCH_DEVICE")
@@ -42,6 +47,17 @@ class Settings(BaseSettings):
     default_theta: float = Field(default=0.75, alias="DEFAULT_THETA")
 
     log_level: str = Field(default="info", alias="LOG_LEVEL")
+
+    @property
+    def mode(self) -> Literal["mock", "readers"]:
+        if self.inference_mode is not None:
+            return self.inference_mode
+        if self.mock_mode:
+            return "mock"
+        raise ValueError(
+            "MOCK_MODE=false needs INFERENCE_MODE to say which real mode to run "
+            "(currently only 'readers' exists)"
+        )
 
     @field_validator("default_theta")
     @classmethod

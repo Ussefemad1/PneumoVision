@@ -14,7 +14,8 @@ import time
 from contextlib import asynccontextmanager
 from typing import Annotated, AsyncIterator
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi.concurrency import run_in_threadpool
 
 from .config import Settings, get_settings
 from .cxr import decode_cxr
@@ -68,21 +69,32 @@ def resolve_device(preference: str) -> str:
     return "cuda" if torch.cuda.is_available() else "cpu"
 
 
+READERS_MODEL_VERSION = "readers-r1+mock-fusion"
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     app.state.device = resolve_device(settings.torch_device)
-    if settings.mock_mode:
+    app.state.readers = None
+    if settings.mode == "mock":
         # Nothing to load; mock output is generated per request.
         app.state.models_loaded = False
         app.state.warmed_up = True
-        logger.info("inference service started in MOCK_MODE (no checkpoints loaded)")
+        logger.info("inference service started in mock mode (no checkpoints loaded)")
     else:
-        # Phase 5 wires the real loader here: build the encoders, load the
-        # checkpoint, model.eval(), and run one warm-up forward pass.
-        raise RuntimeError(
-            "MOCK_MODE=false is not supported yet: no trained checkpoints exist. "
-            "See CLAUDE.md § Model status."
+        # Imported here so mock mode never needs torch installed.
+        from .readers import load_readers  # noqa: PLC0415
+
+        app.state.readers = load_readers(
+            settings.medpatch_root, settings.checkpoint_dir, app.state.device
+        )
+        app.state.models_loaded = True
+        app.state.warmed_up = True
+        logger.info(
+            "inference service started in readers mode on %s: %s",
+            app.state.device,
+            ", ".join(app.state.readers.keys),
         )
     yield
 
@@ -104,7 +116,7 @@ async def health(request: Request, settings: SettingsDep) -> HealthResponse:
     """Unsigned liveness probe — carries no patient data."""
     return HealthResponse(
         status="ok",
-        mock=settings.mock_mode,
+        mock=settings.mode == "mock",
         models_loaded=bool(getattr(request.app.state, "models_loaded", False)),
         device=str(getattr(request.app.state, "device", "cpu")),
         warmed_up=bool(getattr(request.app.state, "warmed_up", False)),
@@ -115,8 +127,8 @@ async def health(request: Request, settings: SettingsDep) -> HealthResponse:
 async def model_info(request: Request, settings: SettingsDep) -> ModelInfo:
     """Expected input spec, so the API can assert its payloads match."""
     return ModelInfo(
-        version=MOCK_MODEL_VERSION if settings.mock_mode else "unknown",
-        mock=settings.mock_mode,
+        version=MOCK_MODEL_VERSION if settings.mode == "mock" else READERS_MODEL_VERSION,
+        mock=settings.mode == "mock",
         device=str(getattr(request.app.state, "device", "cpu")),
         tasks=["mortality", "pneumonia"],
         theta=settings.default_theta,
@@ -137,11 +149,20 @@ async def predict(body: PredictRequest, request: Request, settings: SettingsDep)
     # or unreadable image is a 400, never a silently image-less prediction.
     cxr = decode_cxr(body.cxr) if body.cxr is not None else None
 
-    if settings.mock_mode:
+    readers = getattr(request.app.state, "readers", None)
+    if readers is None:
         result = build_mock_result(body, cxr)
         version = MOCK_MODEL_VERSION
-    else:  # pragma: no cover — unreachable until checkpoints exist
-        raise RuntimeError("real pipeline not wired yet")
+    else:
+        from .readers import ReaderInputError  # noqa: PLC0415
+
+        try:
+            # Torch work off the event loop, so health checks stay responsive.
+            scores = await run_in_threadpool(readers.score, body)
+        except ReaderInputError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        result = build_mock_result(body, cxr, scores)
+        version = READERS_MODEL_VERSION
 
     latency_ms = int((time.perf_counter() - started) * 1000)
 
@@ -164,5 +185,5 @@ async def predict(body: PredictRequest, request: Request, settings: SettingsDep)
         result=result,
         model_version=version,
         latency_ms=latency_ms,
-        mock=settings.mock_mode,
+        mock=readers is None,
     )

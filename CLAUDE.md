@@ -49,7 +49,7 @@ code wins.
 | EHR encoder    | `LSTM`, 1 layer, hidden 512, `input_dim=76`                      | —                    |
 | CXR encoder    | timm `vit_small_patch16_384`, **384×384**                        | not 224×224          |
 | CXR patch grid | **24×24** (+1 CLS token, excluded from heatmaps)                 | not 14×14            |
-| Text encoder   | `emilyalsentzer/Bio_ClinicalBERT`, frozen                        | not dmis-lab BioBERT |
+| Text encoder   | `dmis-lab/biobert-v1.1` (the paper's BioBERT), frozen — pass `--bert_model_name`; the argparse default is Bio_ClinicalBERT | not Bio_ClinicalBERT |
 | Modalities     | **four**: EHR, CXR, RR (radiology reports), DN (discharge notes) | not three            |
 | Fusion model   | `CMSMAFusion` (`--fusion_type c-msma`)                           | —                    |
 | Output         | `{'high_conf', 'low', 'late'}`, all **logits**                   | not probabilities    |
@@ -100,19 +100,25 @@ A dict with `epoch`, `state_dict`, `best_auroc`, `optimizer`, plus `weights`
 
 ### Model status — read before wiring real inference
 
-- **`checkpoints/` is empty. No trained weights exist in this repo.** MOCK_MODE
-  is the only mode that runs today; `MOCK_MODE=false` raises at startup by
-  design rather than failing obscurely later.
-- **Known upstream defect:** the CXR branch of `CMSMAFusion` references
-  `self.cxr_model.cxr_encoder.projection_layer`
-  ([`fusion.py:1158`](medpatch/models/fusion.py)), which no class in this repo
-  provides — `cxr_models.py` defines a torchvision DenseNet and never reads
-  `--cxr_encoder`. Trimodal `c-msma` therefore cannot be constructed as-is.
-  EHR-only `c-msma` **does** build and run. Fixing this belongs to the ML
-  track; the web platform does not patch `medpatch/`.
-- `fusion_main.py` defaults the normalizer to the **phenotyping** file
-  (`ph_ts{timestep}...`) regardless of task. Pass `--normalizer_state`
-  explicitly for mortality runs.
+- **Round 1 single-modality readers are trained** (EHR by Caroll; RR and DN by
+  Farida). `INFERENCE_MODE=readers` runs them locally; the fusion stays
+  simulated and every result says which numbers are which (`result.sources`).
+  See [`services/inference/READERS.md`](services/inference/READERS.md) for the
+  checkpoint paths, test AUROCs and caveats. Checkpoints are gitignored and
+  live only on team machines / the shared drive.
+- **Not trained yet:** the CXR reader (Norhan) and the MedPatch fusion
+  (Rounds 2, 2b, 3). Railway runs `mock` (no torch in its image).
+- The `--cxr_encoder` / DenseNet defect is **fixed** (defect 6 in
+  `docs/cxr_progress_notes.md`); `CXR_encoder` builds the ViT.
+- `c-e-msma` (listed for pneumonia below) uses **entropy** as confidence, whose
+  maximum ln 2 ≈ 0.69 is below θ = 0.75, so no token can ever be
+  high-confidence. The paper's MedPatch is `c-msma`. Resolve with the model
+  track before wiring a fused pneumonia model.
+- Normalizers are per reader: `fusion_main.py` on `main` loads the
+  **phenotyping** file for every task; Caroll's EHR runs used her
+  task-matched fix (`ihm_…` for mortality). Record which file each checkpoint
+  was trained with — the readers registry in `services/inference/app/readers.py`
+  does.
 
 ---
 

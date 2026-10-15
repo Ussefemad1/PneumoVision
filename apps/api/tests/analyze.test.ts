@@ -102,7 +102,15 @@ function stubResult(body: StubBody) {
         : null,
       cxr: bytes ? { sha256: sha256(bytes), width: 16, height: 16 } : null,
       notes: notes.map((n) => ({ id: n.id, type: n.type, tokens: 3, chunks: 1 })),
-      mode: 'mock',
+      mode: vector.rr ? 'readers' : 'mock',
+    },
+    // As in readers mode: RR from a trained reader, everything else simulated.
+    sources: {
+      fusion: 'mock',
+      ehr: vector.ehr ? { kind: 'mock' } : null,
+      cxr: vector.cxr ? { kind: 'mock' } : null,
+      rr: vector.rr ? { kind: 'trained', model: 'stub RR reader', testAuroc: 0.73 } : null,
+      dn: vector.dn ? { kind: 'mock' } : null,
     },
   };
 }
@@ -267,6 +275,26 @@ describe('POST /analyze — modalities reach the model', () => {
     expect(prediction.inputsUsed).toEqual(['rr']);
     expect(received[0]!.notes).toHaveLength(1);
     expect(received[0]!.notes![0]!.text).toBe(RADIOLOGY);
+  });
+
+  it('stores which scores came from trained readers and returns them on the report', async () => {
+    const res = await analyze()
+      .field('task', 'mortality')
+      .field('notesJson', JSON.stringify([{ type: 'radiology', text: RADIOLOGY }]));
+    const prediction = await predictionFor(res);
+    expect(prediction.result!.sources!.rr!.kind).toBe('trained');
+
+    const report = await request(app)
+      .get(`/api/v1/predictions/${res.body.data.predictionId}`)
+      .set('Cookie', cookie);
+    expect(report.body.data.result.sources).toEqual({
+      fusion: 'mock',
+      ehr: null,
+      cxr: null,
+      rr: { kind: 'trained', model: 'stub RR reader', testAuroc: 0.73 },
+      dn: null,
+    });
+    expect(report.body.data.result.received.mode).toBe('readers');
   });
 
   it('notes as files: each file takes its type from the aligned noteTypes array', async () => {

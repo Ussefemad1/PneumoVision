@@ -72,7 +72,28 @@ const receivedSchema = new Schema(
       ],
       default: [],
     },
-    mode: { type: String, required: true, enum: ['mock', 'model'] },
+    mode: { type: String, required: true, enum: ['mock', 'readers', 'model'] },
+  },
+  { _id: false },
+);
+
+const modalitySourceSchema = new Schema(
+  {
+    kind: { type: String, required: true, enum: ['trained', 'mock'] },
+    model: { type: String, default: null },
+    testAuroc: { type: Number, default: null, min: 0, max: 1 },
+  },
+  { _id: false },
+);
+
+/** Which numbers came from trained readers and which are simulated. */
+const sourcesSchema = new Schema(
+  {
+    fusion: { type: String, required: true, enum: ['trained', 'mock'] },
+    ehr: { type: modalitySourceSchema, default: null },
+    cxr: { type: modalitySourceSchema, default: null },
+    rr: { type: modalitySourceSchema, default: null },
+    dn: { type: modalitySourceSchema, default: null },
   },
   { _id: false },
 );
@@ -121,6 +142,8 @@ const resultSchema = new Schema(
     // What the inference service reports it actually received. Null only on
     // predictions stored before the service reported it.
     received: { type: receivedSchema, default: null },
+    // Null only on predictions stored before the service reported it.
+    sources: { type: sourcesSchema, default: null },
   },
   { _id: false },
 );

@@ -162,9 +162,34 @@ export const receivedInputs = z.object({
       chunks: z.number().int().min(0),
     }),
   ),
-  mode: z.enum(['mock', 'model']),
+  /** `readers`: trained single-modality readers with a simulated fusion. */
+  mode: z.enum(['mock', 'readers', 'model']),
 });
 export type ReceivedInputs = z.infer<typeof receivedInputs>;
+
+/** Where one modality's unimodal score came from. */
+export const modalitySource = z.object({
+  kind: z.enum(['trained', 'mock']),
+  /** Reader name, when trained. */
+  model: z.string().nullish().transform((v) => v ?? null),
+  /** The reader's held-out test AUROC for this task, when trained. */
+  testAuroc: nullableNumber,
+});
+export type ModalitySource = z.infer<typeof modalitySource>;
+
+/**
+ * Provenance of every number in a result, so the report can label trained
+ * and simulated parts honestly while both coexist.
+ */
+export const resultSources = z.object({
+  /** The fused output: joint, missingness, alphas, probability, confidence maps. */
+  fusion: z.enum(['trained', 'mock']),
+  ehr: modalitySource.nullish().transform((v) => v ?? null),
+  cxr: modalitySource.nullish().transform((v) => v ?? null),
+  rr: modalitySource.nullish().transform((v) => v ?? null),
+  dn: modalitySource.nullish().transform((v) => v ?? null),
+});
+export type ResultSources = z.infer<typeof resultSources>;
 
 /** An input withheld from the model by F8 leakage control. */
 export const excludedInput = z.object({
@@ -187,6 +212,8 @@ export const predictionResult = z.object({
   confidence: confidenceMaps,
   /** Null only on predictions stored before the service reported it. */
   received: receivedInputs.nullish().transform((v) => v ?? null),
+  /** Null only on predictions stored before the service reported it. */
+  sources: resultSources.nullish().transform((v) => v ?? null),
 });
 export type PredictionResult = z.infer<typeof predictionResult>;
 

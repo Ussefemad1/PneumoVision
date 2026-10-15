@@ -202,7 +202,33 @@ class Received(BaseModel):
     ehr: ReceivedEhr | None
     cxr: ReceivedCxr | None
     notes: list[ReceivedNote]
-    mode: Literal["mock", "model"]
+    # "readers": trained single-modality readers, mock fusion (see Sources).
+    mode: Literal["mock", "readers", "model"]
+
+
+class ModalitySource(BaseModel):
+    """Where one modality's unimodal score came from."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    kind: Literal["trained", "mock"]
+    # Reader name and its held-out test AUROC for this task, when trained.
+    model: str | None = None
+    test_auroc: float | None = Field(default=None, alias="testAuroc")
+
+
+class Sources(BaseModel):
+    """Provenance of every number in the result, so the report can label each
+    one honestly while trained and simulated parts coexist."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    # The fused output (joint, missingness, alphas, probability, confidence maps).
+    fusion: Literal["trained", "mock"]
+    ehr: ModalitySource | None = None
+    cxr: ModalitySource | None = None
+    rr: ModalitySource | None = None
+    dn: ModalitySource | None = None
 
 
 class PredictionResult(BaseModel):
@@ -216,6 +242,7 @@ class PredictionResult(BaseModel):
     alphas: Alphas
     confidence: ConfidenceMaps
     received: Received
+    sources: Sources
 
 
 class PredictResponse(BaseModel):

@@ -1,4 +1,4 @@
-import type { Modality, Prediction, StayDetail } from '@pneumovision/shared';
+import type { Modality, ModalitySource, Prediction, StayDetail } from '@pneumovision/shared';
 import { MEDPATCH_REFERENCE_METRICS, TASK_SPEC } from '@pneumovision/shared';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router-dom';
@@ -66,6 +66,11 @@ export function PredictionReportPage() {
     .map((key) => MODALITY_LABELS[key] ?? key);
 
   const band = riskBand(result.probability);
+  // Old predictions carry no provenance: everything was simulated then.
+  const sources = result.sources;
+  const fusionSimulated = !sources || sources.fusion === 'mock';
+  const trained = taskModalities.filter((key) => sources?.[key]?.kind === 'trained');
+  const simulatedTag = fusionSimulated ? <SimulatedChip /> : undefined;
 
   return (
     <div className="space-y-4">
@@ -108,6 +113,29 @@ export function PredictionReportPage() {
         </div>
       )}
 
+      {/* Which numbers are real model outputs and which are simulated */}
+      {fusionSimulated && trained.length > 0 && (
+        <div
+          role="note"
+          className="flex items-start gap-2 rounded-lg border border-[var(--series-mortality)]/40 bg-[var(--series-mortality)]/10 px-4 py-3 text-sm"
+        >
+          <span aria-hidden="true" className="text-[var(--series-mortality)]">
+            ✓
+          </span>
+          <div>
+            <p className="font-medium text-ink">
+              Real model outputs for {trained.map((key) => MODALITY_LABELS[key] ?? key).join(', ')}
+            </p>
+            <p className="mt-0.5 text-ink-secondary">
+              Scores marked <strong>Trained model</strong> come from the team&rsquo;s trained
+              single-modality models. The MedPatch fusion is not trained yet, so evidence strength,
+              modality contribution and the fused decision are <strong>simulated</strong> around
+              those scores.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* F11: evidence left → decision right */}
       <div className="grid gap-4 xl:grid-cols-[1.1fr_1fr_0.9fr]">
         {/* F1 */}
@@ -130,6 +158,7 @@ export function PredictionReportPage() {
                     <div className="text-[11px] text-ink-muted">
                       {present ? 'Contributed to the fused score' : 'Not available for this stay'}
                     </div>
+                    {present && sources?.[key] && <SourceChip source={sources[key]} />}
                   </div>
                   {present && typeof value === 'number' ? (
                     <div className="text-right">
@@ -155,6 +184,7 @@ export function PredictionReportPage() {
         <Card
           title="2 · Evidence strength"
           subtitle={`Tokens split at θ = ${result.confidence.theta.toFixed(2)}`}
+          actions={simulatedTag}
         >
           <div className="grid grid-cols-2 gap-3">
             <div className="rounded-lg border border-hairline p-3">
@@ -224,16 +254,20 @@ export function PredictionReportPage() {
 
         {/* F6 + fused decision */}
         <div className="space-y-4">
-          <Card title="3 · Modality contribution" subtitle="Softmax-normalised fusion weights (α̂)">
+          <Card
+            title="3 · Modality contribution"
+            subtitle="Softmax-normalised fusion weights (α̂)"
+            actions={simulatedTag}
+          >
             <AlphaContributionChart alphas={result.alphas} />
           </Card>
 
-          <Card className="border-2" title="4 · Fused decision">
+          <Card className="border-2" title="4 · Fused decision" actions={simulatedTag}>
             <div className="flex flex-col items-center gap-3">
               <RiskGauge
                 probability={result.probability}
                 label={data.task === 'mortality' ? '48-hour mortality' : 'Pneumonia phenotype'}
-                sublabel="Calibrated"
+                sublabel={fusionSimulated ? 'Simulated' : 'Calibrated'}
               />
               <p className="text-center text-xs text-ink-secondary">
                 Weighted combination of every branch above.{' '}
@@ -267,12 +301,46 @@ export function PredictionReportPage() {
           {data.task === 'mortality'
             ? `trimodal mortality AUROC ${MEDPATCH_REFERENCE_METRICS.mortality.auroc} / AUPRC ${MEDPATCH_REFERENCE_METRICS.mortality.auprc}`
             : `pneumonia phenotype AUROC ${MEDPATCH_REFERENCE_METRICS.pneumonia.auroc}`}
-          . This prototype currently runs a mock model — the numbers above are not clinically
-          meaningful.
+          .{' '}
+          {trained.length > 0
+            ? 'Scores marked Trained model are real outputs of the team’s single-modality models, evaluated on held-out MIMIC-IV test data; the fused prediction is simulated until the fusion model is trained. Not clinically validated.'
+            : 'This prediction comes from a mock model — the numbers above are not clinically meaningful.'}
         </p>
       </Card>
 
       <Disclaimer />
     </div>
+  );
+}
+
+/** Whether one modality's score came from a trained reader or is simulated. */
+function SourceChip({ source }: { source: ModalitySource }) {
+  if (source.kind === 'trained') {
+    return (
+      <span
+        title={source.model ?? undefined}
+        className="mt-1 inline-flex items-center gap-1 rounded-full bg-[var(--series-mortality)]/12 px-2 py-0.5 text-[10px] font-semibold text-[var(--series-mortality)]"
+      >
+        <span aria-hidden="true">✓</span> Trained model
+        {source.testAuroc !== null && (
+          <span className="tnum font-normal">· test AUROC {source.testAuroc.toFixed(3)}</span>
+        )}
+      </span>
+    );
+  }
+  return <SimulatedChip className="mt-1" />;
+}
+
+function SimulatedChip({ className }: { className?: string | undefined }) {
+  return (
+    <span
+      title="Simulated: no trained model for this part yet"
+      className={cn(
+        'inline-flex items-center gap-1 rounded-full border border-dashed border-hairline px-2 py-0.5 text-[10px] font-medium text-ink-muted',
+        className,
+      )}
+    >
+      <span aria-hidden="true">◇</span> Simulated
+    </span>
   );
 }

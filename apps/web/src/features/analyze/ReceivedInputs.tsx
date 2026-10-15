@@ -38,6 +38,10 @@ export function ReceivedInputs({ prediction }: { prediction: Prediction }) {
           <span className="inline-flex items-center gap-1 rounded-full border border-status-warning/60 bg-status-warning/15 px-2 py-0.5 text-[11px] font-semibold text-ink">
             <span aria-hidden="true">◆</span> MOCK MODEL — not a clinical result
           </span>
+        ) : received?.mode === 'readers' ? (
+          <span className="inline-flex items-center gap-1 rounded-full border border-[var(--series-mortality)]/50 bg-[var(--series-mortality)]/10 px-2 py-0.5 text-[11px] font-semibold text-ink">
+            <span aria-hidden="true">✓</span> TRAINED READERS · simulated fusion
+          </span>
         ) : null
       }
     >

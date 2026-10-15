@@ -2,7 +2,7 @@
  * One-command demo launcher.
  *
  * Starts, in order:
- *   1. the FastAPI inference service (uvicorn, MOCK_MODE) on the repo venv
+ *   1. the FastAPI inference service (uvicorn; mock, or INFERENCE_MODE=readers) on the repo venv
  *   2. the API gateway (which boots its own in-process MongoDB and seeds it)
  *   3. the Vite dev server
  *
@@ -156,6 +156,10 @@ async function waitFor(url, label, timeoutMs = 90_000) {
 
 const inferencePort = new URL(env.INFERENCE_URL ?? 'http://127.0.0.1:8000').port || '8000';
 
+// INFERENCE_MODE=readers runs the team's trained single-modality readers
+// (needs torch and the checkpoints); anything else is the mock.
+const inferenceMode = env.INFERENCE_MODE === 'readers' ? 'readers' : 'mock';
+
 console.log('\n\x1b[1mPneumoVision demo\x1b[0m — starting inference, api and web…\n');
 
 start('inference', venvPython, [
@@ -170,11 +174,22 @@ start('inference', venvPython, [
   'warning',
 ], {
   cwd: join(root, 'services', 'inference'),
-  env: { MOCK_MODE: 'true', PYTHONUNBUFFERED: '1' },
+  env: {
+    INFERENCE_MODE: inferenceMode,
+    // The service's defaults are the Docker paths; outside Docker use the repo.
+    MEDPATCH_ROOT: env.MEDPATCH_ROOT ?? join(root, 'medpatch'),
+    CHECKPOINT_DIR: env.CHECKPOINT_DIR ?? join(root, 'checkpoints'),
+    PYTHONUNBUFFERED: '1',
+  },
 });
 
-await waitFor(`http://127.0.0.1:${inferencePort}/v1/health`, 'inference service');
-console.log(`${COLOURS.inference}[inference]${COLOURS.reset} ready (MOCK_MODE)\n`);
+// Loading the readers (and BioBERT) takes a while on first start.
+await waitFor(
+  `http://127.0.0.1:${inferencePort}/v1/health`,
+  'inference service',
+  inferenceMode === 'readers' ? 300_000 : 90_000,
+);
+console.log(`${COLOURS.inference}[inference]${COLOURS.reset} ready (${inferenceMode} mode)\n`);
 
 const npmCmd = isWindows ? 'npm.cmd' : 'npm';
 const npmOptions = { shell: isWindows };
