@@ -543,7 +543,8 @@ def describe(run: dict) -> str:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="python -m tools.pv.run", description=__doc__.splitlines()[0])
-    p.add_argument("stage", choices=manifest.STAGES)
+    # r3 is dispatched to tools/pv/round3.py in main() before this parser runs.
+    p.add_argument("stage", choices=[s for s in manifest.STAGES if s != "r3"])
     p.add_argument("--reader", choices=READERS, required=True)
     p.add_argument(
         "--task",
@@ -639,6 +640,11 @@ def record_only(run: dict) -> Path:
 
 
 def main(argv: list[str] | None = None) -> dict[str, str] | None:
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == "r3":  # Round 3 has its own options (tools/pv/round3.py)
+        from tools.pv import round3  # noqa: PLC0415
+
+        return round3.main(argv[1:])
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.record_only and not args.run_id:
@@ -659,4 +665,10 @@ def main(argv: list[str] | None = None) -> dict[str, str] | None:
 
 
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["r3"]:
+        # Round 3 steps (cache, train, ...) return no manifest row on success:
+        # exit 0 unless one raised (tools/pv/round3.py).
+        from tools.pv import round3
+
+        sys.exit(round3.cli(sys.argv[2:]))
     sys.exit(0 if main() is not None or "--dry-run" in sys.argv else 1)

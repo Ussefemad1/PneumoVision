@@ -42,7 +42,8 @@ COLUMNS = [
     # with. Empty for ehr/cxr, and for rows written before the column existed.
     "bert_model_name",
 ]
-STAGES = ("r1", "r2", "r2b")
+#: r3 = Round 3 fusion (reader "fusion"; parent_id = its r2b parents joined with ";").
+STAGES = ("r1", "r2", "r2b", "r3")
 #: The stage a run of each stage must load: r2 trains on a frozen r1 reader;
 #: r2b (calibration) loads the r2 reader + confidence head and adds temperatures.
 PARENT_STAGE = {"r2": "r1", "r2b": "r2"}

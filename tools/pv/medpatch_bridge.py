@@ -28,6 +28,10 @@ if str(MEDPATCH) not in sys.path:
 # medpatch's trainers call wandb.init unconditionally; never phone home from tooling.
 os.environ.setdefault("WANDB_MODE", "disabled")
 os.environ.setdefault("WANDB_SILENT", "true")
+# Every tools.pv command imports this module, and its subprocesses inherit the
+# environment: no HF tokenizers "process just got forked" warning per
+# DataLoader worker (thousands per run; they truncated the Colab output).
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 
 @contextlib.contextmanager

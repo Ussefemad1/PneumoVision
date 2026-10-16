@@ -5,6 +5,11 @@ import numpy as np
 import argparse
 import os
 import re
+# Before transformers loads: the DataLoader workers fork after the tokenizer has
+# run, and HF tokenizers then print one "process just got forked" warning per
+# fork -- thousands per run, which truncated Colab cell output and hid the real
+# error. An explicit value set by the caller is kept.
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 from trainers.fusion_trainer import FusionTrainer
 from trainers.frozen_trainer import FrozenTrainer
 from trainers.mmtm_trainer import MMTMTrainer

@@ -144,7 +144,7 @@ def test_ids_increment_per_stage_and_reader(tmp_manifest, tmp_path):
 
 def test_manifest_rejects_unknown_values(tmp_manifest):
     with pytest.raises(ValueError):
-        manifest.append_row({"id": "x", "stage": "r3", "data": "virtual"})
+        manifest.append_row({"id": "x", "stage": "r9", "data": "virtual"})
     with pytest.raises(ValueError):
         manifest.append_row({"id": "x", "stage": "r1", "data": "mimic"})
 

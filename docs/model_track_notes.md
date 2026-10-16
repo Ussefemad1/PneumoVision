@@ -9,6 +9,443 @@ Newest first.
 
 ---
 
+## 2026-10-20 — EHR beyond 2,646 hours (phenotyping cache crash)
+
+The phenotyping cache (`r3-fusion-002`) crashed at train shard 7 of 42 on a
+3,069-hour stay: `ehr_conf_logits / temp_ehr` at `fusion.py`, sizes 3069 vs 2646.
+
+- **Cause:** phenotyping collate pads EHR to at least 2,646 hours but never
+  truncates, while `ehr_temperature` has 2,646 positions, so `[:seq_len]` was
+  shorter than the sequence. Round 2b trained on val only and never met such
+  a stay; upstream would crash the same way.
+
+43. **`temperature_for()`** (`models/fusion.py:108`), used in
+    `TempCUnimodalEHR`, `CMSMAFusion` and `EMSMAFusion`.
+    - **Behaviour:** positions past the learned temperatures use 1.0
+      (uncalibrated); the sequence is not truncated, so every hour is still
+      used.
+    - **Within range it is the old slice:** tested bit-identical (outputs and
+      capture) for stays ≤ 2,646 h, and the old slice reproduces the crash.
+    - **CXR / RR / DN untouched:** their sequences (≤ 577 / 512 tokens) never
+      exceed their temperatures.
+    - **Deviation** in phenotyping r3 notes.
+44. **Counts.**
+    - `--step cache` counts, per shard, the stays longer than the EHR
+      temperature's positions. It prints `<split>: N stays longer than 2646 h`
+      and keeps the counts in `meta.json`, so they survive a resume.
+    - The manifest notes report them per split.
+    - A shard written before the fix holds no such stay (that code crashed on
+      the first one), so its missing count is 0.
+45. **The six finished shards stay valid.** Their batches had no stay over
+    2,646 h, so their values are unchanged. `CAPTURE_SEMANTICS` stays 1 (the
+    commit is provenance only): rerunning `--step cache` resumes at shard 7.
+
+---
+
+## 2026-10-19 — Round 3 training cost; stop-safe steps (last code round before phenotyping)
+
+No change to the 0.75 main path or to anything `r3-fusion-001` depends on.
+Only `tools/pv` and docs changed.
+
+39. **Per-epoch bootstrap.**
+    - **Cost:** `MSMA_Trainer` bootstrapped 95% CIs (1,000 pandas resamples)
+      for 5 heads × every class on train and val every epoch. Measured: 23 ms
+      per train resample (42,327 stays) and 5 ms per val resample. That is
+      ~48 + 11 min of CPU per phenotyping epoch; point estimates alone take
+      ~3 s.
+    - **Fix:** Round 3 training now uses `--train-bootstrap-iters 0`.
+    - **Why this changes nothing kept:** selection uses `auroc_mean`, the
+      point estimates (`trainer.py`, computeAUROC). Tested: identical best
+      checkpoint, epoch and head with 0 and 5 resamples.
+    - **Scoring:** `score_variant` computes point metrics for every head (the
+      same `evaluate_new`, so equal to `validate`; tested) and bootstraps
+      only the reported target class (1,000) on val and test.
+40. **Only the needed keys** (`r3_cache.CacheLoader`).
+    - **How:** shards are opened with `torch.load(mmap=True)` and filtered:
+      main / ablations read the 0.75 groups (484 of 962 KB per phenotyping
+      stay); a swept θ adds its own groups (723 KB).
+    - **`--preload`:** copies only those keys for train and val, ~23 GB for
+      phenotyping main.
+    - **Constructor:** it no longer reads every whole shard just to count
+      stays.
+41. **Stop-safe steps.**
+    - Each `run r3` step writes its whole output to `<save_dir>/<step>.log`
+      and ends with `[r3] <step> OK (<duration>)`.
+    - `record` is a no-op when the row exists with the same checkpoint (it
+      still refuses a different one).
+    - `share` copies `r3_ablations.csv` / `r3_threshold_sweep.csv` when they
+      exist (tested).
+42. **Docs.**
+    - `REAL_RUNS.md`: cost estimates, the phenotyping order (required,
+      shared, then sweep and ablations), and the mortality follow-up block.
+    - `docs/PR_round3.md`: the PR text.
+    - `docs/REAL_INFERENCE_PLAN.md`: serving the checkpoints (plan only).
+
+---
+
+## 2026-10-18 — Round 3 threshold sweep (binned capture), share step
+
+Approved: mortality sweeps 0.60, 0.65, 0.70, 0.75, 0.80, 0.85; phenotyping
+sweeps 0.65, 0.75, 0.85. Both fp32, phenotyping on the Colab disk only. **The
+final model is always θ = 0.75.** The sweep variants are ablations only: never
+the manifest row, the reported result, the shared copy or the checkpoint the
+website loads.
+
+33. **Capture** (`models/fusion.py:1497`, called at `:1494` and `:1674`;
+    off unless `_capture_thresholds` is set).
+    - The run's own threshold keeps its high/low groups, computed by the
+      unchanged code, so they are **bit-for-bit** the plain capture (tested).
+    - For each other swept threshold t, per stay and class, the side of t with
+      **fewer tokens** is stored (mean, count, mean confidence), with
+      `_is_high` saying which side.
+    - `r3_cache.at_threshold` (`tools/pv/r3_cache.py:153`) rebuilds t's other
+      side in float64 as all tokens minus the stored side. The total comes
+      from the main groups' sums.
+    - **Why the smaller side:** the rebuilt side then holds at least half the
+      tokens, so the fp32 rounding of the stored means costs ~2·eps·max|x|
+      (≤ 1.8e-7 measured), whatever the stay length.
+    - **Why not plain bins:** storing the side fixed by "t vs 0.75" gave 2e-4
+      on 2,646-token EHR sequences. Plain bins can't give a bit-exact 0.75
+      (summing bins rounds differently from the direct masked sum).
+    - **Size:** K + 1 groups for K thresholds, about 58 GB for phenotyping
+      (3 thresholds) and 1.4 GB for mortality (6).
+34. **Cache identity.**
+    - A sweep cache lives in its own directory, `<task>-sweep-<thresholds>`;
+      the plain cache of a recorded run is never touched.
+    - The fingerprint adds `sweep_thresholds` and `capture_semantics` (an
+      explicit version to bump when a stored key's values change). The
+      capture-code commit is now recorded for provenance only.
+    - Adding keys therefore does not invalidate existing caches.
+      `r3-fusion-001`'s plain cache still matches (tested with a pre-change
+      fingerprint).
+35. **Equivalence** checks cached == live at θ = 0.75 **and** at one swept
+    threshold (farthest from 0.75 by default), each ≤ 1e-5. Unit tests: every
+    swept θ, both tasks, stub and real LSTM, outputs ≤ 1e-6.
+36. **`--step sweep`**: one variant per other threshold from the same cache,
+    and `r3_threshold_sweep.csv` (val and test, 95% CIs). The 0.75 row is the
+    recorded main run, not a retrain. The manifest is untouched.
+37. **Disk.** `--step cache` measures bytes per stay on one captured batch
+    and refuses to start when free disk < remaining estimate +
+    `--disk-margin-gb` (20). It prints the measured size per split. The
+    pre-flight uses the same rule.
+38. **`--step share --share-to`** copies only the main run: the manifest row's
+    best checkpoint (sha256 checked), `run.json`, the tables and the top-level
+    logs. No variant subfolder (sweep or ablation) is ever copied. The
+    notebooks use it instead of `cp -r`.
+
+---
+
+## 2026-10-17 — run r3 exit codes, cache copy, requested variants, ablations step
+
+Mortality Round 3 ran on Colab (7f2d783): `r3-fusion-001`, test mortality
+AUROC 0.865 [0.850, 0.879], AUPRC 0.540 [0.502, 0.576]; without missingness
+0.864 / 0.540; head late; cached vs live 1.2e-07. No `medpatch/` change this
+time.
+
+29. **Exit codes.** `run.py` exits 0 only when `main()` returns a row, so every
+    successful `run r3` step except `record` exited 1. `run r3` now goes
+    through `round3.cli()`, which returns 0 on success; errors still raise
+    `SystemExit` (non-zero).
+30. **`--copy-cache-to`.** Copies file by file with `shutil.copyfile`. Drive's
+    FUSE mount rejects the `copystat` that `copytree` / `copy2` do. It skips
+    files already there with the same size, prints the file counts on both
+    sides, and reports a failed file without failing the step.
+31. **Requested variants.** `run.json` records `requested_variants` (train)
+    and `requested_ablations` (ablations step). `test_e_trained_the_requested_variants`
+    checks exactly those, instead of assuming `--extra-ablations`.
+32. **`--step ablations`.**
+    - Trains and scores further variants from the same cache after the row
+      exists: without_joint_module, without_late_module, late_weights_per_class
+      and mask_missing_tokens by default, or `--variants`.
+    - Writes them to `r3_ablations.csv`, with the recorded main run first.
+    - The manifest row is untouched.
+    - Finished variants are skipped on rerun.
+
+**Threshold sweep (0.60–0.85): not built, pending a decision.**
+
+- **Needs a new capture.** The cache stores, per class, the mean of the tokens
+  whose confidence is ≥ θ (high) and < θ (low) at θ = 0.75. The per-token
+  confidences are not stored.
+- **Proposal:** one reader pass that stores token sums and counts per
+  confidence bin, with edges at the swept thresholds: 7 bins for
+  0.60, 0.65, …, 0.85. Any θ on an edge is then a sum over bins. Cost per
+  stay:
+
+  | Option                                          | Phenotyping               | Mortality |
+  | ----------------------------------------------- | ------------------------- | --------- |
+  | now, one θ                                      | ~0.50 MB/stay, ~29 GB     | ~0.5 GB   |
+  | 6 separate captures                             | ~175 GB (6 reader passes) | ~3 GB     |
+  | binned, 6 thresholds, fp32                      | ~1.7 MB/stay, ~100 GB     | ~1.4 GB   |
+  | binned, 6 thresholds, fp16                      | ~50 GB                    | ~0.7 GB   |
+  | binned, 3 thresholds (0.65 / 0.75 / 0.85), fp32 | ~58 GB                    | ~0.9 GB   |
+
+  These assume 58,928 phenotyping stays (one group = 25 classes × (512 EHR +
+  384 CXR + 768 RR + 768 DN) floats) and 26,527 mortality stays (one group =
+  512 + 384 + 768).
+
+---
+
+## 2026-10-16 — A last batch of one; tokenizer fork warnings; full logs
+
+Notebook 1 on Colab (88b38ec): lists, `parent_keys` and `r3_preflight` passed
+on real data for both tasks. Both `smoke_round3` runs failed.
+
+25. **LSTM batch of one** (`models/ehr_models.py:63`).
+    - **Cause:** `ehr_feats = ht.squeeze()`. `ht` is `[1, B, 512]`, so a batch
+      of one stay became `[512]`. CMSMAFusion then took `batch_size = 512`,
+      and `high_tensor.view(batch_size, -1)` crashed the joint classifier
+      (`normalized_shape=[51200]`, input `[512, 100]`).
+    - **Who hits it:** the last val/test batch keeps its partial size.
+      Mortality validation is 2,161 = 135 × 16 + 1, and the smoke set ends on a
+      batch of one on purpose.
+    - **Fix:** `squeeze(0)`. Identical for B > 1, so Rounds 1–2b are
+      unaffected.
+    - **Round 1's other squeeze:** `MSMA_trainer.train_epoch` / `validate` on
+      `unimodal_*` squeezed the outputs too and now reshape to `[B, classes]`
+      / `[B]`, as F7 does for c-msma.
+    - **The rest of the path:** text (stacked per note), CXR (token axis
+      kept), ConfidencePredictor (`squeeze(-1)` only), the classifiers, and
+      the cache capture/replay all keep the batch axis.
+    - **Tests** (`tests/test_batch_of_one.py`) use medpatch's real
+      `EHR_encoder` (LSTM; nothing to download):
+      - features `[B, 512]` for B = 1, 3, and identical to the old
+        `squeeze()` for B = 3;
+      - Round 3 live and cached with val batches of 3 then 1, both tasks;
+      - `validate` live and on the cache;
+      - Round 1/2/2b forwards and Round 1 `validate` at B = 1.
+
+      They fail with the old line.
+
+    - **Equivalence step:** `compare_live_cached` now takes its one-step
+      comparison with plain SGD. Adam's first step is about `lr × sign(g)`:
+      a near-zero gradient that differs by ~1e-8 of float round-off moved a
+      weight by ~2e-5 with the real LSTM. That is noise, not a cache
+      difference; the gradients themselves agree to ~1e-7.
+26. **Tokenizer fork warnings** (`fusion_main.py`, `tools/pv/medpatch_bridge.py`).
+    `TOKENIZERS_PARALLELISM=false` (`setdefault`, so an explicit value is
+    kept) before transformers loads. HF tokenizers otherwise print one "process
+    just got forked" warning per DataLoader worker. Thousands of them truncated
+    the Colab output and hid the mortality smoke's error, very likely the same
+    batch-of-one crash.
+27. **Full logs** (`tools/pv/logtee.py`). `smoke_round3` and `r3_preflight`
+    write everything to `<RUNS_ROOT>/logs/<tool>_<task>_<UTC time>.log`, or to
+    `--log PATH`, and print the path at the start and end. That includes
+    stderr, subprocess output (pytest, Round 2b smoke) and the traceback of a
+    crash.
+28. **Round 2b check:** `tests/round2b/test_round2b.py::test_f_calibration_reads_only_val`
+    expects val to be read once with `--cache_frozen_logits` (the rr/dn plans)
+    and twice without.
+
+---
+
+## 2026-10-15 — Round 3 cache, late-weight / phantom-token / missing-image flags
+
+Decisions (team, 2026-10-15): keep the upstream late weights and phantom
+tokens for the main run and add both as flags; never treat a missing X-ray
+file as absent unless asked.
+
+20. **Round 3 cache** (`models/fusion.py`, CMSMAFusion only; `tools/pv/r3_cache.py`).
+    - **Why:** every reader, confidence head and temperature is frozen in
+      Round 3, yet the loop ran the ViT and BioBERT (each text encoder twice:
+      `text_model` and `text_model_fixed` are the same module) on every stay
+      in every epoch.
+    - **Capture:** with `self._capture` set (`:1318`; `None` = no effect),
+      `forward()` records per batch:
+      - the classifier inputs;
+      - EHR's pooled high/low vectors (`:1625`);
+      - for CXR/RR/DN, via `_capture_tokens` (`:1464`, called at `:1676`,
+        `:1745`, `:1809`): the masked means of the **unprojected** token
+        features per class and group, the token counts, and the mean
+        confidences;
+      - the missingness matrix.
+    - **Replay:** `forward_cached` (`:1504`) rebuilds the pools as
+      `proj(mean) * (count > 0)`. The projections are linear, so this equals
+      upstream's masked mean of the projected tokens, and an empty group stays 0. Everything after the readers moved, unchanged, into `fuse()`
+      (`:1846`), which both `forward()` and `forward_cached()` call. Ablations
+      and fusers therefore behave identically.
+    - **Trainer:** `MSMA_Trainer.batch_outputs` (`trainers/MSMA_trainer.py:106`)
+      runs the full model on a DataLoader batch, exactly as the loops did
+      inline, or `forward_cached` on a cache batch (a dict).
+    - **Building it:** `tools/pv/r3_cache.py` runs each reader once per batch
+      (`reuse_reader_calls`; the `*_fixed` call repeats the first) under
+      `no_grad` in eval mode. It writes shards atomically and resumes, and
+      records a fingerprint (parents' sha256, thresholds, task, lists' md5,
+      capture-code commit, flags); training refuses a cache that differs.
+    - **Tests** (`tests/test_round3_cache.py`): cached vs live, both tasks,
+      every ablation, both fusers, both flags. Max abs difference of
+      `high_conf` / `low` / `late`, gradients and one SGD step ≤ 1e-5
+      (see item 25 for why SGD).
+      Shards reproduce the live val/test loader batch by batch.
+      `MSMA_Trainer` trains and evaluates on the cache with the readers never
+      called.
+    - **Deviations, recorded in each r3 row:**
+      - readers run in eval mode (BERT dropout off; the released loop trains
+        Round 3 in train mode);
+      - train X-rays are cached once, without augmentation;
+      - the train EHR padding is fixed at capture.
+    - **EHR padding, found while testing:** EHR pooling includes padded hours
+      (upstream), and collate pads to the longest stay in the batch. A stay's
+      EHR pool therefore depends on its batch-mates.
+      - Phenotyping pads to 2,646 hours for nearly every stay, so it is barely
+        affected; mortality pads to the batch maximum (≤ 48).
+      - Shards are made of whole batches (`shard_size` a multiple of the batch
+        size, enforced), so val/test match the live loader exactly.
+      - For train, the live loop re-draws batch-mates every epoch; the cache
+        keeps the capture batches.
+21. **`--late_weights_per_class`** (`arguments.py`; `fusion.py:1966`).
+    Normalises the masked late-fusion weights per class, so each class sums to
+    1 over the present columns. Upstream divides by the total over columns ×
+    classes (each of 25 classes sums to ~1/25). Off by default. For mortality
+    (1 class) the outputs are bit-identical with and without it (tested).
+22. **`--mask_missing_tokens`** (ablation; `fusion.py:1492`). An absent
+    modality's tokens (an empty note's `[CLS]/[SEP]`, a blank X-ray) are
+    excluded from the high/low pools and their confidence scores. Off by
+    default (upstream keeps the phantom tokens). The cache stores the upstream
+    groups, so one cache serves both settings.
+23. **`--missing_image_as_absent`** (`datasets/DataFusion.py:140`). In partial
+    mode, a selected X-ray whose file is not on disk (or that has no CheXpert
+    row) is a missing modality, not a `KeyError`. Off by default; the
+    pre-flight counts these per split and the r3 notes record them.
+24. **Resume guard** (`trainers/MSMA_trainer.py:561`). `--resume` does not
+    restore `best_stats`, so a resumed run with no new best epoch, or one
+    already finished, crashed in the final `print_and_write(None)`. It now
+    skips that print.
+
+**Missingness module (unchanged).** Tests: with a modality absent, its
+late-fusion weight is exactly 0. The remaining weights sum to 1 per class with
+`--late_weights_per_class`, or to the upstream total of 1 over columns ×
+classes without it (phenotyping and mortality). Every r3 run also trains
+`--ablation without_missingness_module` from the same cache, and the manifest
+notes and `r3_results.csv` report both.
+
+**Tools.**
+
+- `python -m tools.pv.run r3`: `tools/pv/round3.py`, steps cache /
+  equivalence / train / record, with `--record-only`.
+- `tools/pv/r3_preflight.py`: counts, missing files, F2, share ≥ 0.75, cache
+  size.
+- `tools/pv/score_rounds.py`: r2/r2b on test, with 25-label macro and target
+  95% CIs; `evaluate.score_checkpoint` now also returns the macro.
+- `tools/pv/smoke_round3.py` with `make_virtual_dataset --round3`: notes
+  dropped, one X-ray file missing, a last validation batch of one.
+- Checks: `tests/round3` (marker `round3`, Colab).
+- The 42 r1/r2/r2b plans are byte-identical to `main`'s.
+
+---
+
+## 2026-10-14 — Round 3 (MedPatch, `c-msma`): fixes F1–F7
+
+Branch `model/round3`. Rounds 1, 2 and 2b are finished on real data. Each
+item below was checked against the code before it was changed. Tests:
+`tests/test_round3_fixes.py`, which uses a real CMSMAFusion / EMSMAFusion with
+the stub readers in `tests/r3_stubs.py`. Each fix's test fails when its fix is
+reverted.
+
+13. **F1: Round 3 builds with our CXR encoder** (`models/fusion.py:85`,
+    used at `:1236` and `:2251`; `equalize()` at `:1423` and `:2438`).
+    - `CMSMAFusion` / `EMSMAFusion` sized `cxr_high_proj` / `cxr_low_proj` from
+      `cxr_model.cxr_encoder.projection_layer`, which `CXRTransformer` does not
+      have, so construction raised `AttributeError`.
+    - Now `cxr_projection_dims()` uses that layer when it exists. Otherwise it
+      builds `Linear(full_feats_dim, patch_output_dim)` (384 → 512) with the
+      default init, prints one `[F1]` line, and `equalize()` skips the CXR
+      copy. RR/DN projections are still copied from `fc_rr` / `fc_dn`.
+14. **F2: strict per-reader parent loading** (`trainers/trainer.py:143-239`).
+    - Round 3 (`c-msma` / `c-e-msma`) no longer goes through the non-strict
+      `load_state` for `--load_*`. `load_reader_parents()` takes from each
+      parent only `READER_KEYS[reader]`:
+      - `ehr_model.*`, `fusion_model.ehr_model.*`,
+        `fusion_model.ehr_{classifier,confidence_predictor}.*` and
+        `fusion_model.ehr_temperature`; the same pattern for `cxr`;
+      - `text_model.{fc_rr,bert}.*` and `fusion_model.rr_*` for `rr`; the same
+        pattern for `dn`.
+
+      Round 3's `*_high_proj` / `*_low_proj` are excluded (no parent has them).
+
+    - It fails on any missing or extra key, or any shape difference; nothing
+      reaches `copy_`'s broadcasting.
+    - It fails if the rr and dn parents carry different BERT weights.
+    - After all parents are in, it compares every reader tensor of the model,
+      including the `*_model_fixed` aliases (the same modules), with its file.
+      It prints `<reader>: N tensors bit-identical to <file>` or fails.
+    - It refuses `--load_dn` or DN modalities for mortality.
+    - `python -m tools.pv.parent_keys --task …` prints, per Round 2b file, the
+      key prefixes the loader takes versus ignores (counts only).
+15. **F3: head chosen on validation** (`trainers/MSMA_trainer.py`).
+    - **Before:** `eval()` reported the best of the five heads (high, low,
+      late, combined, less_combined) _on test_, and `validate(..., stat_test)`
+      saved the best-on-`dl` predictions. Both were selection on the test set.
+    - **Training:** `train()` now records the head that won on validation at
+      the best epoch (`:498`, `:512`, same rule as checkpoint selection).
+      `save_checkpoint` stores it as `best_head` (`trainer.py:532`) and
+      `load_state` restores it (`:112`).
+    - **Eval:** `eval()` reports that head on test (`:442`). It writes all five
+      heads' test numbers to `test_all_heads_<lr>.csv`, headed "reference
+      only", with macro and target-class (pneumonia 21 / mortality) AUROC and
+      AUPRC (`write_head_table`, `:127`).
+    - **Old checkpoints:** a checkpoint without `best_head` gets one chosen on
+      validation (`choose_head_on_validation`, `:120`).
+    - **`stat_test` on test:** refuses to choose a head when none is recorded
+      (`:392`).
+16. **F4: phenotyping late fusion masked the wrong note** (`models/fusion.py:108`,
+    applied at `:1747` and `:2760`).
+    - `forward()` runs the DN block before the RR block, so `preds` (and the
+      pools) came out EHR, CXR, DN, RR. The missingness columns and the
+      late-fusion weights follow `args.modalities` (EHR-CXR-RR-DN), so RR's
+      mask was applied to the DN prediction and the reverse.
+    - Each block now records its modality, and `reorder_by_modalities()` puts
+      `preds`, `features`, the pools and the confidence lists in
+      `args.modalities` order before stacking.
+    - Mortality (no DN) is unchanged.
+    - Test: RR missing and DN present, with constant classifiers; the late
+      output keeps DN's weight.
+17. **F5: phenotyping ignored the EHR temperature** (`models/fusion.py:1499`,
+    `:2514`). For `num_classes > 1` the EHR branch used
+    `sigmoid(ehr_conf_logits)` instead of the temperature-scaled logits (CXR,
+    RR and DN used the scaled ones). It now uses `scaled_ehr_conf_logits`.
+    **Deviation from the released code**, in both CMSMA and EMSMA.
+18. **F6: small items.**
+    - `tools/pv/paper_scripts.py:163` `round3_argv()` builds Round 3 from
+      Confidence-Patching.sh with `--fusion_type c-msma`. It refuses
+      `c-e-msma` (which the phenotyping script passes) unless
+      `allow_entropy=True`. `run r3` (Round 3 tooling) will expose this as
+      `--allow-entropy`.
+    - `tests/round2/test_round2.py` and `tests/round2b/test_round2b.py` load
+      the manifest's files with `weights_only=False`; real Round 1 files fail
+      with `True`. Printed numbers are labelled by the row's data kind
+      (`SYNTHETIC` only for virtual). The mislabel was in Round 2b's
+      `test_e_ece_not_obviously_worse`, not in
+      `test_a_reader_frozen_only_confidence_trained`.
+19. **F7: a final batch of one** (`trainers/MSMA_trainer.py:106`, used at
+    `:172` and `:302`).
+    - Val/test loaders keep the last partial batch (`DataFusion.py:513-514`).
+      Mortality validation has 2,161 = 135 × 16 + 1 stays.
+    - The c-msma path's `.squeeze()` turned the last `[1, 1]` output into a
+      0-dim tensor, and a phenotyping batch of one lost its batch axis.
+    - `fusion_logits()` reshapes to `[B]` (one class) or `[B, classes]` in
+      `train_epoch` and `validate`.
+    - Test: `validate` with batches of 3 and 1, both tasks.
+
+**Upstream behaviour kept (documented, not changed).**
+
+- **EHR high/low pooling has no `seq_lengths` mask** (`fusion.py:1510-1532`).
+  Padded timesteps enter the masked means whenever their confidence puts them
+  in a group.
+- **Missingness head:** `missingness_classifier` is LayerNorm + Linear
+  (`fusion.py:1268`). LayerNorm of a constant row is zero, so an all-present
+  row maps to the head's bias terms only, the same output for every such stay.
+- **Late-fusion weights are normalised over columns × classes together**
+  (`fusion.py:1861`, `:2874`). `modality_weights` is `[B, columns · classes]`
+  and is divided by its sum over that whole axis. For phenotyping each class's
+  weights therefore sum to about 1/25, not 1: `late` is a weighted average
+  shrunk by ~25×. Mortality (one class) is unaffected. Found while writing the
+  F4 test; **not changed** and raised with the team.
+- **Phantom tokens:** empty notes and blank X-rays are still encoded and enter
+  the high/low pools (see REAL_RUNS.md, "Round 3 with `--data_pairs
+partial`").
+
+---
+
 ## 2026-10-06 — Round 2b cached frozen logits; progress lines
 
 Real Round 2b on Colab re-ran BioBERT over ~4,500 val notes every epoch (about

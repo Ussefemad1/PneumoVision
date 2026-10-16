@@ -137,6 +137,14 @@ class MIMIC_CXR_EHR_RR_DN(Dataset):
             cxr_file = self.metadata_with_labels['dicom_id'].values[index]
             if pd.isna(cxr_file) or cxr_file == '' or not isinstance(cxr_file, str):
                 cxr_data, labels_cxr = None, np.zeros(self.args.num_classes)
+            elif (getattr(self.args, 'missing_image_as_absent', False)
+                  and (cxr_file not in self.cxr_ds.filenames_to_path
+                       or cxr_file not in self.cxr_ds.filesnames_to_labels)):
+                # --missing_image_as_absent: the selected X-ray is not on disk
+                # (or has no CheXpert row); cxr_ds would raise KeyError. Treat it
+                # as a missing modality, exactly like a stay with no X-ray: zero
+                # image, pairs False.
+                cxr_data, labels_cxr = None, np.zeros(self.args.num_classes)
             else:
                 cxr_data, labels_cxr = self.cxr_ds.__getitem__(cxr_file)
         
