@@ -36,7 +36,17 @@ from pathlib import Path
 import pandas as pd
 
 NOTE_COLUMNS = ["subject_id", "hadm_id", "charttime", "text"]
-HADM = re.compile(r"hadm_id\D{0,5}?(\d{6,})", re.IGNORECASE)
+# "hadm_id     : 12345678" — padded labels, so allow spacing and a separator.
+HADM = re.compile(r"hadm_id[^\d\n]{0,20}(\d{6,})", re.IGNORECASE)
+INTIME = re.compile(
+    r"icu[ _]?intime[^\d\n]{0,20}(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})", re.IGNORECASE
+)
+
+
+def read_intime(ids_file: Path) -> pd.Timestamp | None:
+    """The ICU admission time, when ids.txt records it (``icu intime : ...``)."""
+    match = INTIME.search(ids_file.read_text(encoding="utf-8", errors="replace"))
+    return pd.Timestamp(match.group(1)) if match else None
 
 
 def read_hadm_id(ids_file: Path) -> int | None:
@@ -77,6 +87,7 @@ def main() -> None:
     args = parser.parse_args()
 
     cases: dict[str, int] = {}
+    case_intime: dict[str, pd.Timestamp] = {}
     for folder in sorted(p for p in args.cases.iterdir() if p.is_dir()):
         ids = folder / "ids.txt"
         hadm = read_hadm_id(ids) if ids.is_file() else None
@@ -84,6 +95,9 @@ def main() -> None:
             print(f"  {folder.name}: no hadm_id found in ids.txt, skipped")
             continue
         cases[folder.name] = hadm
+        start = read_intime(ids)
+        if start is not None:
+            case_intime[folder.name] = start
     if not cases:
         raise SystemExit("No case folders with a hadm_id in ids.txt.")
 
@@ -106,7 +120,8 @@ def main() -> None:
         if not rr.empty:
             (folder / "radiology.txt").write_text(" ".join(rr["text"].astype(str)), encoding="utf-8")
             written.append(f"radiology ({len(rr)} reports)")
-            start = intime.get(hadm)
+            # The stay's own ICU admission time when ids.txt has it.
+            start = case_intime.get(name, intime.get(hadm))
             if start is not None:
                 early = rr[(rr["charttime"] >= start) & (rr["charttime"] <= start + pd.Timedelta(hours=48))]
                 if not early.empty:
