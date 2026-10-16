@@ -18,7 +18,7 @@ import io
 import logging
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
 
@@ -37,7 +37,14 @@ _COMMON_ARGS = ["--classifier", "mlp", "--loss", "bce", "--data_pairs", "paired"
 _TEXT_ARGS = ["--text_encoder", "biobert", "--bert_model_name", TEXT_MODEL]
 _MORTALITY_ARGS = ["--task", "in-hospital-mortality", "--num_classes", "1", "--labels_set", "mortality"]
 _PHENO_ARGS = ["--task", "phenotyping", "--num_classes", "25", "--labels_set", "pheno"]
-_CXR_ARGS = ["--fusion_type", "unimodal_cxr", "--modalities", "EHR-CXR", "--cxr_encoder", "vit_small_patch16_384"]
+# --use_cls_token cls: the CXR classifier reads the CLS token, as in every
+# released CXR script (scripts/*/Unimodal/CXR.sh) and Youssef's Round 2/2b
+# args. The argparse default ("mean") pools all 577 tokens instead and gives
+# different (wrong) scores from the same weights.
+_CXR_ARGS = [
+    "--fusion_type", "unimodal_cxr", "--modalities", "EHR-CXR",
+    "--cxr_encoder", "vit_small_patch16_384", "--use_cls_token", "cls",
+]
 
 
 @dataclass(frozen=True)
@@ -56,6 +63,10 @@ class ReaderSpec:
     test_auroc: float | None
     # EHR only: the normalizer file the reader was trained with (medpatch/normalizers).
     normalizer: str | None = None
+    # Youssef's Round 2 confidence head on this same reader, with Round 2b
+    # temperatures when ``calibrated``. Relative to CHECKPOINT_DIR.
+    confidence_checkpoint: str | None = None
+    calibrated: bool = False
 
 
 # Every reader that exists, with the exact arguments and normalizer it was
@@ -147,6 +158,34 @@ READERS: list[ReaderSpec] = [
         test_auroc=0.897,
     ),
 ]
+
+
+# Round 2b (calibrated) where Youssef's file arrived; otherwise Round 2.
+# Every Round 2 reader carries exactly the Round 1 weights above (checked
+# tensor by tensor), plus the confidence head; load_readers re-checks the
+# classifier at start-up.
+_CONFIDENCE: dict[str, tuple[str, bool]] = {
+    "ehr-mortality": ("mortality/r2b/temp_c-unimodal_ehr.pth.tar", True),
+    "ehr-pneumonia": ("phenotyping/r2b/temp_c-unimodal_ehr.pth.tar", True),
+    "cxr-mortality": ("mortality/r2/c-unimodal_cxr.pth.tar", False),
+    "cxr-pneumonia": ("phenotyping/r2b/temp_c-unimodal_cxr.pth.tar", True),
+    "rr-mortality": ("mortality/r2/c-unimodal_rr.pth.tar", False),
+    "rr-pneumonia": ("phenotyping/r2b/temp_c-unimodal_rr.pth.tar", True),
+    "dn-pneumonia": ("phenotyping/r2/c-unimodal_dn.pth.tar", False),
+}
+READERS = [
+    replace(spec, confidence_checkpoint=path, calibrated=calibrated)
+    for spec in READERS
+    for path, calibrated in [_CONFIDENCE.get(spec.key, (None, False))]
+]
+
+
+def _confidence_args(args: list[str], calibrated: bool) -> list[str]:
+    """The reader's own arguments with the Round 2 / 2b fusion type."""
+    out = list(args)
+    i = out.index("--fusion_type") + 1
+    out[i] = ("temp_c-" if calibrated else "c-") + out[i]
+    return out
 
 
 class ReaderInputError(ValueError):
@@ -262,6 +301,9 @@ class _Loaded:
     spec: ReaderSpec
     model: Any
     normalizer: Any | None = None
+    confidence_model: Any | None = None
+    confidence_key: str | None = None
+    tokenizer: Any | None = None
 
 
 class Readers:
@@ -308,16 +350,20 @@ class Readers:
                 reader = self._by_key.get((req.task, modality))
                 if reader is None:
                     continue
-                logits = self._forward(reader, modality, value)
+                kwargs = self._model_inputs(reader, modality, value)
+                logits = reader.model(**kwargs)["unified"]
                 probability = float(torch.sigmoid(logits).reshape(-1)[reader.spec.output_index])
                 scores[modality] = ReaderScore(
                     probability=min(0.999, max(0.001, probability)),
                     model=reader.spec.label,
                     test_auroc=reader.spec.test_auroc,
+                    token_confidence=self._token_confidence(reader, kwargs, value),
+                    calibrated=reader.spec.calibrated,
                 )
         return scores
 
-    def _forward(self, reader: _Loaded, modality: Modality, value: Any) -> Any:
+    def _model_inputs(self, reader: _Loaded, modality: Modality, value: Any) -> dict[str, Any]:
+        """The forward() arguments, shared by the reader and its confidence head."""
         import numpy as np  # noqa: PLC0415
         import torch  # noqa: PLC0415
 
@@ -325,13 +371,30 @@ class Readers:
             data = self._discretizer.transform(np.array(value), end=float(EHR_WINDOW_HOURS))[0]
             data = reader.normalizer.transform(data)
             x = torch.tensor(data[None], dtype=torch.float32, device=self._device)
-            return reader.model(x=x, seq_lengths=[x.shape[1]])["unified"]
+            return {"x": x, "seq_lengths": [x.shape[1]]}
         if modality == "cxr":
-            x = self._cxr_transform(value)[None].to(self._device)
-            return reader.model(img=x)["unified"]
-        if modality == "rr":
-            return reader.model(rr=[value])["unified"]
-        return reader.model(dn=[value])["unified"]
+            return {"img": self._cxr_transform(value)[None].to(self._device)}
+        return {modality: [value]}
+
+    def _token_confidence(
+        self, reader: _Loaded, kwargs: dict[str, Any], value: Any
+    ) -> tuple[float, ...] | None:
+        """gamma = max(p, 1 - p) per token, as MedPatch §3.2 defines it."""
+        import torch  # noqa: PLC0415
+
+        if reader.confidence_model is None:
+            return None
+        logits = reader.confidence_model(**kwargs)[reader.confidence_key][0]
+        if logits.dim() == 2:  # [tokens, classes]: this task's output only
+            logits = logits[:, reader.spec.output_index]
+        p = torch.sigmoid(logits.reshape(-1).float())
+        gamma = torch.maximum(p, 1 - p)
+        if reader.tokenizer is not None:
+            # Text positions past the note are padding; the note's own tokens
+            # (at most one 512-token window, pooled across chunks) are kept.
+            real = min(gamma.shape[0], len(reader.tokenizer(value)["input_ids"]))
+            gamma = gamma[:real]
+        return tuple(float(g) for g in gamma.cpu())
 
 
 def load_readers(medpatch_root: Path, checkpoint_dir: Path, device: str) -> Readers:
@@ -340,7 +403,10 @@ def load_readers(medpatch_root: Path, checkpoint_dir: Path, device: str) -> Read
     Refuses to start with a missing checkpoint rather than silently falling
     back to simulated numbers for that modality.
     """
-    missing = [spec.checkpoint for spec in READERS if not (checkpoint_dir / spec.checkpoint).is_file()]
+    needed = [spec.checkpoint for spec in READERS] + [
+        spec.confidence_checkpoint for spec in READERS if spec.confidence_checkpoint
+    ]
+    missing = [path for path in needed if not (checkpoint_dir / path).is_file()]
     if missing:
         raise RuntimeError(
             "INFERENCE_MODE=readers but these checkpoints are missing under "
@@ -379,9 +445,11 @@ def load_readers(medpatch_root: Path, checkpoint_dir: Path, device: str) -> Read
     shared_bert: Any = None
     cxr_transform: Any = None
     loaded: list[_Loaded] = []
-    for spec in READERS:
-        started = time.perf_counter()
-        args = args_parser().parse_args([*spec.args, *_COMMON_ARGS])
+
+    def build(spec: ReaderSpec, argv: list[str], path: str) -> tuple[Any, Any, Any]:
+        """A medpatch model from its training arguments, strictly loaded."""
+        nonlocal shared_bert, cxr_transform
+        args = args_parser().parse_args([*argv, *_COMMON_ARGS])
         text_encoder = None
         if spec.modality == "ehr":
             model = Fusion(args, EHR_encoder(args), None, None)
@@ -394,37 +462,70 @@ def load_readers(medpatch_root: Path, checkpoint_dir: Path, device: str) -> Read
             text_encoder = Text_encoder(args, device)
             model = Fusion(args, None, None, text_encoder)
 
-        checkpoint = torch.load(checkpoint_dir / spec.checkpoint, map_location="cpu", weights_only=False)
+        checkpoint = torch.load(checkpoint_dir / path, map_location="cpu", weights_only=False)
         stored_bert = checkpoint.get("bert_model_name")
         if text_encoder is not None and stored_bert not in (None, TEXT_MODEL):
-            raise RuntimeError(f"{spec.key}: checkpoint was trained with {stored_bert}, not {TEXT_MODEL}")
+            raise RuntimeError(f"{spec.key}: {path} was trained with {stored_bert}, not {TEXT_MODEL}")
         # Strict: a key the model lacks, or one left at its initial value, is
         # a wrong architecture and must not produce numbers.
         model.load_state_dict(checkpoint["state_dict"], strict=True)
         del checkpoint
 
-        # The BERT inside every text reader is frozen and identical, so the
-        # readers share one copy (~440 MB instead of ~1.3 GB) once the weights
-        # are confirmed equal.
+        # The BERT inside every text model is frozen and identical, so they
+        # share one copy (~440 MB instead of several) once confirmed equal.
         if text_encoder is not None:
             if shared_bert is None:
                 shared_bert = text_encoder.bert
             else:
                 if not _same_weights(shared_bert, text_encoder.bert):
-                    raise RuntimeError(f"{spec.key}: its frozen BERT differs from the other readers'")
+                    raise RuntimeError(f"{spec.key}: {path} has a different frozen BERT")
                 text_encoder.bert = shared_bert
+        return model.to(device).eval(), args, text_encoder
 
-        model.to(device).eval()
+    for spec in READERS:
+        started = time.perf_counter()
+        model, _, text_encoder = build(spec, spec.args, spec.checkpoint)
+
+        confidence_model = confidence_key = None
+        if spec.confidence_checkpoint:
+            argv = _confidence_args(spec.args, spec.calibrated)
+            confidence_model, cargs, _ = build(spec, argv, spec.confidence_checkpoint)
+            confidence_key = cargs.fusion_type
+            # The confidence head must sit on this very reader: its classifier
+            # is copied from the Round 1 file the scores come from.
+            if not _same_classifier(model, confidence_model):
+                raise RuntimeError(
+                    f"{spec.key}: {spec.confidence_checkpoint} was trained on a different reader"
+                )
+
         normalizer = None
         if spec.normalizer is not None:
             normalizer = Normalizer(fields=continuous)
             normalizer.load_params(str(medpatch_root / "normalizers" / spec.normalizer))
-        loaded.append(_Loaded(spec=spec, model=model, normalizer=normalizer))
+        loaded.append(
+            _Loaded(
+                spec=spec,
+                model=model,
+                normalizer=normalizer,
+                confidence_model=confidence_model,
+                confidence_key=confidence_key,
+                tokenizer=text_encoder.tokenizer if text_encoder is not None else None,
+            )
+        )
         logger.info("loaded reader %s in %.1fs", spec.key, time.perf_counter() - started)
 
     readers = Readers(loaded, discretizer, cxr_transform, device)
     _warm_up(readers)
     return readers
+
+
+def _same_classifier(reader: Any, confidence_model: Any) -> bool:
+    """Every ``*_classifier`` weight of the reader, unchanged in the head's file."""
+    import torch  # noqa: PLC0415
+
+    ra, rb = reader.state_dict(), confidence_model.state_dict()
+    keys = [k for k in ra if "_classifier." in k]
+    return bool(keys) and all(k in rb and torch.equal(ra[k].cpu(), rb[k].cpu()) for k in keys)
 
 
 def _same_weights(a: Any, b: Any) -> bool:

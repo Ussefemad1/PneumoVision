@@ -82,6 +82,7 @@ const modalitySourceSchema = new Schema(
     kind: { type: String, required: true, enum: ['trained', 'mock'] },
     model: { type: String, default: null },
     testAuroc: { type: Number, default: null, min: 0, max: 1 },
+    confidence: { type: String, default: null, enum: ['calibrated', 'uncalibrated', null] },
   },
   { _id: false },
 );

@@ -174,6 +174,11 @@ export const modalitySource = z.object({
   model: z.string().nullish().transform((v) => v ?? null),
   /** The reader's held-out test AUROC for this task, when trained. */
   testAuroc: nullableNumber,
+  /** Token confidences from a trained confidence head; `calibrated` after temperature scaling. */
+  confidence: z
+    .enum(['calibrated', 'uncalibrated'])
+    .nullish()
+    .transform((v) => v ?? null),
 });
 export type ModalitySource = z.infer<typeof modalitySource>;
 

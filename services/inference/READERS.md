@@ -26,6 +26,33 @@ The combined score is the plain **average** of the trained readers' scores
 (`sources.fusion = "average"`), shown with its formula on the report. It is not
 the MedPatch fusion.
 
+## Confidence heads (Youssef, Rounds 2 and 2b)
+
+Each reader also loads its **Round 2 confidence head** (a per-token confidence
+predictor on the same frozen reader) and, where the file exists, its **Round
+2b temperatures** (calibration). They give the real token confidence
+gamma = max(p, 1 - p) for this task's output, used for the report's
+"above threshold" shares and the stay page's per-hour EHR band.
+
+| Reader | Confidence file under `checkpoints/` | |
+| --- | --- | --- |
+| EHR mortality / pneumonia | `{mortality,phenotyping}/r2b/temp_c-unimodal_ehr.pth.tar` | calibrated |
+| CXR pneumonia | `phenotyping/r2b/temp_c-unimodal_cxr.pth.tar` | calibrated |
+| RR pneumonia | `phenotyping/r2b/temp_c-unimodal_rr.pth.tar` | calibrated |
+| CXR mortality, RR mortality, DN pneumonia | `{mortality,phenotyping}/r2/c-unimodal_*.pth.tar` | Round 2 only (2b files not received) |
+
+All seven Round 2 files carry exactly the Round 1 reader weights (checked
+tensor by tensor); start-up re-checks each head's classifier against its
+reader and refuses a mismatch. The CXR head reads one CLS token per image
+(`cxr_token_confidence` off, as trained), so there is no patch heatmap.
+The high/low joint predictions, the missingness branch and the fusion
+weights need Round 3 and stay simulated; the combined score stays a plain
+average.
+
+**CXR pooling:** the CXR readers run with `--use_cls_token cls`, as every
+released CXR script and Youssef's args do. (Before 2026-10-16 the site used
+the argparse default `mean`, which gave wrong CXR scores from the same weights.)
+
 ## Run it locally
 
 1. The repo `.venv` (Python 3.11) with the training stack and the service:

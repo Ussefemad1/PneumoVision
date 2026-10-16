@@ -12,12 +12,23 @@ Usage:
 
 from __future__ import annotations
 
+import os
 import sys
 import zipfile
 from pathlib import Path
 
 
+def _long_path(path: Path) -> Path:
+    """Windows paths past 260 characters need the extended-length prefix."""
+    if os.name == "nt":
+        resolved = str(path.resolve())
+        if not resolved.startswith("\\\\?\\"):
+            return Path("\\\\?\\" + resolved)
+    return path
+
+
 def repack(src: Path, out: Path) -> None:
+    src = _long_path(src)
     if not (src / "data.pkl").is_file():
         raise SystemExit(f"{src} has no data.pkl; not an extracted torch checkpoint")
     out.parent.mkdir(parents=True, exist_ok=True)

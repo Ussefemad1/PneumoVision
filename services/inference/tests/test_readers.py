@@ -118,6 +118,36 @@ def test_every_reader_names_a_test_auroc_and_mortality_never_has_dn():
         ("pneumonia", "dn"),
     }
     assert all(r.test_auroc is None or 0.5 < r.test_auroc < 1 for r in READERS)
+    # Every reader has Youssef's confidence head (Round 2b where it exists).
+    assert all(r.confidence_checkpoint for r in READERS)
+    assert {r.key for r in READERS if r.calibrated} == {
+        "ehr-mortality", "ehr-pneumonia", "cxr-pneumonia", "rr-pneumonia",
+    }
+
+
+def test_confidence_args_switch_only_the_fusion_type():
+    from app.readers import _confidence_args
+
+    argv = ["--fusion_type", "unimodal_rr", "--task", "phenotyping"]
+    assert _confidence_args(argv, True) == ["--fusion_type", "temp_c-unimodal_rr", "--task", "phenotyping"]
+    assert _confidence_args(argv, False)[1] == "c-unimodal_rr"
+    assert argv[1] == "unimodal_rr"  # the reader's own arguments are untouched
+
+
+def test_real_token_confidences_replace_the_simulated_maps():
+    req = PredictRequest(
+        task="pneumonia", seed="s", ehr=window(**{"Heart Rate": {0: 90}}),
+        notes=[NoteInput(id="n", type="radiology", text="synthetic")],
+    )
+    gammas = tuple([0.9] * 36 + [0.6] * 12)
+    result = build_mock_result(req, readers={
+        "ehr": ReaderScore(probability=0.3, model="EHR", test_auroc=0.8,
+                           token_confidence=gammas, calibrated=True),
+    })
+    assert result.confidence.fraction_above.ehr == 0.75
+    assert result.confidence.ehr_timesteps == list(gammas)
+    assert result.sources.ehr.confidence == "calibrated"
+    assert result.sources.rr.confidence is None  # simulated
 
 
 def test_cxr_image_matches_the_offline_resize():
@@ -245,6 +275,12 @@ def test_readers_mode_scores_each_modality_with_its_trained_reader(readers_clien
     for modality in ("ehr", "rr", "dn"):
         assert sources[modality]["kind"] == "trained"
         assert 0 < unimodal[modality] < 1
+    assert sources["ehr"]["confidence"] == "calibrated"
+    assert sources["rr"]["confidence"] == "calibrated"
+    assert sources["dn"]["confidence"] == "uncalibrated"  # its Round 2b file is missing
+    timesteps = out["result"]["confidence"]["ehrTimesteps"]
+    assert len(timesteps) == 48 and all(0.5 <= g <= 1 for g in timesteps)
+    assert out["result"]["confidence"]["noteSpans"] is None
     mean = (unimodal["ehr"] + unimodal["rr"] + unimodal["dn"]) / 3
     assert out["result"]["probability"] == pytest.approx(mean)
     assert out["result"]["received"]["mode"] == "readers"
@@ -283,6 +319,9 @@ def test_readers_mode_scores_the_radiograph_with_the_cxr_reader(readers_client):
         assert 0 < out["result"]["unimodal"]["cxr"] < 1
         assert out["result"]["probability"] == out["result"]["unimodal"]["cxr"]
         assert out["result"]["received"]["cxr"]["width"] == 560
+        # One confidence per image (CLS), so there is no patch heatmap.
+        assert source["confidence"] in ("calibrated", "uncalibrated")
+        assert out["result"]["confidence"]["cxrPatchGrid"] is None
 
 
 @needs_models

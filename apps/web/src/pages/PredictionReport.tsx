@@ -74,6 +74,9 @@ export function PredictionReportPage() {
   const trained = taskModalities.filter((key) => sources?.[key]?.kind === 'trained');
   const averaged = trained.filter((key) => typeof result.unimodal[key] === 'number');
   const simulatedTag = fusionSimulated ? <SimulatedChip /> : undefined;
+  // Token confidences can be real (trained confidence heads) while the
+  // high/low groups and missingness still need the fusion model.
+  const realConfidence = taskModalities.some((key) => sources?.[key]?.confidence);
 
   return (
     <div className="space-y-4">
@@ -158,10 +161,12 @@ export function PredictionReportPage() {
         </Card>
 
         {/* F4 + F2 */}
-        <Card
-          title="Confidence"
-          actions={simulatedTag}
-        >
+        <Card title="Confidence" actions={realConfidence ? undefined : simulatedTag}>
+          {realConfidence && fusionSimulated && (
+            <div className="mb-2 flex justify-end">
+              <SimulatedChip />
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-3">
             <div className="rounded-lg border border-hairline p-3">
               <div className="text-[11px] uppercase tracking-wide text-ink-muted">
@@ -190,7 +195,15 @@ export function PredictionReportPage() {
                 const fraction = result.confidence.fractionAbove[key];
                 if (typeof fraction !== 'number') return null;
                 return (
-                  <li key={key} className="grid grid-cols-[6.5rem_1fr_auto] items-center gap-2">
+                  <li
+                    key={key}
+                    className={cn(
+                      'grid items-center gap-2',
+                      realConfidence
+                        ? 'grid-cols-[6.5rem_1fr_auto_5.5rem]'
+                        : 'grid-cols-[6.5rem_1fr_auto]',
+                    )}
+                  >
                     <span className="truncate text-xs text-ink-secondary">
                       {MODALITY_LABELS[key]}
                     </span>
@@ -203,6 +216,7 @@ export function PredictionReportPage() {
                     <span className="tnum w-11 text-right text-xs text-ink">
                       {percent(fraction)}
                     </span>
+                    {realConfidence && <ConfidenceTag level={sources?.[key]?.confidence ?? null} />}
                   </li>
                 );
               })}
@@ -210,8 +224,9 @@ export function PredictionReportPage() {
           </div>
 
           <div className="mt-4 rounded-lg bg-surface-2 p-3">
-            <div className="text-[11px] uppercase tracking-wide text-ink-muted">
+            <div className="flex items-center justify-between text-[11px] uppercase tracking-wide text-ink-muted">
               Missingness branch
+              {realConfidence && fusionSimulated && <SimulatedChip />}
             </div>
             <div className="tnum mt-0.5 text-sm font-medium text-ink">
               {percent(result.missingness.prediction)}
@@ -286,6 +301,24 @@ function SourceChip({ source }: { source: ModalitySource }) {
     );
   }
   return <SimulatedChip className="mt-1" />;
+}
+
+/** Where a row of token confidences came from. */
+function ConfidenceTag({ level }: { level: 'calibrated' | 'uncalibrated' | null }) {
+  if (level === null) return <SimulatedChip />;
+  return (
+    <span
+      title={
+        level === 'calibrated'
+          ? 'Trained confidence head with temperature calibration (Round 2b)'
+          : 'Trained confidence head, not yet calibrated (Round 2)'
+      }
+      className="inline-flex items-center justify-center gap-1 rounded-full bg-[var(--series-mortality)]/12 px-2 py-0.5 text-[10px] font-semibold text-[var(--series-mortality)]"
+    >
+      <span aria-hidden="true">✓</span>
+      {level === 'calibrated' ? 'Calibrated' : 'Uncalibrated'}
+    </span>
+  );
 }
 
 function AverageChip() {

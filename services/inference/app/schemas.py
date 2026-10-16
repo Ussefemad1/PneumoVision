@@ -215,6 +215,9 @@ class ModalitySource(BaseModel):
     # Reader name and its held-out test AUROC for this task, when trained.
     model: str | None = None
     test_auroc: float | None = Field(default=None, alias="testAuroc")
+    # Token confidences from a trained confidence head (Round 2), with
+    # temperature scaling (Round 2b) when "calibrated". None: simulated.
+    confidence: Literal["calibrated", "uncalibrated"] | None = None
 
 
 class Sources(BaseModel):

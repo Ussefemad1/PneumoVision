@@ -50,6 +50,10 @@ class ReaderScore:
     probability: float
     model: str
     test_auroc: float | None
+    # Per-token confidence gamma = max(p, 1 - p) from the trained confidence
+    # head, for this task's output; None when the reader has none.
+    token_confidence: tuple[float, ...] | None = None
+    calibrated: bool = False
 
 # Which encoder each note type feeds. Radiology reports and the other in-stay
 # notes go to the RR branch; discharge notes to DN. Matches the modality split
@@ -263,6 +267,21 @@ def build_mock_result(
         probability = sum(real) / len(real)
 
     confidence = _build_confidence(req, rng, availability, notes)
+    # Real token confidences replace the simulated maps for their modality.
+    for modality, reader in readers.items():
+        gammas = reader.token_confidence
+        if not availability.get(modality) or not gammas:
+            continue
+        above = sum(1 for g in gammas if g >= req.theta) / len(gammas)
+        setattr(confidence.fraction_above, modality, above)
+        if modality == "ehr":
+            confidence.ehr_timesteps = [min(0.999, max(0.001, g)) for g in gammas]
+        elif modality == "cxr":
+            # One confidence per image (the CLS token), so no patch heatmap.
+            confidence.cxr_patch_grid = None
+        else:
+            # Pooled chunk positions do not map back to note text spans.
+            confidence.note_spans = None
 
     def source(modality: str) -> ModalitySource | None:
         if not availability[modality]:
@@ -270,7 +289,12 @@ def build_mock_result(
         reader = readers.get(modality)
         if reader is None:
             return ModalitySource(kind="mock")
-        return ModalitySource(kind="trained", model=reader.model, test_auroc=reader.test_auroc)
+        level = None
+        if reader.token_confidence:
+            level = "calibrated" if reader.calibrated else "uncalibrated"
+        return ModalitySource(
+            kind="trained", model=reader.model, test_auroc=reader.test_auroc, confidence=level
+        )
 
     used_readers = any(m in readers and availability[m] for m in availability)
     return PredictionResult(

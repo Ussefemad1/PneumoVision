@@ -291,7 +291,7 @@ describe('POST /analyze — modalities reach the model', () => {
       fusion: 'mock',
       ehr: null,
       cxr: null,
-      rr: { kind: 'trained', model: 'stub RR reader', testAuroc: 0.73 },
+      rr: { kind: 'trained', model: 'stub RR reader', testAuroc: 0.73, confidence: null },
       dn: null,
     });
     expect(report.body.data.result.received.mode).toBe('readers');

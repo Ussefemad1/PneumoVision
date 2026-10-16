@@ -39,6 +39,7 @@ results/*
 # Never commit them; copy what the platform needs into checkpoints/ instead.
 caroll's*/
 norhan's*/
+youssef's*/
 # Real MIMIC notes exported for local testing (tools/demo/export_mimic_examples.py).
 mimic-local-examples/
 # Real patient demo cases (MIMIC; PhysioNet agreement): never commit.
