@@ -86,13 +86,17 @@ export function RiskGauge({
       </svg>
       <figcaption className="text-center">
         <div className="text-sm font-medium text-ink">{label}</div>
-        <div
-          className="mt-0.5 flex items-center justify-center gap-1 text-xs"
-          style={{ color: band.cssVar }}
-        >
-          <span aria-hidden="true">{band.icon}</span>
-          <span className="font-medium">{probability === null ? 'Not scored' : band.label}</span>
-        </div>
+        {probability === null ? (
+          <div className="mt-0.5 text-xs text-ink-muted">Not scored</div>
+        ) : (
+          <div
+            className="mt-0.5 flex items-center justify-center gap-1 text-xs"
+            style={{ color: band.cssVar }}
+          >
+            <span aria-hidden="true">{band.icon}</span>
+            <span className="font-medium">{band.label}</span>
+          </div>
+        )}
         {sublabel && <div className="mt-0.5 text-[11px] text-ink-muted">{sublabel}</div>}
       </figcaption>
     </figure>

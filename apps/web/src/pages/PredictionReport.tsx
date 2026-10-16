@@ -82,8 +82,11 @@ export function PredictionReportPage() {
         <div>
           <div className="flex items-center gap-2 text-sm text-ink-muted">
             {stay && (
-              <Link to={`/stays/${data.stayId}`} className="hover:underline">
-                {stay.patient.pseudoId}
+              <Link
+                to={stay.status === 'adhoc' ? '/analyze' : `/stays/${data.stayId}`}
+                className="hover:underline"
+              >
+                {stay.status === 'adhoc' ? 'Analyses' : stay.patient.pseudoId}
               </Link>
             )}
             <span>/</span>

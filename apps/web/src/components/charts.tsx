@@ -180,7 +180,7 @@ export function RiskTrajectoryChart({
             name="Mortality"
             stroke="var(--series-mortality)"
             strokeWidth={2}
-            dot={{ r: 3, strokeWidth: 0 }}
+            dot={{ r: 3, strokeWidth: 0, fill: 'var(--series-mortality)' }}
             activeDot={{ r: 5 }}
             connectNulls
             isAnimationActive={false}
@@ -192,7 +192,7 @@ export function RiskTrajectoryChart({
               name="Pneumonia"
               stroke="var(--series-pneumonia)"
               strokeWidth={2}
-              dot={{ r: 3, strokeWidth: 0 }}
+              dot={{ r: 3, strokeWidth: 0, fill: 'var(--series-pneumonia)' }}
               activeDot={{ r: 5 }}
               connectNulls
               isAnimationActive={false}

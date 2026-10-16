@@ -246,9 +246,11 @@ function OverviewTab({ stay }: { stay: StayDetail }) {
       <Card
         title="Risk trajectory"
       >
-        {mortalityTrajectory.isLoading ? (
+        {mortalityTrajectory.isLoading || pneumoniaTrajectory.isLoading ? (
           <Skeleton className="h-60 w-full" />
-        ) : (mortalityTrajectory.data?.points.length ?? 0) === 0 ? (
+        ) : (mortalityTrajectory.data?.points.length ?? 0) +
+            (pneumoniaTrajectory.data?.points.length ?? 0) ===
+          0 ? (
           <EmptyState
             icon="◠"
             title="No predictions yet"
