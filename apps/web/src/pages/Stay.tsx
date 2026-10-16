@@ -637,7 +637,6 @@ function PredictionsTab({ stayId }: { stayId: string }) {
               <th className="px-4 py-2 font-medium">Task</th>
               <th className="px-4 py-2 font-medium">Risk</th>
               <th className="px-4 py-2 font-medium">Status</th>
-              <th className="px-4 py-2 font-medium">Model</th>
               <th className="px-4 py-2 font-medium">Latency</th>
               <th className="px-4 py-2 font-medium" />
             </tr>
@@ -669,7 +668,6 @@ function PredictionsTab({ stayId }: { stayId: string }) {
                     {prediction.status}
                   </span>
                 </td>
-                <td className="px-4 py-2 text-xs text-ink-muted">{prediction.modelVersion}</td>
                 <td className="tnum px-4 py-2 text-xs text-ink-muted">
                   {prediction.latencyMs === null ? '—' : `${prediction.latencyMs} ms`}
                 </td>
