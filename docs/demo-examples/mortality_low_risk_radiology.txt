@@ -1,0 +1,8 @@
+SYNTHETIC RADIOLOGY REPORT (invented for testing, not a real patient)
+
+EXAMINATION: Chest radiograph, portable AP.
+INDICATION: Post-procedure check.
+
+FINDINGS: Lungs are clear and well expanded. No consolidation, effusion or pneumothorax. Normal heart size.
+
+IMPRESSION: No acute cardiopulmonary abnormality.

@@ -223,8 +223,11 @@ class Sources(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    # The fused output (joint, missingness, alphas, probability, confidence maps).
-    fusion: Literal["trained", "mock"]
+    # The fused probability. "average": the plain mean of the trained
+    # readers' scores (not MedPatch), used until the fusion is trained.
+    # joint, missingness, alphas and confidence maps are simulated unless
+    # this is "trained".
+    fusion: Literal["trained", "average", "mock"]
     ehr: ModalitySource | None = None
     cxr: ModalitySource | None = None
     rr: ModalitySource | None = None

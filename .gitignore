@@ -37,9 +37,8 @@ results/*
 
 # Teammates' hand-off folders: checkpoints, logs and (in some) raw MIMIC data.
 # Never commit them; copy what the platform needs into checkpoints/ instead.
-caroll's work/
-caroll's ehr work/
-norhan's work/
+caroll's*/
+norhan's*/
 
 # Large model/data files
 *.pth

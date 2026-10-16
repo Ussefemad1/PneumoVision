@@ -1,0 +1,7 @@
+SYNTHETIC DISCHARGE SUMMARY (invented for testing, not a real patient)
+
+Chief complaint: Fever, cough and shortness of breath.
+History of present illness: 67-year-old man with COPD presented with three days of fever, productive cough with yellow sputum and progressive dyspnea. In the emergency department he was febrile to 39.1 C, tachypneic and hypoxic on room air.
+Hospital course: Chest radiograph showed right lower lobe consolidation. Sputum culture grew Streptococcus pneumoniae. He was admitted to the ICU for high-flow oxygen and treated with ceftriaxone and azithromycin. Oxygen requirement improved over four days.
+Discharge diagnosis: Community-acquired pneumonia, right lower lobe. Acute hypoxemic respiratory failure, resolved.
+Discharge condition: Stable, ambulating, on room air.

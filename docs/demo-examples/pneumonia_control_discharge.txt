@@ -1,0 +1,6 @@
+SYNTHETIC DISCHARGE SUMMARY (invented for testing, not a real patient)
+
+Chief complaint: Elective right total knee replacement.
+Hospital course: 58-year-old woman with osteoarthritis underwent an uncomplicated right total knee arthroplasty. She was observed overnight in the ICU for blood pressure monitoring after spinal anesthesia, which remained stable. Pain controlled with oral analgesia. Physical therapy started on day one.
+Discharge diagnosis: Osteoarthritis of the right knee, status post total knee arthroplasty.
+Discharge condition: Stable, walking with a walker.

@@ -1,0 +1,8 @@
+SYNTHETIC RADIOLOGY REPORT (invented for testing, not a real patient)
+
+EXAMINATION: Chest radiograph, PA and lateral.
+INDICATION: Preoperative evaluation.
+
+FINDINGS: The lungs are clear. No focal consolidation, pleural effusion or pneumothorax. Cardiomediastinal silhouette within normal limits. Mild degenerative changes of the thoracic spine.
+
+IMPRESSION: No acute cardiopulmonary process.

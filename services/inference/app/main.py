@@ -158,7 +158,9 @@ async def predict(body: PredictRequest, request: Request, settings: SettingsDep)
 
         try:
             # Torch work off the event loop, so health checks stay responsive.
-            scores = await run_in_threadpool(readers.score, body)
+            scores = await run_in_threadpool(
+                readers.score, body, cxr.data if cxr is not None else None
+            )
         except ReaderInputError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         result = build_mock_result(body, cxr, scores)

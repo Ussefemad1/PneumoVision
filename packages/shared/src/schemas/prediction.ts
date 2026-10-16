@@ -182,8 +182,12 @@ export type ModalitySource = z.infer<typeof modalitySource>;
  * and simulated parts honestly while both coexist.
  */
 export const resultSources = z.object({
-  /** The fused output: joint, missingness, alphas, probability, confidence maps. */
-  fusion: z.enum(['trained', 'mock']),
+  /**
+   * The fused probability. `average`: the plain mean of the trained readers'
+   * scores (not MedPatch), used until the fusion is trained. Joint,
+   * missingness, alphas and confidence maps are simulated unless `trained`.
+   */
+  fusion: z.enum(['trained', 'average', 'mock']),
   ehr: modalitySource.nullish().transform((v) => v ?? null),
   cxr: modalitySource.nullish().transform((v) => v ?? null),
   rr: modalitySource.nullish().transform((v) => v ?? null),

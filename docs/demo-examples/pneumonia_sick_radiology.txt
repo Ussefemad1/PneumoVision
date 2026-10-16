@@ -1,0 +1,12 @@
+SYNTHETIC RADIOLOGY REPORT (invented for testing, not a real patient)
+
+EXAMINATION: Chest radiograph, portable AP.
+INDICATION: Fever, productive cough and worsening hypoxia.
+COMPARISON: Radiograph from the day before.
+
+FINDINGS: New dense consolidation in the right lower lobe with air bronchograms. Patchy opacity at the left base, increased since the prior study. Small right pleural effusion. Heart size normal. No pneumothorax.
+
+IMPRESSION:
+1. Right lower lobe consolidation with air bronchograms, consistent with pneumonia.
+2. New left basilar opacity, possibly multifocal infection.
+3. Small right pleural effusion.

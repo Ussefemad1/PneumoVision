@@ -110,12 +110,32 @@ def test_rr_reads_radiology_reports_only_and_dn_discharge_only():
 def test_every_reader_names_a_test_auroc_and_mortality_never_has_dn():
     assert {(r.task, r.modality) for r in READERS} == {
         ("mortality", "ehr"),
+        ("mortality", "cxr"),
         ("mortality", "rr"),
         ("pneumonia", "ehr"),
+        ("pneumonia", "cxr"),
         ("pneumonia", "rr"),
         ("pneumonia", "dn"),
     }
-    assert all(0.5 < r.test_auroc < 1 for r in READERS)
+    assert all(r.test_auroc is None or 0.5 < r.test_auroc < 1 for r in READERS)
+
+
+def test_cxr_image_matches_the_offline_resize():
+    import io as _io
+
+    from PIL import Image
+
+    from app.readers import cxr_image
+
+    buffer = _io.BytesIO()
+    Image.new("L", (1000, 1200), 90).save(buffer, format="PNG")
+    img = cxr_image(buffer.getvalue())
+    # resize.py: width 512, aspect kept; the dataset then opens it as RGB.
+    assert img.size == (512, 614) and img.mode == "RGB"
+
+    buffer = _io.BytesIO()
+    Image.new("I;16", (800, 800), 3000).save(buffer, format="PNG")
+    assert cxr_image(buffer.getvalue()).size == (512, 512)
 
 
 # ── Provenance ───────────────────────────────────────────────────────────────
@@ -132,7 +152,10 @@ def test_reader_scores_replace_the_simulated_ones_and_are_labelled():
         req, readers={"rr": ReaderScore(probability=0.42, model="RR reader", test_auroc=0.859)}
     )
     assert result.unimodal.rr == 0.42
-    assert result.sources.fusion == "mock"
+    # The headline is the plain mean of the trained scores (only RR here);
+    # the simulated EHR score is left out.
+    assert result.probability == 0.42
+    assert result.sources.fusion == "average"
     assert result.sources.rr.kind == "trained" and result.sources.rr.test_auroc == 0.859
     assert result.sources.ehr.kind == "mock"  # sent, but no reader answered
     assert result.sources.cxr is None and result.sources.dn is None
@@ -143,6 +166,7 @@ def test_mock_mode_labels_everything_mock():
     req = PredictRequest(task="mortality", seed="s", notes=[NoteInput(id="n", text="synthetic")])
     result = build_mock_result(req)
     assert result.received.mode == "mock"
+    assert result.sources.fusion == "mock"
     assert result.sources.rr.kind == "mock" and result.sources.ehr is None
 
 
@@ -213,17 +237,52 @@ def test_readers_mode_scores_each_modality_with_its_trained_reader(readers_clien
     }
     out = predict(readers_client, body)
     assert out["modelVersion"] == "readers-r1+mock-fusion"
+    assert out["result"]["sources"]["cxr"] is None  # no image sent
     assert out["mock"] is False
     sources = out["result"]["sources"]
-    assert sources["fusion"] == "mock"
+    assert sources["fusion"] == "average"
+    unimodal = out["result"]["unimodal"]
     for modality in ("ehr", "rr", "dn"):
         assert sources[modality]["kind"] == "trained"
-        assert 0 < out["result"]["unimodal"][modality] < 1
+        assert 0 < unimodal[modality] < 1
+    mean = (unimodal["ehr"] + unimodal["rr"] + unimodal["dn"]) / 3
+    assert out["result"]["probability"] == pytest.approx(mean)
     assert out["result"]["received"]["mode"] == "readers"
 
     # Deterministic: the same input gives the same real score.
     again = predict(readers_client, body)
     assert again["result"]["unimodal"] == out["result"]["unimodal"]
+
+
+def synthetic_png() -> dict:
+    import base64
+    import hashlib
+    import io as _io
+
+    import numpy as np
+    from PIL import Image
+
+    yy, xx = np.mgrid[0:640, 0:560]
+    arr = (120 + 60 * np.sin(xx / 40) * np.cos(yy / 55)).clip(0, 255).astype(np.uint8)
+    buffer = _io.BytesIO()
+    Image.fromarray(arr, "L").save(buffer, format="PNG")
+    data = buffer.getvalue()
+    return {
+        "contentType": "image/png",
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "dataB64": base64.b64encode(data).decode(),
+    }
+
+
+@needs_models
+def test_readers_mode_scores_the_radiograph_with_the_cxr_reader(readers_client):
+    for task in ("mortality", "pneumonia"):
+        out = predict(readers_client, {"task": task, "seed": "s", "cxr": synthetic_png()})
+        source = out["result"]["sources"]["cxr"]
+        assert source["kind"] == "trained" and source["model"].startswith("Chest X-ray")
+        assert 0 < out["result"]["unimodal"]["cxr"] < 1
+        assert out["result"]["probability"] == out["result"]["unimodal"]["cxr"]
+        assert out["result"]["received"]["cxr"]["width"] == 560
 
 
 @needs_models

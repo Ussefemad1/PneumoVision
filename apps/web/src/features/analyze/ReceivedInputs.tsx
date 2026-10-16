@@ -40,7 +40,7 @@ export function ReceivedInputs({ prediction }: { prediction: Prediction }) {
           </span>
         ) : received?.mode === 'readers' ? (
           <span className="inline-flex items-center gap-1 rounded-full border border-[var(--series-mortality)]/50 bg-[var(--series-mortality)]/10 px-2 py-0.5 text-[11px] font-semibold text-ink">
-            <span aria-hidden="true">✓</span> TRAINED READERS · simulated fusion
+            <span aria-hidden="true">✓</span> TRAINED READERS · combined by simple average
           </span>
         ) : null
       }

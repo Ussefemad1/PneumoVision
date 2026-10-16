@@ -14,6 +14,7 @@ trained with. Inputs are synthetic or user-entered; nothing is logged.
 
 from __future__ import annotations
 
+import io
 import logging
 import sys
 import time
@@ -26,7 +27,7 @@ from .schemas import EHR_WINDOW_HOURS, EhrInput, NoteInput, PredictRequest, Task
 
 logger = logging.getLogger("pneumovision.inference.readers")
 
-Modality = Literal["ehr", "rr", "dn"]
+Modality = Literal["ehr", "cxr", "rr", "dn"]
 
 # Pneumonia is CCS phenotype index 21 of the 25 phenotyping outputs.
 PNEUMONIA_INDEX = 21
@@ -36,6 +37,7 @@ _COMMON_ARGS = ["--classifier", "mlp", "--loss", "bce", "--data_pairs", "paired"
 _TEXT_ARGS = ["--text_encoder", "biobert", "--bert_model_name", TEXT_MODEL]
 _MORTALITY_ARGS = ["--task", "in-hospital-mortality", "--num_classes", "1", "--labels_set", "mortality"]
 _PHENO_ARGS = ["--task", "phenotyping", "--num_classes", "25", "--labels_set", "pheno"]
+_CXR_ARGS = ["--fusion_type", "unimodal_cxr", "--modalities", "EHR-CXR", "--cxr_encoder", "vit_small_patch16_384"]
 
 
 @dataclass(frozen=True)
@@ -50,7 +52,8 @@ class ReaderSpec:
     # Which output to read: 0 for mortality, PNEUMONIA_INDEX for phenotyping.
     output_index: int
     # Held-out test AUROC for this task's output, from the training logs.
-    test_auroc: float
+    # None when the trainer has not reported one yet.
+    test_auroc: float | None
     # EHR only: the normalizer file the reader was trained with (medpatch/normalizers).
     normalizer: str | None = None
 
@@ -83,6 +86,32 @@ READERS: list[ReaderSpec] = [
         output_index=PNEUMONIA_INDEX,
         test_auroc=0.812,
         normalizer="ph_ts1.0.input_str_previous.start_time_zero.normalizer",
+    ),
+    # Norhan's ViT-Small readers. Of the learning rates she ran, 3e-5 had the
+    # best validation AUROC (mortality: 0.723 vs 0.664 at 1e-4 and 0.558 at
+    # 1e-3; phenotyping: 0.702 mean over 25 labels, the only run). No test
+    # log came with them, so no test AUROC is shown yet.
+    ReaderSpec(
+        key="cxr-mortality",
+        modality="cxr",
+        task="mortality",
+        label="Chest X-ray reader (ViT-Small)",
+        args=[*_CXR_ARGS, *_MORTALITY_ARGS],
+        checkpoint="mortality/r1/in-hospital-mortality/unimodal_cxr/"
+        "best_checkpoint_3e-05_in-hospital-mortality_unimodal_cxr_EHR-CXR_paired.pth.tar",
+        output_index=0,
+        test_auroc=None,
+    ),
+    ReaderSpec(
+        key="cxr-pneumonia",
+        modality="cxr",
+        task="pneumonia",
+        label="Chest X-ray reader (ViT-Small)",
+        args=[*_CXR_ARGS, *_PHENO_ARGS],
+        checkpoint="phenotyping/r1/phenotyping/unimodal_cxr/"
+        "best_checkpoint_3e-05_phenotyping_unimodal_cxr_EHR-CXR_paired.pth.tar",
+        output_index=PNEUMONIA_INDEX,
+        test_auroc=None,
     ),
     ReaderSpec(
         key="rr-mortality",
@@ -140,6 +169,35 @@ def rr_text(notes: list[NoteInput]) -> str | None:
 def dn_text(notes: list[NoteInput]) -> str | None:
     texts = [n.text for n in notes if n.type == "discharge" and n.text.strip()]
     return " ".join(texts) if texts else None
+
+
+def cxr_image(data: bytes) -> Any:
+    """The radiograph as training saw it, before the dataset transforms.
+
+    MIMIC-CXR JPEGs were shrunk offline by ``medpatch/resize.py`` (width 512,
+    aspect kept, re-saved as JPEG) and then opened with ``.convert('RGB')``.
+    ``resize.py`` runs as a script on import, so its two steps are repeated
+    here rather than imported; the dataset's own test transforms (384x384,
+    ImageNet normalisation) are applied by the caller.
+    """
+    from PIL import Image  # noqa: PLC0415
+
+    img = Image.open(io.BytesIO(data))
+    if img.mode in ("I", "I;16", "I;16B", "I;16L", "F"):
+        # 16-bit PNGs: stretch to 8-bit grey, as a JPEG export would.
+        import numpy as np  # noqa: PLC0415
+
+        arr = np.asarray(img, dtype=np.float64)
+        span = float(arr.max() - arr.min()) or 1.0
+        img = Image.fromarray(((arr - arr.min()) / span * 255).astype(np.uint8), "L")
+    elif img.mode not in ("L", "RGB"):
+        img = img.convert("RGB")
+
+    width = 512
+    img = img.resize((width, int(img.height * width / img.width)))
+    buffer = io.BytesIO()
+    img.save(buffer, format="JPEG")
+    return Image.open(io.BytesIO(buffer.getvalue())).convert("RGB")
 
 
 def _format_value(channel: str, value: float | str, categorical: bool, possible: list[str]) -> str:
@@ -209,21 +267,30 @@ class _Loaded:
 class Readers:
     """The loaded readers, keyed by (task, modality)."""
 
-    def __init__(self, loaded: list[_Loaded], discretizer: Any, device: str) -> None:
+    def __init__(
+        self, loaded: list[_Loaded], discretizer: Any, cxr_transform: Any, device: str
+    ) -> None:
         self._by_key = {(r.spec.task, r.spec.modality): r for r in loaded}
         self._discretizer = discretizer
+        self._cxr_transform = cxr_transform
         self._device = device
 
     @property
     def keys(self) -> list[str]:
         return [r.spec.key for r in self._by_key.values()]
 
-    def score(self, req: PredictRequest) -> dict[str, ReaderScore]:
-        """Unimodal probabilities for every modality a trained reader covers."""
+    def score(self, req: PredictRequest, cxr_bytes: bytes | None = None) -> dict[str, ReaderScore]:
+        """Unimodal probabilities for every modality a trained reader covers.
+
+        ``cxr_bytes`` is the radiograph already decoded and hash-checked by
+        ``cxr.decode_cxr``.
+        """
         import torch  # noqa: PLC0415
 
         notes = req.notes or []
         inputs: dict[Modality, Any] = {}
+        if cxr_bytes is not None:
+            inputs["cxr"] = cxr_image(cxr_bytes)
         if req.ehr is not None:
             rows = ehr_rows(req.ehr, self._discretizer)
             if rows:
@@ -259,6 +326,9 @@ class Readers:
             data = reader.normalizer.transform(data)
             x = torch.tensor(data[None], dtype=torch.float32, device=self._device)
             return reader.model(x=x, seq_lengths=[x.shape[1]])["unified"]
+        if modality == "cxr":
+            x = self._cxr_transform(value)[None].to(self._device)
+            return reader.model(img=x)["unified"]
         if modality == "rr":
             return reader.model(rr=[value])["unified"]
         return reader.model(dn=[value])["unified"]
@@ -285,7 +355,9 @@ def load_readers(medpatch_root: Path, checkpoint_dir: Path, device: str) -> Read
 
     import torch  # noqa: PLC0415
     from arguments import args_parser  # type: ignore[import-not-found]  # noqa: PLC0415
+    from datasets.cxr_dataset import get_transforms  # type: ignore[import-not-found]  # noqa: PLC0415
     from ehr_utils.preprocessing import Discretizer, Normalizer  # type: ignore[import-not-found]  # noqa: PLC0415
+    from models.cxr_models import CXR_encoder  # type: ignore[import-not-found]  # noqa: PLC0415
     from models.ehr_models import EHR_encoder  # type: ignore[import-not-found]  # noqa: PLC0415
     from models.fusion import Fusion  # type: ignore[import-not-found]  # noqa: PLC0415
     from models.text_models import Text_encoder  # type: ignore[import-not-found]  # noqa: PLC0415
@@ -305,13 +377,19 @@ def load_readers(medpatch_root: Path, checkpoint_dir: Path, device: str) -> Read
     continuous = [i for i, name in enumerate(header) if "->" not in name]
 
     shared_bert: Any = None
+    cxr_transform: Any = None
     loaded: list[_Loaded] = []
     for spec in READERS:
         started = time.perf_counter()
         args = args_parser().parse_args([*spec.args, *_COMMON_ARGS])
+        text_encoder = None
         if spec.modality == "ehr":
             model = Fusion(args, EHR_encoder(args), None, None)
-            text_encoder = None
+        elif spec.modality == "cxr":
+            model = Fusion(args, None, CXR_encoder(args), None)
+            # The dataset's test-time transforms: Resize 384x384, CenterCrop,
+            # ToTensor, ImageNet normalisation.
+            cxr_transform = get_transforms(args)[1]
         else:
             text_encoder = Text_encoder(args, device)
             model = Fusion(args, None, None, text_encoder)
@@ -344,7 +422,7 @@ def load_readers(medpatch_root: Path, checkpoint_dir: Path, device: str) -> Read
         loaded.append(_Loaded(spec=spec, model=model, normalizer=normalizer))
         logger.info("loaded reader %s in %.1fs", spec.key, time.perf_counter() - started)
 
-    readers = Readers(loaded, discretizer, device)
+    readers = Readers(loaded, discretizer, cxr_transform, device)
     _warm_up(readers)
     return readers
 
@@ -362,6 +440,10 @@ def _warm_up(readers: Readers) -> None:
         variables=["Heart Rate"],
         values=[[80.0]] + [[None]] * (EHR_WINDOW_HOURS - 1),
     )
+    from PIL import Image  # noqa: PLC0415
+
+    buffer = io.BytesIO()
+    Image.new("L", (600, 700), 128).save(buffer, format="PNG")
     for task in ("mortality", "pneumonia"):
         readers.score(
             PredictRequest(
@@ -371,5 +453,6 @@ def _warm_up(readers: Readers) -> None:
                     NoteInput(id="warm-rr", type="radiology", text="Synthetic warm-up report."),
                     NoteInput(id="warm-dn", type="discharge", text="Synthetic warm-up summary."),
                 ],
-            )
+            ),
+            cxr_bytes=buffer.getvalue(),
         )

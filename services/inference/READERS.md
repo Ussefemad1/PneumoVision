@@ -13,9 +13,18 @@ them "Trained model" or "Simulated".
 | Radiology reports, BioBERT (`unimodal_rr`) | mortality | 0.730 | Farida |
 | Radiology reports, BioBERT (`unimodal_rr`) | pneumonia (phenotype 21) | 0.859 | Farida |
 | Discharge notes, BioBERT (`unimodal_dn`) | pneumonia (phenotype 21) | 0.897 | Farida |
+| Chest X-ray, ViT-Small (`unimodal_cxr`) | mortality | not reported (val 0.723) | Norhan |
+| Chest X-ray, ViT-Small (`unimodal_cxr`) | pneumonia (phenotype 21) | not reported (val 0.702, mean of 25) | Norhan |
 
-No CXR reader yet (Norhan's is pending). There is no mortality DN reader:
-discharge notes leak the outcome and are never sent for mortality.
+For the CXR readers the lr 3e-5 checkpoints were chosen on validation AUROC
+(mortality 0.723 vs 0.664 at 1e-4 and 0.558 at 1e-3). No test log came with
+them; add the test AUROCs to `READERS` in `app/readers.py` when Norhan reports
+them. There is no mortality DN reader: discharge notes leak the outcome and are
+never sent for mortality.
+
+The combined score is the plain **average** of the trained readers' scores
+(`sources.fusion = "average"`), shown with its formula on the report. It is not
+the MedPatch fusion.
 
 ## Run it locally
 
@@ -29,6 +38,8 @@ discharge notes leak the outcome and are never sent for mortality.
    mortality/r1/in-hospital-mortality/unimodal_rr/best_checkpoint_0.00012225031390095305_in-hospital-mortality_unimodal_rr_EHR-RR_paired.pth.tar
    phenotyping/r1/phenotyping/unimodal_rr/best_checkpoint_0.00012225031390095305_phenotyping_unimodal_rr_EHR-RR_paired.pth.tar
    phenotyping/r1/phenotyping/unimodal_dn/best_checkpoint_0.00012225031390095305_phenotyping_unimodal_dn_EHR-DN_paired.pth.tar
+   mortality/r1/in-hospital-mortality/unimodal_cxr/best_checkpoint_3e-05_in-hospital-mortality_unimodal_cxr_EHR-CXR_paired.pth.tar
+   phenotyping/r1/phenotyping/unimodal_cxr/best_checkpoint_3e-05_phenotyping_unimodal_cxr_EHR-CXR_paired.pth.tar
    ```
 
    A checkpoint that arrives as an unzipped folder (`data.pkl`, `data/`,
@@ -55,6 +66,10 @@ on a GPU.
 - RR: radiology-type notes joined with a space. Progress and nursing notes are
   not fed to the RR reader, which was trained on radiology reports only.
 - DN: discharge notes joined with a space, pneumonia only.
+- CXR: the two steps of `medpatch/resize.py` (width 512, aspect kept, re-saved
+  as JPEG; it runs as a script, so they are repeated rather than imported),
+  `.convert('RGB')`, then medpatch's own `get_transforms(args)[1]`
+  (384x384, ImageNet normalisation) into the ViT-Small built by `CXR_encoder`.
 
 ## Caveats to state on the report or in the defense
 
@@ -63,5 +78,8 @@ on a GPU.
   distribution.
 - A discharge note usually states the diagnosis, which is why the DN reader is
   the strongest and why it is excluded from mortality.
-- Fused score, evidence strength, modality contribution and the confidence
-  heatmaps are simulated until the fusion checkpoints exist.
+- Evidence strength, modality contribution and the confidence heatmaps are
+  simulated until the fusion checkpoints exist; the combined score is a plain
+  average, not MedPatch.
+- The CXR readers were trained on MIMIC-CXR AP radiographs. Photos, scans of
+  printed films or other views are out of distribution.

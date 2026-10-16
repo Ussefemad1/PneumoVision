@@ -256,6 +256,11 @@ def build_mock_result(
     }
     probability = sum(weights[b] * (branch_scores[b] or 0.0) for b in branches)
     probability = min(0.999, max(0.001, probability))
+    # With trained readers present, the headline number is their plain mean —
+    # a calculation the reader can check by hand — not the simulated fusion.
+    # Simulated modalities (no reader yet) are left out of it.
+    if real:
+        probability = sum(real) / len(real)
 
     confidence = _build_confidence(req, rng, availability, notes)
 
@@ -277,7 +282,7 @@ def build_mock_result(
         confidence=confidence,
         received=build_received(req, cxr, mode="readers" if used_readers else "mock"),
         sources=Sources(
-            fusion="mock",
+            fusion="average" if real else "mock",
             ehr=source("ehr"),
             cxr=source("cxr"),
             rr=source("rr"),

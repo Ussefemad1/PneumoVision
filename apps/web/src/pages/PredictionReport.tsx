@@ -68,8 +68,12 @@ export function PredictionReportPage() {
   const band = riskBand(result.probability);
   // Old predictions carry no provenance: everything was simulated then.
   const sources = result.sources;
-  const fusionSimulated = !sources || sources.fusion === 'mock';
+  const fusionKind = sources?.fusion ?? 'mock';
+  // Joint, missingness and α come from the fusion model; only a trained one
+  // makes them real.
+  const fusionSimulated = fusionKind !== 'trained';
   const trained = taskModalities.filter((key) => sources?.[key]?.kind === 'trained');
+  const averaged = trained.filter((key) => typeof result.unimodal[key] === 'number');
   const simulatedTag = fusionSimulated ? <SimulatedChip /> : undefined;
 
   return (
@@ -128,9 +132,19 @@ export function PredictionReportPage() {
             </p>
             <p className="mt-0.5 text-ink-secondary">
               Scores marked <strong>Trained model</strong> come from the team&rsquo;s trained
-              single-modality models. The MedPatch fusion is not trained yet, so evidence strength,
-              modality contribution and the fused decision are <strong>simulated</strong> around
-              those scores.
+              single-modality models.{' '}
+              {fusionKind === 'average' ? (
+                <>
+                  The MedPatch fusion is not trained yet, so the combined score is the{' '}
+                  <strong>simple average</strong> of those scores, and evidence strength and
+                  modality contribution are <strong>simulated</strong>.
+                </>
+              ) : (
+                <>
+                  The MedPatch fusion is not trained yet, so evidence strength, modality
+                  contribution and the fused decision are <strong>simulated</strong>.
+                </>
+              )}
             </p>
           </div>
         </div>
@@ -262,20 +276,47 @@ export function PredictionReportPage() {
             <AlphaContributionChart alphas={result.alphas} />
           </Card>
 
-          <Card className="border-2" title="4 · Fused decision" actions={simulatedTag}>
+          <Card
+            className="border-2"
+            title={fusionKind === 'average' ? '4 · Combined score' : '4 · Fused decision'}
+            actions={fusionKind === 'average' ? <AverageChip /> : simulatedTag}
+          >
             <div className="flex flex-col items-center gap-3">
               <RiskGauge
                 probability={result.probability}
                 label={data.task === 'mortality' ? '48-hour mortality' : 'Pneumonia phenotype'}
-                sublabel={fusionSimulated ? 'Simulated' : 'Calibrated'}
+                sublabel={
+                  fusionKind === 'average'
+                    ? 'Average of trained models'
+                    : fusionKind === 'mock'
+                      ? 'Simulated'
+                      : 'Calibrated'
+                }
               />
-              <p className="text-center text-xs text-ink-secondary">
-                Weighted combination of every branch above.{' '}
-                <span style={{ color: band.cssVar }} className="font-medium">
-                  {band.label} risk
-                </span>
-                .
-              </p>
+              {fusionKind === 'average' ? (
+                <div className="w-full text-center text-xs text-ink-secondary">
+                  <p className="tnum rounded-md bg-surface-2 px-2 py-1.5 text-ink">
+                    ({averaged.map((key) => percent(result.unimodal[key])).join(' + ')}) ÷{' '}
+                    {averaged.length} = {percent(result.probability)}
+                  </p>
+                  <p className="mt-2">
+                    Simple average of{' '}
+                    {averaged.map((key) => MODALITY_LABELS[key] ?? key).join(', ')}.{' '}
+                    <span style={{ color: band.cssVar }} className="font-medium">
+                      {band.label} risk
+                    </span>
+                    . Not the MedPatch fusion, which weighs sources by learned confidence.
+                  </p>
+                </div>
+              ) : (
+                <p className="text-center text-xs text-ink-secondary">
+                  Weighted combination of every branch above.{' '}
+                  <span style={{ color: band.cssVar }} className="font-medium">
+                    {band.label} risk
+                  </span>
+                  .
+                </p>
+              )}
             </div>
           </Card>
         </div>
@@ -303,7 +344,7 @@ export function PredictionReportPage() {
             : `pneumonia phenotype AUROC ${MEDPATCH_REFERENCE_METRICS.pneumonia.auroc}`}
           .{' '}
           {trained.length > 0
-            ? 'Scores marked Trained model are real outputs of the team’s single-modality models, evaluated on held-out MIMIC-IV test data; the fused prediction is simulated until the fusion model is trained. Not clinically validated.'
+            ? `Scores marked Trained model are real outputs of the team’s single-modality models, evaluated on held-out MIMIC-IV test data; ${fusionKind === 'average' ? 'the combined score is their simple average' : 'the fused prediction is simulated'} until the fusion model is trained. Not clinically validated.`
             : 'This prediction comes from a mock model — the numbers above are not clinically meaningful.'}
         </p>
       </Card>
@@ -322,13 +363,27 @@ function SourceChip({ source }: { source: ModalitySource }) {
         className="mt-1 inline-flex items-center gap-1 rounded-full bg-[var(--series-mortality)]/12 px-2 py-0.5 text-[10px] font-semibold text-[var(--series-mortality)]"
       >
         <span aria-hidden="true">✓</span> Trained model
-        {source.testAuroc !== null && (
-          <span className="tnum font-normal">· test AUROC {source.testAuroc.toFixed(3)}</span>
-        )}
+        <span className="tnum font-normal">
+          ·{' '}
+          {source.testAuroc !== null
+            ? `test AUROC ${source.testAuroc.toFixed(3)}`
+            : 'test AUROC not reported yet'}
+        </span>
       </span>
     );
   }
   return <SimulatedChip className="mt-1" />;
+}
+
+function AverageChip() {
+  return (
+    <span
+      title="The plain mean of the trained models' scores. Not the MedPatch fusion."
+      className="inline-flex items-center gap-1 rounded-full bg-[var(--series-mortality)]/12 px-2 py-0.5 text-[10px] font-semibold text-[var(--series-mortality)]"
+    >
+      <span aria-hidden="true">=</span> Simple average · not MedPatch
+    </span>
+  );
 }
 
 function SimulatedChip({ className }: { className?: string | undefined }) {

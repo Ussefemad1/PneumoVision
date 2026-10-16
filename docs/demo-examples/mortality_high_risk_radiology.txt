@@ -1,0 +1,11 @@
+SYNTHETIC RADIOLOGY REPORT (invented for testing, not a real patient)
+
+EXAMINATION: Chest radiograph, portable AP.
+INDICATION: Intubated patient with septic shock and worsening oxygenation.
+COMPARISON: Radiograph from 12 hours earlier.
+
+FINDINGS: Endotracheal tube 4 cm above the carina. Right internal jugular central line with tip in the SVC. Nasogastric tube in the stomach. Diffuse bilateral airspace opacities, markedly worse than the prior study, now involving all lung zones. Bilateral pleural effusions. No pneumothorax.
+
+IMPRESSION:
+1. Rapidly progressive diffuse bilateral opacities, consistent with acute respiratory distress syndrome in the setting of sepsis.
+2. Lines and tubes in satisfactory position.

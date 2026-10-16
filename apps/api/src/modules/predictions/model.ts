@@ -89,7 +89,7 @@ const modalitySourceSchema = new Schema(
 /** Which numbers came from trained readers and which are simulated. */
 const sourcesSchema = new Schema(
   {
-    fusion: { type: String, required: true, enum: ['trained', 'mock'] },
+    fusion: { type: String, required: true, enum: ['trained', 'average', 'mock'] },
     ehr: { type: modalitySourceSchema, default: null },
     cxr: { type: modalitySourceSchema, default: null },
     rr: { type: modalitySourceSchema, default: null },
