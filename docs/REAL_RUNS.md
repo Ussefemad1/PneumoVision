@@ -490,14 +490,31 @@ command runs all four.
   Drive). It is **resumable**: rerunning the same command skips finished shards,
   so a disconnect loses at most one. It prints each shard's size, the cache
   total and the free space. It copies the cache to Drive only with
-  `--copy-cache-to <dir>`; the phenotyping cache is about 30 GB.
+  `--copy-cache-to <dir>` (the phenotyping cache is about 30 GB). The copy
+  writes bytes only (`shutil.copyfile`; Drive's FUSE mount rejects copystat),
+  skips files already there with the same size, prints the file counts on both
+  sides and reports a failed file without failing the step. To copy later,
+  rerun `--step cache --copy-cache-to <dir>`: finished shards are skipped.
 - **equivalence:** compares cached and live forwards on real validation
   batches and prints only the maximum differences.
 - **train:**
   - trains the main run, then the same with `--ablation
 without_missingness_module`, both from the same cache;
   - `--extra-ablations` adds without_joint_module and without_late_module;
-  - every training run picks its head on validation (F3).
+  - every training run picks its head on validation (F3);
+  - `run.json` records which variants were requested, and `pytest -m round3`
+    checks exactly those.
+- **ablations** (after `record`, not part of `all`): trains and scores more
+  variants from the same cache and writes `r3_ablations.csv`. The recorded main
+  run is listed first, for reference. The manifest row is left untouched.
+  - The default variants are without_joint_module, without_late_module,
+    late_weights_per_class and mask_missing_tokens.
+  - `--variants …` picks a subset.
+  - Rerunning skips variants that have finished training.
+
+Every step exits 0 on success and non-zero on an error, so a failing cell
+stops a "Run all".
+
 - **record:**
   - scores the chosen head on val and test and writes `r3_results.csv` (main
     and ablation, macro and target AUROC/AUPRC with 95% CIs);
@@ -575,6 +592,7 @@ RID = 'r3-fusion-001'   # <- the id the dry run printed; every step below uses i
 !python -m tools.pv.run r3 --task mortality --data real {DATA} --run-id {RID} --step equivalence --equivalence-batches 2
 !python -m tools.pv.run r3 --task mortality --data real {DATA} --run-id {RID} --step train
 !python -m tools.pv.run r3 --task mortality --data real {DATA} --run-id {RID} --step record
+!python -m tools.pv.run r3 --task mortality --data real {DATA} --run-id {RID} --step ablations
 !PV_CHECK_TASK=in-hospital-mortality python -m pytest -m round3 -s
 !mkdir -p /content/drive/MyDrive/PneumoVision_shared/round3/mortality
 !cp -r "$RUNS_ROOT/in-hospital-mortality/r3/{RID}" /content/drive/MyDrive/PneumoVision_shared/round3/mortality/
@@ -586,10 +604,29 @@ but before the row is written, use `--step record`, or `--record-only`.
 
 ### Notebook 3 — phenotyping Round 3
 
-Same as Notebook 2 with `--task phenotyping`, `PV_CHECK_TASK=phenotyping`,
-the folder `$RUNS_ROOT/phenotyping/r3/<id>` and the shared folder
-`PneumoVision_shared/round3/phenotyping/`. The cache is about 30 GB; check that
-the pre-flight's free-space line allows it.
+The cache is about 30 GB; check that the pre-flight's free-space line allows
+it.
+
+```python
+!python -m tools.pv.run r3 --task phenotyping --data real {DATA} --dry-run   # prints the next id
+RID = 'r3-fusion-002'   # <- the id the dry run printed
+!python -m tools.pv.run r3 --task phenotyping --data real {DATA} --run-id {RID} --step cache   # rerun to resume
+!python -m tools.pv.run r3 --task phenotyping --data real {DATA} --run-id {RID} --step equivalence --equivalence-batches 2
+!python -m tools.pv.run r3 --task phenotyping --data real {DATA} --run-id {RID} --step train
+!python -m tools.pv.run r3 --task phenotyping --data real {DATA} --run-id {RID} --step record
+!python -m tools.pv.run r3 --task phenotyping --data real {DATA} --run-id {RID} --step ablations
+!PV_CHECK_TASK=phenotyping python -m pytest -m round3 -s
+!mkdir -p /content/drive/MyDrive/PneumoVision_shared/round3/phenotyping
+!cp -r "$RUNS_ROOT/phenotyping/r3/{RID}" /content/drive/MyDrive/PneumoVision_shared/round3/phenotyping/
+```
+
+**Mortality r3-fusion-001 (already recorded):** to add its ablations, run only
+the ablations step and the checks:
+
+```python
+!python -m tools.pv.run r3 --task mortality --data real {DATA} --run-id r3-fusion-001 --step ablations
+!PV_CHECK_TASK=in-hospital-mortality python -m pytest -m round3 -s
+```
 
 ---
 

@@ -9,6 +9,56 @@ Newest first.
 
 ---
 
+## 2026-10-17 — run r3 exit codes, cache copy, requested variants, ablations step
+
+Mortality Round 3 ran on Colab (7f2d783): `r3-fusion-001`, test mortality
+AUROC 0.865 [0.850, 0.879], AUPRC 0.540 [0.502, 0.576]; without missingness
+0.864 / 0.540; head late; cached vs live 1.2e-07. No `medpatch/` change this
+time.
+
+29. **Exit codes.** `run.py` exits 0 only when `main()` returns a row, so every
+    successful `run r3` step except `record` exited 1. `run r3` now goes
+    through `round3.cli()`, which returns 0 on success; errors still raise
+    `SystemExit` (non-zero).
+30. **`--copy-cache-to`.** Copies file by file with `shutil.copyfile`. Drive's
+    FUSE mount rejects the `copystat` that `copytree` / `copy2` do. It skips
+    files already there with the same size, prints the file counts on both
+    sides, and reports a failed file without failing the step.
+31. **Requested variants.** `run.json` records `requested_variants` (train)
+    and `requested_ablations` (ablations step). `test_e_trained_the_requested_variants`
+    checks exactly those, instead of assuming `--extra-ablations`.
+32. **`--step ablations`.**
+    - Trains and scores further variants from the same cache after the row
+      exists: without_joint_module, without_late_module, late_weights_per_class
+      and mask_missing_tokens by default, or `--variants`.
+    - Writes them to `r3_ablations.csv`, with the recorded main run first.
+    - The manifest row is untouched.
+    - Finished variants are skipped on rerun.
+
+**Threshold sweep (0.60–0.85): not built, pending a decision.**
+
+- **Needs a new capture.** The cache stores, per class, the mean of the tokens
+  whose confidence is ≥ θ (high) and < θ (low) at θ = 0.75. The per-token
+  confidences are not stored.
+- **Proposal:** one reader pass that stores token sums and counts per
+  confidence bin, with edges at the swept thresholds: 7 bins for
+  0.60, 0.65, …, 0.85. Any θ on an edge is then a sum over bins. Cost per
+  stay:
+
+  | Option                                          | Phenotyping               | Mortality |
+  | ----------------------------------------------- | ------------------------- | --------- |
+  | now, one θ                                      | ~0.50 MB/stay, ~29 GB     | ~0.5 GB   |
+  | 6 separate captures                             | ~175 GB (6 reader passes) | ~3 GB     |
+  | binned, 6 thresholds, fp32                      | ~1.7 MB/stay, ~100 GB     | ~1.4 GB   |
+  | binned, 6 thresholds, fp16                      | ~50 GB                    | ~0.7 GB   |
+  | binned, 3 thresholds (0.65 / 0.75 / 0.85), fp32 | ~58 GB                    | ~0.9 GB   |
+
+  These assume 58,928 phenotyping stays (one group = 25 classes × (512 EHR +
+  384 CXR + 768 RR + 768 DN) floats) and 26,527 mortality stays (one group =
+  512 + 384 + 768).
+
+---
+
 ## 2026-10-16 — A last batch of one; tokenizer fork warnings; full logs
 
 Notebook 1 on Colab (88b38ec): lists, `parent_keys` and `r3_preflight` passed
