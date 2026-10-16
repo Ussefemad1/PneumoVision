@@ -9,6 +9,39 @@ Newest first.
 
 ---
 
+## 2026-10-20 — EHR beyond 2,646 hours (phenotyping cache crash)
+
+The phenotyping cache (`r3-fusion-002`) crashed at train shard 7 of 42 on a
+3,069-hour stay: `ehr_conf_logits / temp_ehr` at `fusion.py`, sizes 3069 vs 2646.
+
+- **Cause:** phenotyping collate pads EHR to at least 2,646 hours but never
+  truncates, while `ehr_temperature` has 2,646 positions, so `[:seq_len]` was
+  shorter than the sequence. Round 2b trained on val only and never met such
+  a stay; upstream would crash the same way.
+
+43. **`temperature_for()`** (`models/fusion.py:108`), used in
+    `TempCUnimodalEHR`, `CMSMAFusion` and `EMSMAFusion`.
+    - **Behaviour:** positions past the learned temperatures use 1.0
+      (uncalibrated); the sequence is not truncated, so every hour is still
+      used.
+    - **Within range it is the old slice:** tested bit-identical (outputs and
+      capture) for stays ≤ 2,646 h, and the old slice reproduces the crash.
+    - **CXR / RR / DN untouched:** their sequences (≤ 577 / 512 tokens) never
+      exceed their temperatures.
+    - **Deviation** in phenotyping r3 notes.
+44. **Counts.**
+    - `--step cache` counts, per shard, the stays longer than the EHR
+      temperature's positions. It prints `<split>: N stays longer than 2646 h`
+      and keeps the counts in `meta.json`, so they survive a resume.
+    - The manifest notes report them per split.
+    - A shard written before the fix holds no such stay (that code crashed on
+      the first one), so its missing count is 0.
+45. **The six finished shards stay valid.** Their batches had no stay over
+    2,646 h, so their values are unchanged. `CAPTURE_SEMANTICS` stays 1 (the
+    commit is provenance only): rerunning `--step cache` resumes at shard 7.
+
+---
+
 ## 2026-10-19 — Round 3 training cost; stop-safe steps (last code round before phenotyping)
 
 No change to the 0.75 main path or to anything `r3-fusion-001` depends on.
