@@ -665,4 +665,10 @@ def main(argv: list[str] | None = None) -> dict[str, str] | None:
 
 
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["r3"]:
+        # Round 3 steps (cache, train, ...) return no manifest row on success:
+        # exit 0 unless one raised (tools/pv/round3.py).
+        from tools.pv import round3
+
+        sys.exit(round3.cli(sys.argv[2:]))
     sys.exit(0 if main() is not None or "--dry-run" in sys.argv else 1)

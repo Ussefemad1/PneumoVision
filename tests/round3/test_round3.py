@@ -89,15 +89,22 @@ def test_d_cached_equals_live(run, live):
     assert all(v <= TOL for k, v in report.items() if k.startswith("max_abs")), report
 
 
-def test_e_trained_with_all_ablations(run):
+def test_e_trained_the_requested_variants(run):
+    """Exactly the variants run.json says were asked for (train step, then any ablations)."""
     trained = run.get("trained") or {}
-    expected = {"main", round3.MAIN_ABLATION, *round3.EXTRA_ABLATIONS}
-    assert expected <= set(trained), trained
-    for name, path in trained.items():
-        ckpt = torch.load(path, map_location="cpu", weights_only=False)
+    requested = set(run.get("requested_variants") or ["main"])
+    requested |= set(run.get("requested_ablations") or [])
+    assert requested <= set(trained), (sorted(requested), sorted(trained))
+    for name in sorted(requested):
+        ckpt = torch.load(trained[name], map_location="cpu", weights_only=False)
         assert ckpt["best_head"] in ("high", "low", "late", "combined", "less_combined"), name
         print(f"{name}: best epoch {ckpt['epoch']}, head {ckpt['best_head']}")
-    assert "ablation without_missingness_module: head=" in run["row"]["notes"]
+    if round3.MAIN_ABLATION in (run.get("requested_variants") or []):
+        assert f"ablation {round3.MAIN_ABLATION}: head=" in run["row"]["notes"]
+    if run.get("requested_ablations"):
+        table = (Path(run["save_dir"]) / "r3_ablations.csv").read_text(encoding="utf-8")
+        for name in run["requested_ablations"]:
+            assert any(line.startswith(f"{name},") for line in table.splitlines()), name
 
 
 def test_f_last_validation_batch_of_one_and_missing_image(run):

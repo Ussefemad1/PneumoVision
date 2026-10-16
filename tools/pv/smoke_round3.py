@@ -103,6 +103,11 @@ def _run(argv: list[str] | None = None) -> int:
         "--equivalence-batches", "2", "--extra-ablations", "--who", "smoke_round3",
         "--cache-dir", str(REPO_ROOT / "runs" / "r3_cache" / "virtual" / task),
     ]))  # fmt: skip
+    step("run r3 --step ablations (after the row exists)", lambda: round3.main([
+        *common, "--epochs", str(args.epochs), "--run-id", row["id"], "--step", "ablations",
+        "--variants", "late_weights_per_class", "mask_missing_tokens",
+        "--cache-dir", str(REPO_ROOT / "runs" / "r3_cache" / "virtual" / task),
+    ]))  # fmt: skip
     code = step("checks: pytest -m round3", lambda: subprocess.call(
         [sys.executable, "-m", "pytest", "-m", "round3", "-s", "-p", "no:warnings", "tests/round3"],
         cwd=REPO_ROOT, env={**os.environ, "PV_CHECK_TASK": task},

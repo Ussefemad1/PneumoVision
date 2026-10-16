@@ -16,7 +16,14 @@ Steps (``--step``; ``all`` runs them in this order):
                    ``--ablation without_missingness_module`` (and, with
                    ``--extra-ablations``, without_joint_module / without_late_module);
 - ``record``       score the head chosen on validation (F3) on val and test and
-                   write the manifest row (stage r3, reader fusion) and r3_results.csv.
+                   write the manifest row (stage r3, reader fusion) and r3_results.csv;
+- ``ablations``    (not part of ``all``) train and score further variants from
+                   the same cache after the row exists (``--variants``; default
+                   without_joint_module, without_late_module,
+                   late_weights_per_class, mask_missing_tokens) into
+                   r3_ablations.csv; the manifest row is left untouched.
+
+Exit code 0 when the steps succeed, non-zero on an error.
 
 The command is Confidence-Patching.sh with: --fusion_type c-msma (c-e-msma
 only with --allow-entropy, and then live, without the cache), --data_pairs
@@ -69,6 +76,20 @@ VIRTUAL_DEFAULTS = {"epochs": 3, "batch_size": 7, "bootstrap_iters": 20}
 STEPS = ("cache", "equivalence", "train", "record")
 EXTRA_ABLATIONS = ("without_joint_module", "without_late_module")
 MAIN_ABLATION = "without_missingness_module"
+#: Variants trained from the same cache: name -> args overrides on the main run.
+VARIANTS = {
+    MAIN_ABLATION: {"ablation": MAIN_ABLATION},
+    "without_joint_module": {"ablation": "without_joint_module"},
+    "without_late_module": {"ablation": "without_late_module"},
+    "late_weights_per_class": {"late_weights_per_class": True},
+    "mask_missing_tokens": {"mask_missing_tokens": True},
+}
+DEFAULT_ABLATION_STEP = (
+    "without_joint_module",
+    "without_late_module",
+    "late_weights_per_class",
+    "mask_missing_tokens",
+)
 
 
 # ── plan ─────────────────────────────────────────────────────────────────────
@@ -382,10 +403,44 @@ def step_cache(run: dict, opts) -> None:
               f"free {shutil.disk_usage(cache_dir).free / 2**30:.1f} GB")  # fmt: skip
         run["cache"] = {"bytes": size, "splits": meta["splits"]}
         if opts.copy_cache_to:
-            target = Path(opts.copy_cache_to) / cache_dir.name
-            print(f"[r3 cache] copying to {target} (--copy-cache-to)")
-            shutil.copytree(cache_dir, target, dirs_exist_ok=True)
+            copy_cache(cache_dir, Path(opts.copy_cache_to) / cache_dir.name)
     save_run(run)
+
+
+def _files(root: Path) -> dict[str, int]:
+    return {str(f.relative_to(root)): f.stat().st_size for f in root.rglob("*") if f.is_file()}
+
+
+def copy_cache(source: Path, target: Path) -> bool:
+    """Copy the cache file by file with shutil.copyfile; never fails the step.
+
+    Drive's FUSE mount rejects copystat (what copytree / copy2 do after each
+    file), so only the bytes are copied. Files already there with the same size
+    are skipped, so a rerun resumes. Prints the file counts on both sides.
+    """
+    print(f"[r3 cache] copying to {target} (--copy-cache-to)")
+    src = _files(source)
+    copied = failed = 0
+    for rel, size in sorted(src.items()):
+        dest = target / rel
+        try:
+            if dest.is_file() and dest.stat().st_size == size:
+                continue
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source / rel, dest)
+            copied += 1
+        except Exception as exc:  # noqa: BLE001 -- report, never fail the cache step
+            failed += 1
+            print(f"[r3 cache] WARNING could not copy {rel}: {exc!r}")
+    try:
+        dst = _files(target)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[r3 cache] WARNING could not list {target}: {exc!r}")
+        dst = {}
+    same = sum(1 for rel, size in src.items() if dst.get(rel) == size)
+    print(f"[r3 cache] copy: source {len(src)} files, target {len(dst)} files, "
+          f"{same} identical in size; {copied} copied now, {failed} failed")  # fmt: skip
+    return failed == 0 and same == len(src)
 
 
 def missing_images(dataset) -> int:
@@ -453,39 +508,72 @@ def cache_loaders(run: dict, args, preload: bool):
     )
 
 
-def variants(run: dict, opts) -> list[tuple[str, str | None, str]]:
-    """(name, ablation, save_dir) for the main run and its ablations."""
-    out = [("main", None, run["save_dir"])]
+def variant_names(opts) -> list[str]:
+    """The variants the train / record steps cover: main, then the ablations asked for."""
+    names = ["main"]
     if not opts.no_ablation:
-        out.append((MAIN_ABLATION, MAIN_ABLATION, str(Path(run["save_dir"]) / MAIN_ABLATION)))
+        names.append(MAIN_ABLATION)
     if opts.extra_ablations:
-        out += [(a, a, str(Path(run["save_dir"]) / a)) for a in EXTRA_ABLATIONS]
-    return out
+        names += list(EXTRA_ABLATIONS)
+    return names
+
+
+def variant_args(run: dict, name: str):
+    """The run's args for one variant, saved under <save_dir>/<name> (main: save_dir)."""
+    if name == "main":
+        return trainer_args(run)
+    args = trainer_args(run, save_dir=str(Path(run["save_dir"]) / name))
+    for key, value in VARIANTS[name].items():
+        setattr(args, key, value)
+    return args
+
+
+def variants(run: dict, opts) -> list[tuple[str, object]]:
+    return [(name, variant_args(run, name)) for name in variant_names(opts)]
+
+
+def train_variant(run: dict, name: str, args, opts) -> str:
+    """Train one variant on the cache (skipped when already finished); its best checkpoint."""
+    if finished(args):
+        print(f"[r3] {name}: already trained ({args.epochs} epochs or early-stopped); skipped")
+        return str(_best(args))
+    with logged(run, f"train_{name}") as out:
+        loaders = cache_loaders(run, args, opts.preload)
+        trainer = build_trainer(args, loaders)
+        run.setdefault("f2", f2_lines(out.getvalue()))
+        for module in (trainer.model.fusion_model.text_model, trainer.model.fusion_model.cxr_model):
+            if module is not None:
+                module.to("cpu")  # never used on the cache: free the GPU
+        trainer.train()
+        trainer.eval()
+    return str(_best(args))
 
 
 def step_train(run: dict, opts) -> None:
+    run["requested_variants"] = variant_names(opts)  # what the checks expect, exactly
+    save_run(run)
     if not run["cached"]:
         return live_train(run)
-    for name, ablation, save_dir in variants(run, opts):
-        args = trainer_args(run, ablation, save_dir)
-        if finished(args):
-            print(f"[r3] {name}: already trained ({args.epochs} epochs or early-stopped); skipped")
-            run.setdefault("trained", {})[name] = str(_best(args))
-            continue
-        with logged(run, f"train_{name}") as out:
-            loaders = cache_loaders(run, args, opts.preload)
-            trainer = build_trainer(args, loaders)
-            run.setdefault("f2", f2_lines(out.getvalue()))
-            for module in (
-                trainer.model.fusion_model.text_model,
-                trainer.model.fusion_model.cxr_model,
-            ):
-                if module is not None:
-                    module.to("cpu")  # never used on the cache: free the GPU
-            trainer.train()
-            trainer.eval()
-        run.setdefault("trained", {})[name] = str(_best(args))
+    for name, args in variants(run, opts):
+        run.setdefault("trained", {})[name] = train_variant(run, name, args, opts)
         save_run(run)
+
+
+def step_ablations(run: dict, opts) -> Path:
+    """Train and score further variants after the row exists; manifest untouched."""
+    if not run["cached"]:
+        raise SystemExit("[r3] --step ablations needs the cache (c-msma)")
+    names = opts.variants or list(DEFAULT_ABLATION_STEP)
+    run["requested_ablations"] = sorted(set(run.get("requested_ablations", [])) | set(names))
+    save_run(run)
+    for name in names:
+        args = variant_args(run, name)
+        run.setdefault("trained", {})[name] = train_variant(run, name, args, opts)
+        save_run(run)
+        with logged(run, f"score_{name}"):
+            run.setdefault("ablation_scores", {})[name] = score_variant(run, args, opts)
+        save_run(run)
+    return write_ablations(run)
 
 
 def finished(args) -> bool:
@@ -562,8 +650,7 @@ def step_record(run: dict, opts, who: str) -> dict[str, str]:
         raise SystemExit(f"[r3] {run['id']} is already in {manifest.manifest_path()}")
     with logged(run, "record"):
         scores = {}
-        for name, ablation, save_dir in variants(run, opts):
-            args = trainer_args(run, ablation, save_dir)
+        for name, args in variants(run, opts):
             if name != "main" and not _best(args).is_file():
                 print(f"[r3] {name}: no checkpoint, skipped")
                 continue
@@ -634,14 +721,32 @@ def notes(run: dict) -> list[str]:
     return out
 
 
+RESULT_COLUMNS = ["variant", "chosen_head", "split", "macro_auroc", "macro_auprc",
+                  "target_auroc", "target_auroc_lo", "target_auroc_hi", "target_auprc",
+                  "target_auprc_lo", "target_auprc_hi"]  # fmt: skip
+
+
 def write_results(run: dict) -> Path:
-    path = Path(run["save_dir"]) / "r3_results.csv"
-    cols = ["variant", "chosen_head", "split", "macro_auroc", "macro_auprc", "target_auroc",
-            "target_auroc_lo", "target_auroc_hi", "target_auprc", "target_auprc_lo",
-            "target_auprc_hi"]  # fmt: skip
+    return _write_table(run, "r3_results.csv", run.get("scores", {}), "")
+
+
+def write_ablations(run: dict) -> Path:
+    """r3_ablations.csv: the recorded main run for reference, then every ablation scored."""
+    scores = {}
+    if "main" in run.get("scores", {}):
+        scores["main (recorded)"] = run["scores"]["main"]
+    scores.update(run.get("ablation_scores", {}))
+    return _write_table(run, "r3_ablations.csv", scores,
+                        " -- ablations from the same cache; "
+                        "the manifest row is the main run")  # fmt: skip
+
+
+def _write_table(run: dict, filename: str, scores: dict, title: str) -> Path:
+    path = Path(run["save_dir"]) / filename
+    cols = RESULT_COLUMNS
     lines = [f"# Round 3 {run['id']} ({run['task']}, {run['data']}); target = "
-             f"{TARGET_NAME[run['task']]}; AUROC/AUPRC only", ",".join(cols)]  # fmt: skip
-    for name, s in run.get("scores", {}).items():
+             f"{TARGET_NAME[run['task']]}; AUROC/AUPRC only{title}", ",".join(cols)]  # fmt: skip
+    for name, s in scores.items():
         for split in ("val", "test"):
             m = s[split]
             lines.append(",".join(str(x) for x in (
@@ -664,7 +769,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--task", choices=sorted(TASK_ALIASES), required=True)
     p.add_argument("--data", choices=manifest.DATA_KINDS, required=True)
-    p.add_argument("--step", choices=("all", *STEPS), default="all")
+    p.add_argument("--step", choices=("all", *STEPS, "ablations"), default="all")
+    p.add_argument("--variants", nargs="+", choices=sorted(VARIANTS),
+                   help="--step ablations: which variants "
+                        f"(default {' '.join(DEFAULT_ABLATION_STEP)})")  # fmt: skip
     p.add_argument("--parents", nargs="+", help="r2b manifest ids, one per reader")
     p.add_argument("--run-id", dest="run_id")
     p.add_argument("--who", default=os.environ.get("PV_WHO", os.environ.get("USERNAME", "unknown")))
@@ -713,7 +821,8 @@ def main(argv: list[str] | None = None) -> dict | None:
     saved = Path(run["save_dir"]) / "run.json"
     if saved.is_file():  # keep what earlier steps recorded (cache counts, F2, equivalence)
         previous = json.loads(saved.read_text(encoding="utf-8"))
-        for key in ("cache", "f2", "equivalence", "trained"):
+        for key in ("cache", "f2", "equivalence", "trained", "requested_variants", "scores",
+                    "requested_ablations", "ablation_scores", "manifest_row"):  # fmt: skip
             if key in previous:
                 run.setdefault(key, previous[key])
     save_run(run)
@@ -729,6 +838,8 @@ def main(argv: list[str] | None = None) -> dict | None:
             step_equivalence(run, opts)
         elif step == "train":
             step_train(run, opts)
+        elif step == "ablations":
+            step_ablations(run, opts)
         else:
             row = step_record(run, opts, opts.who)
             print(f"[pv] {row['id']} recorded: val {TARGET_NAME[run['task']]} AUROC "
@@ -737,5 +848,11 @@ def main(argv: list[str] | None = None) -> dict | None:
     return row
 
 
+def cli(argv: list[str] | None = None) -> int:
+    """Command-line entry: 0 when every step succeeded (errors raise SystemExit != 0)."""
+    main(argv)
+    return 0
+
+
 if __name__ == "__main__":
-    main()
+    sys.exit(cli())
