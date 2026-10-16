@@ -1316,6 +1316,9 @@ class CMSMAFusion(nn.Module):
         # Round 3 cache (tools/pv/r3_cache.py): when a dict, forward() also
         # records the frozen readers' outputs it needs; None = no effect.
         self._capture = None
+        # Threshold sweep (tools/pv/r3_cache.py): extra thresholds whose groups
+        # are captured too. None = only the run's own thresholds (no effect).
+        self._capture_thresholds = None
         
         def count_parameters(model):
             return sum(p.numel() for p in model.parameters())
@@ -1488,6 +1491,46 @@ class CMSMAFusion(nn.Module):
             f'{name}_conf_low': (confidences * mask_low.float()).sum(dim=1)
                                 / mask_low.float().sum(dim=1).clamp_min(1e-9),
         })
+        self._capture_sweep(name, raw, confidences,
+                            getattr(self.args, f'{name}_confidence_threshold'))
+
+    def _capture_sweep(self, name, raw, confidences, main):
+        """Threshold sweep: one more group per extra threshold t -- its smaller side.
+
+        The run's own threshold (`main`) keeps its exact high/low groups above.
+        For each other t, per stay and class, the side of t (high: >= t, low:
+        < t) with fewer tokens is stored -- mean, token count, mean confidence,
+        computed like the main groups -- with `_is_high` saying which side it
+        is. tools/pv/r3_cache.at_threshold rebuilds the other side as all tokens
+        minus this one; that side holds at least half the tokens, so the float
+        rounding of the subtraction stays ~1e-7 however long the stay.
+        """
+        for t in self._capture_thresholds or ():
+            if t == main:
+                continue
+            high, low = confidences >= t, confidences < t
+            if self.args.num_classes > 1:
+                raw_e = raw.unsqueeze(2)
+                m_high, m_low = high.float().unsqueeze(-1), low.float().unsqueeze(-1)
+            else:
+                raw_e = raw
+                m_high, m_low = high.unsqueeze(-1).float(), low.unsqueeze(-1).float()
+            n_high, n_low = m_high.sum(dim=1), m_low.sum(dim=1)
+            is_high = n_high < n_low  # store the smaller side
+            mean = torch.where(is_high, (raw_e * m_high).sum(dim=1) / n_high.clamp_min(1e-9),
+                               (raw_e * m_low).sum(dim=1) / n_low.clamp_min(1e-9))
+            conf = torch.where(
+                is_high.squeeze(-1),
+                (confidences * high.float()).sum(dim=1) / high.float().sum(dim=1).clamp_min(1e-9),
+                (confidences * low.float()).sum(dim=1) / low.float().sum(dim=1).clamp_min(1e-9),
+            )
+            key = f'{name}_t{round(t * 100):03d}'
+            self._capture.update({
+                f'{key}_mean': mean,
+                f'{key}_n': torch.where(is_high, n_high, n_low),
+                f'{key}_conf': conf,
+                f'{key}_is_high': is_high.float(),
+            })
 
     def _mask_absent(self, mask_high, mask_low, missingness_matrix, modality):
         """--mask_missing_tokens (ablation): an absent modality adds no high/low tokens.
@@ -1628,6 +1671,8 @@ class CMSMAFusion(nn.Module):
                                      ehr_n_high=mask_ehr_high_f.sum(dim=1),
                                      ehr_n_low=mask_ehr_low_f.sum(dim=1),
                                      missingness=missingness_matrix)
+                self._capture_sweep('ehr', full_ehr_feats, ehr_confidences,
+                                    self.args.ehr_confidence_threshold)
             # print("EHR mask_high sum:", mask_ehr_high.sum(), "mask_low sum:", mask_ehr_low.sum())
             
         if 'CXR' in self.modalities:
