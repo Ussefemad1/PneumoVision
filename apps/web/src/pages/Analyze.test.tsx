@@ -59,10 +59,18 @@ describe('AnalyzePage', () => {
     expect(runButton()).toBeEnabled();
   });
 
-  it('greys out discharge notes for mortality and does not count them as a modality', () => {
+  it('offers no note type choice for mortality: every note is radiology', () => {
     renderPage();
     fireEvent.click(screen.getByRole('radio', { name: /mortality/i }));
+    addNote('Synthetic radiology note.');
+    expect(screen.queryByLabelText('Note 1 type')).toBeNull();
+    expect(screen.getByTestId('note-1-type')).toHaveTextContent('Radiology');
+  });
+
+  it('greys out a discharge note when switching to mortality and does not count it', () => {
+    renderPage();
     const index = addNote('Synthetic discharge summary.', 'discharge');
+    fireEvent.click(screen.getByRole('radio', { name: /mortality/i }));
 
     const text = screen.getByLabelText(`Note ${index} text`);
     expect(text).toBeDisabled();
@@ -90,7 +98,7 @@ describe('AnalyzePage', () => {
     );
     renderPage();
     fireEvent.click(screen.getByRole('radio', { name: /mortality/i }));
-    addNote('Synthetic radiology note: no acute change.', 'radiology');
+    addNote('Synthetic radiology note: no acute change.');
 
     fireEvent.click(runButton());
 
@@ -99,7 +107,7 @@ describe('AnalyzePage', () => {
     expect(screen.getByLabelText('Note 1 text')).toHaveValue(
       'Synthetic radiology note: no acute change.',
     );
-    expect(screen.getByLabelText('Note 1 type')).toHaveValue('radiology');
+    expect(screen.getByTestId('note-1-type')).toHaveTextContent('Radiology');
     expect(screen.getByRole('radio', { name: /mortality/i })).toBeChecked();
     expect(runButton()).toBeEnabled();
   });

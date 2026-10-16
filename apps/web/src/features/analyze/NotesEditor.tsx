@@ -35,8 +35,12 @@ export const usableNotes = (task: Task, notes: DraftNote[]) =>
 export const noteTooLong = (note: DraftNote) =>
   new Blob([note.text]).size > ANALYZE_LIMITS.noteFileBytes;
 
-// The trained text readers read radiology reports and discharge notes only.
-const NOTE_CHOICES: NoteType[] = ['radiology', 'discharge'];
+// The trained text readers read radiology reports and discharge notes only,
+// and mortality never takes discharge notes, so it offers no choice at all.
+const NOTE_CHOICES: Record<Task, NoteType[]> = {
+  pneumonia: ['radiology', 'discharge'],
+  mortality: ['radiology'],
+};
 
 const TYPE_LABEL: Record<NoteType, string> = {
   radiology: 'Radiology',
@@ -80,21 +84,30 @@ export function NotesEditor({
             )}
           >
             <div className="flex flex-wrap items-center gap-2">
-              <label className="text-xs text-ink-secondary">
-                <span className="sr-only">{`Note ${n} type`}</span>
-                <select
-                  aria-label={`Note ${n} type`}
-                  value={note.type}
-                  onChange={(e) => update(note.id, { type: e.target.value as NoteType })}
-                  className="rounded-md border border-hairline bg-surface-1 px-2 py-1 text-xs text-ink"
+              {NOTE_CHOICES[task].length > 1 ? (
+                <label className="text-xs text-ink-secondary">
+                  <span className="sr-only">{`Note ${n} type`}</span>
+                  <select
+                    aria-label={`Note ${n} type`}
+                    value={note.type}
+                    onChange={(e) => update(note.id, { type: e.target.value as NoteType })}
+                    className="rounded-md border border-hairline bg-surface-1 px-2 py-1 text-xs text-ink"
+                  >
+                    {NOTE_CHOICES[task].map((t) => (
+                      <option key={t} value={t}>
+                        {TYPE_LABEL[t]}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : (
+                <span
+                  data-testid={`note-${n}-type`}
+                  className="rounded-md bg-surface-3 px-2 py-1 text-xs font-medium text-ink-secondary"
                 >
-                  {NOTE_CHOICES.map((t) => (
-                    <option key={t} value={t}>
-                      {TYPE_LABEL[t]}
-                    </option>
-                  ))}
-                </select>
-              </label>
+                  {TYPE_LABEL[note.type]}
+                </span>
+              )}
               <label className="ml-auto cursor-pointer text-xs text-ink-secondary hover:text-ink">
                 Upload file
                 <input
