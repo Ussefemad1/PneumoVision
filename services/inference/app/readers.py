@@ -167,7 +167,7 @@ READERS: list[ReaderSpec] = [
 _CONFIDENCE: dict[str, tuple[str, bool]] = {
     "ehr-mortality": ("mortality/r2b/temp_c-unimodal_ehr.pth.tar", True),
     "ehr-pneumonia": ("phenotyping/r2b/temp_c-unimodal_ehr.pth.tar", True),
-    "cxr-mortality": ("mortality/r2/c-unimodal_cxr.pth.tar", False),
+    "cxr-mortality": ("mortality/r2b/temp_c-unimodal_cxr.pth.tar", True),
     "cxr-pneumonia": ("phenotyping/r2b/temp_c-unimodal_cxr.pth.tar", True),
     "rr-mortality": ("mortality/r2/c-unimodal_rr.pth.tar", False),
     "rr-pneumonia": ("phenotyping/r2b/temp_c-unimodal_rr.pth.tar", True),
