@@ -67,7 +67,7 @@ describe('AnalyzePage', () => {
     const text = screen.getByLabelText(`Note ${index} text`);
     expect(text).toBeDisabled();
     expect(
-      screen.getByText(/excluded to prevent outcome leakage — discharge notes/i),
+      screen.getByText(/not used for mortality/i),
     ).toBeVisible();
     expect(runButton()).toBeDisabled();
 
@@ -76,7 +76,7 @@ describe('AnalyzePage', () => {
     expect(runButton()).toBeEnabled();
   });
 
-  it('keeps every input after a failed submit and shows the API error code', async () => {
+  it('keeps every input after a failed submit and shows the API error', async () => {
     post.mockRejectedValueOnce(
       new AxiosError('bad', 'ERR_BAD_REQUEST', undefined, undefined, {
         status: 400,
@@ -95,7 +95,6 @@ describe('AnalyzePage', () => {
     fireEvent.click(runButton());
 
     const alert = await screen.findByRole('alert');
-    expect(alert).toHaveTextContent('EHR_INVALID_VALUE');
     expect(alert).toHaveTextContent('Heart Rate is wrong');
     expect(screen.getByLabelText('Note 1 text')).toHaveValue(
       'Synthetic nursing note: comfortable overnight.',
@@ -132,7 +131,7 @@ describe('AnalyzePage', () => {
 
   it('previews an EHR CSV with row-level errors and blocks submit', async () => {
     renderPage();
-    fireEvent.click(screen.getByRole('tab', { name: /csv upload/i }));
+    fireEvent.click(screen.getByRole('tab', { name: /upload csv/i }));
     const file = new File(['hour,Heart Rate\n-1,90\n0,abc\n'], 'ehr.csv', { type: 'text/csv' });
     fireEvent.change(screen.getByLabelText('EHR CSV file'), { target: { files: [file] } });
 
@@ -145,7 +144,7 @@ describe('AnalyzePage', () => {
 
   it('loads a synthetic EHR preset into the grid', () => {
     renderPage();
-    fireEvent.click(screen.getByRole('tab', { name: /synthetic example/i }));
+    fireEvent.click(screen.getByRole('tab', { name: /examples/i }));
     fireEvent.click(screen.getByRole('button', { name: /deteriorating/i }));
 
     const grid = screen.getByRole('table', { name: /ehr grid/i });

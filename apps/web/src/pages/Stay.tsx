@@ -7,7 +7,7 @@ import type {
   Task,
   VitalsPoint,
 } from '@pneumovision/shared';
-import { EHR_CONTINUOUS_VARIABLES, EHR_VARIABLES, TEXT_CHUNK_TOKENS } from '@pneumovision/shared';
+import { EHR_CONTINUOUS_VARIABLES } from '@pneumovision/shared';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
@@ -189,7 +189,7 @@ function OverviewTab({ stay }: { stay: StayDetail }) {
 
   return (
     <div className="grid gap-4 lg:grid-cols-[320px_1fr]">
-      <Card title="Current risk" subtitle="Calibrated probabilities from the active model">
+      <Card title="Current risk">
         <div className="flex justify-around gap-2">
           <RiskGauge
             probability={stay.latestPredictions.mortality ?? null}
@@ -214,9 +214,6 @@ function OverviewTab({ stay }: { stay: StayDetail }) {
             onChange={(e) => setCutoff(e.target.value)}
             className="w-full rounded-md border border-hairline bg-surface-2 px-2.5 py-1.5 text-sm text-ink"
           />
-          <p className="text-[11px] text-ink-muted">
-            Only data recorded before this instant is sent to the model. Leave empty to use now.
-          </p>
 
           <div className="flex gap-2 pt-1">
             <Button
@@ -248,7 +245,6 @@ function OverviewTab({ stay }: { stay: StayDetail }) {
 
       <Card
         title="Risk trajectory"
-        subtitle="Every scoring of this stay, with markers where new evidence arrived"
       >
         {mortalityTrajectory.isLoading ? (
           <Skeleton className="h-60 w-full" />
@@ -256,7 +252,6 @@ function OverviewTab({ stay }: { stay: StayDetail }) {
           <EmptyState
             icon="◠"
             title="No predictions yet"
-            description="Run a prediction to start the trajectory for this stay."
           />
         ) : (
           <>
@@ -328,7 +323,6 @@ function VitalsTab({ stayId }: { stayId: string }) {
         <EmptyState
           icon="▤"
           title="No vitals recorded"
-          description="This stay has no hourly observations. The EHR branch would be marked missing in any prediction."
         />
       </Card>
     );
@@ -342,13 +336,9 @@ function VitalsTab({ stayId }: { stayId: string }) {
       {confidence?.ehrTimesteps && (
         <Card
           title="Per-hour EHR confidence"
-          subtitle={`From the latest ${latest?.task ?? ''} prediction · γ = max(σ(l̂), 1 − σ(l̂))`}
-          actions={<ConfidenceScaleLegend theta={confidence.theta} />}
+          actions={<ConfidenceScaleLegend />}
         >
           <EhrConfidenceBand values={confidence.ehrTimesteps} theta={confidence.theta} />
-          <p className="mt-2 text-[11px] text-ink-muted">
-            Hollow bars fall below θ and are pooled into the low-confidence group.
-          </p>
         </Card>
       )}
 
@@ -408,10 +398,6 @@ function VitalsTab({ stayId }: { stayId: string }) {
         </Card>
       ))}
 
-      <p className="text-[11px] text-ink-muted">
-        Showing the most recent {window.length} hourly bins of {EHR_VARIABLES.length} variables. A
-        dot means nothing was charted that hour — gaps are shown, never interpolated.
-      </p>
     </div>
   );
 }
@@ -442,7 +428,6 @@ function ImagingTab({ stayId }: { stayId: string }) {
         <EmptyState
           icon="▣"
           title="No radiographs for this stay"
-          description="Predictions will run with the CXR branch marked missing, and the report will show a reduced-input banner."
         />
       </Card>
     );
@@ -455,7 +440,7 @@ function ImagingTab({ stayId }: { stayId: string }) {
       <Card
         title="Chest radiograph"
         subtitle={`${image.view} · ${shortDateTime(image.takenAt)}`}
-        actions={grid?.cxrPatchGrid ? <ConfidenceScaleLegend theta={grid.theta} /> : undefined}
+        actions={grid?.cxrPatchGrid ? <ConfidenceScaleLegend /> : undefined}
       >
         <div className="relative mx-auto aspect-square w-full max-w-xl overflow-hidden rounded-lg bg-black">
           <img
@@ -488,22 +473,13 @@ function ImagingTab({ stayId }: { stayId: string }) {
             </span>
           </div>
         ) : (
-          <p className="mt-3 text-xs text-ink-muted">
-            Run a prediction to generate the ViT patch-confidence overlay.
-          </p>
+          null
         )}
 
-        <p className="mt-3 text-[11px] text-ink-muted">
-          {grid?.cxrPatchGrid
-            ? `${grid.cxrPatchGrid.length}×${grid.cxrPatchGrid[0]?.length} patch grid from vit_small_patch16_384. `
-            : ''}
-          Images in this demo are procedurally generated, not real radiographs.
-        </p>
       </Card>
 
       <Card
         title="Series"
-        subtitle={`${data.length} study${data.length === 1 ? '' : 'ies'}`}
         bodyClassName="p-2"
       >
         <ul className="space-y-1">
@@ -576,7 +552,6 @@ function NotesTab({ stayId }: { stayId: string }) {
         <EmptyState
           icon="▤"
           title="No notes for this stay"
-          description="Text branches will be marked missing in any prediction for this patient."
         />
       </Card>
     );
@@ -586,13 +561,12 @@ function NotesTab({ stayId }: { stayId: string }) {
     <div className="space-y-3">
       {confidence && (
         <div className="flex justify-end">
-          <ConfidenceScaleLegend theta={confidence.theta} />
+          <ConfidenceScaleLegend />
         </div>
       )}
 
       {data.map((note) => {
         const spans = spansByNote.get(note.id) ?? [];
-        const chunks = Math.ceil(note.tokenCount / TEXT_CHUNK_TOKENS);
         const isOpen = openId === note.id;
 
         return (
@@ -607,36 +581,19 @@ function NotesTab({ stayId }: { stayId: string }) {
               </span>
               {note.type === 'discharge' && (
                 <span
-                  title="Discharge notes are never sent for a mortality prediction (F8)"
                   className="rounded bg-status-warning/20 px-2 py-0.5 text-[11px] font-medium text-[#8a5d00] dark:text-status-warning"
                 >
-                  <span aria-hidden="true">◆</span> excluded from mortality
+                  <span aria-hidden="true">◆</span> not used for mortality
                 </span>
               )}
               <span className="text-xs text-ink-muted">{shortDateTime(note.authoredAt)}</span>
-              <span className="tnum ml-auto text-[11px] text-ink-muted">
-                ~{note.tokenCount} tokens
-                {chunks > 1 && (
-                  <span
-                    className="ml-1.5 text-[#8a5d00] dark:text-status-warning"
-                    title={`BioBERT will split this into ${chunks} chunks of ${TEXT_CHUNK_TOKENS} tokens and mean-pool them`}
-                  >
-                    · {chunks} chunks
-                  </span>
-                )}
-              </span>
-              <span aria-hidden="true" className="text-ink-muted">
+              <span aria-hidden="true" className="ml-auto text-ink-muted">
                 {isOpen ? '▾' : '▸'}
               </span>
             </button>
 
             {isOpen && (
               <div className="border-t border-hairline bg-surface-2/40 px-4 py-3">
-                {spans.length === 0 && confidence && (
-                  <p className="mb-2 text-[11px] text-ink-muted">
-                    No confidence spans were returned for this note.
-                  </p>
-                )}
                 <NoteReader text={note.text} spans={spans} theta={confidence?.theta ?? 0.75} />
               </div>
             )}
@@ -663,7 +620,6 @@ function PredictionsTab({ stayId }: { stayId: string }) {
         <EmptyState
           icon="◷"
           title="No predictions yet"
-          description="Use “Run prediction” on the Overview tab to score this stay."
         />
       </Card>
     );

@@ -140,10 +140,6 @@ export function ReplayPage() {
     <div className="space-y-4">
       <header>
         <h1 className="text-lg font-semibold text-ink">ICU Replay</h1>
-        <p className="text-sm text-ink-muted">
-          Replays a stay hour by hour and re-scores as it goes — near-real-time surveillance
-          demonstrated on recorded data.
-        </p>
       </header>
 
       <Card>
@@ -230,14 +226,12 @@ export function ReplayPage() {
           <EmptyState
             icon="▷"
             title="Pick a patient to replay"
-            description="Choose a deteriorating stay to watch the risk climb and an alert fire."
           />
         </Card>
       ) : (
         <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
           <Card
             title="Risk trajectory"
-            subtitle="Updates live as the replay re-scores"
             actions={selected ? <RiskBadge probability={selected.mortality} /> : undefined}
           >
             <RiskTrajectoryChart
@@ -247,14 +241,11 @@ export function ReplayPage() {
             />
           </Card>
 
-          <Card title="Live vitals" subtitle="Most recent replayed hours">
+          <Card title="Live vitals">
             {ticks.length === 0 ? (
               <EmptyState
                 icon="◷"
                 title={running ? 'Waiting for the next hour…' : 'Not running'}
-                description={
-                  running ? undefined : 'Start the replay to stream hourly observations.'
-                }
               />
             ) : (
               <ul className="space-y-2">

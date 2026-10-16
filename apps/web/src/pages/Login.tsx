@@ -37,7 +37,6 @@ export function LoginPage() {
             P
           </div>
           <h1 className="text-xl font-semibold text-ink">PneumoVision</h1>
-          <p className="mt-1 text-sm text-ink-muted">Multimodal clinical decision support</p>
         </div>
 
         <form onSubmit={onSubmit} className="card space-y-4 p-5">
@@ -53,7 +52,6 @@ export function LoginPage() {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               className="w-full rounded-md border border-hairline bg-surface-2 px-3 py-2 text-sm text-ink outline-none focus:ring-2 focus:ring-[var(--series-mortality)]"
-              placeholder="clinician@pneumovision.local"
             />
           </div>
 
@@ -87,9 +85,6 @@ export function LoginPage() {
           </Button>
 
           {/* TODO(phase-3): TOTP step at /login/mfa, mandatory for admin. */}
-          <p className="text-center text-[11px] text-ink-muted">
-            Demo accounts are printed by <code>npm run gen:secrets -- --write</code>
-          </p>
         </form>
 
         <Disclaimer className="mt-4" />

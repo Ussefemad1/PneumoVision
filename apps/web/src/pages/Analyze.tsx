@@ -1,5 +1,4 @@
 import type { AnalyzeResponse, StayDetail, Task } from '@pneumovision/shared';
-import { TASK_SPEC } from '@pneumovision/shared';
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
@@ -23,19 +22,9 @@ import {
   type DraftNote,
 } from '../features/analyze/NotesEditor.jsx';
 
-const TASKS: { key: Task; title: string; description: string }[] = [
-  {
-    key: 'pneumonia',
-    title: 'Pneumonia',
-    description:
-      'EHR + chest X-ray + radiology-type notes (radiology, progress, nursing → RR encoder) + discharge notes (DN encoder).',
-  },
-  {
-    key: 'mortality',
-    title: 'Mortality',
-    description:
-      'EHR + chest X-ray + radiology-type notes (radiology, progress and nursing all feed the RR encoder). Discharge notes are excluded to prevent outcome leakage.',
-  },
+const TASKS: { key: Task; title: string }[] = [
+  { key: 'pneumonia', title: 'Pneumonia' },
+  { key: 'mortality', title: '48-hour mortality' },
 ];
 
 type Phase = 'idle' | 'uploading' | 'running';
@@ -149,13 +138,7 @@ export function AnalyzePage() {
   }
 
   const statusText =
-    phase === 'uploading'
-      ? `Uploading${progress !== null ? ` · ${Math.round(progress * 100)}%` : '…'}`
-      : phase === 'running'
-        ? 'Running multimodal inference…'
-        : noModality
-          ? 'Add at least one input: chest X-ray, EHR or a note.'
-          : `Will send: ${[hasEhr && 'EHR', hasCxr && 'chest X-ray', sendable.length > 0 && `${sendable.length} note${sendable.length === 1 ? '' : 's'}`].filter(Boolean).join(', ')}`;
+    phase === 'uploading' && progress !== null ? `${Math.round(progress * 100)}%` : '';
 
   return (
     <div className="mx-auto max-w-6xl space-y-4">
@@ -163,13 +146,7 @@ export function AnalyzePage() {
         <Link to="/analyze" className="text-xs text-ink-muted hover:text-ink hover:underline">
           ← Back to analyses
         </Link>
-        <p className="mt-2 text-xs uppercase tracking-wide text-ink-muted">New analysis</p>
-        <h1 className="mt-1 text-2xl font-semibold text-ink">Analyze multimodal evidence</h1>
-        <p className="mt-1 max-w-3xl text-sm text-ink-secondary">
-          Submit any combination of EHR, chest X-ray and clinical notes. Missing inputs are handled
-          by the model&apos;s missingness branch, exactly as for an admitted stay. Use synthetic
-          data only.
-        </p>
+        <h1 className="mt-2 text-2xl font-semibold text-ink">New analysis</h1>
       </div>
 
       {stayId && (
@@ -179,24 +156,21 @@ export function AnalyzePage() {
         >
           {stay.isLoading && 'Loading stay…'}
           {stay.isError && (
-            <span className="text-status-critical">
-              ✕ Stay {stayId} could not be loaded — {apiErrorMessage(stay.error)}
-            </span>
+            <span className="text-status-critical">{apiErrorMessage(stay.error)}</span>
           )}
           {stay.data && (
             <>
-              Attaching to <span className="font-medium">{stay.data.patient.pseudoId}</span> ·{' '}
-              {stay.data.ward} · bed {stay.data.bedLabel}. Inputs are added to this stay&apos;s
-              record.{' '}
-              <Link to="/analyze/new" className="underline">
-                Analyze without a stay instead
+              Patient <span className="font-medium">{stay.data.patient.pseudoId}</span> ·{' '}
+              {stay.data.ward} · bed {stay.data.bedLabel}{' '}
+              <Link to="/analyze/new" className="ml-2 underline">
+                Remove
               </Link>
             </>
           )}
         </div>
       )}
 
-      <Card title="1 · Prediction task">
+      <Card title="Task">
         <div role="radiogroup" aria-label="Prediction task" className="grid gap-3 sm:grid-cols-2">
           {TASKS.map((t) => (
             <label
@@ -218,28 +192,23 @@ export function AnalyzePage() {
                   disabled={busy}
                 />
                 <span className="text-sm font-medium text-ink">{t.title}</span>
-                <span className="text-[11px] text-ink-muted">{TASK_SPEC[t.key].label}</span>
               </span>
-              <span className="mt-1 block text-xs text-ink-muted">{t.description}</span>
             </label>
           ))}
         </div>
       </Card>
 
       <div className="grid gap-4 lg:grid-cols-[1fr_2fr]">
-        <Card title="2 · Chest X-ray" subtitle="Optional">
+        <Card title="Chest X-ray">
           <CxrDrop file={cxr} onFile={setCxr} />
         </Card>
 
-        <Card title="3 · Clinical notes" subtitle="Optional · each note has its own type">
+        <Card title="Clinical notes">
           <NotesEditor task={task} notes={notes} onNotes={setNotes} />
         </Card>
       </div>
 
-      <Card
-        title="4 · EHR"
-        subtitle="Optional · the 17 hourly variables the LSTM reads, up to 48 hours"
-      >
+      <Card title="Vitals">
         <EhrPanel
           tab={ehrTab}
           onTab={setEhrTab}
@@ -280,8 +249,7 @@ export function AnalyzePage() {
             className="mt-3 rounded-md border border-status-critical/40 bg-status-critical/10 px-3 py-2 text-sm"
           >
             <span aria-hidden="true">✕ </span>
-            {error.code && <code className="mr-2 font-semibold">{error.code}</code>}
-            {error.message} Your inputs are unchanged — fix and run again.
+            {error.message}
           </div>
         )}
       </Card>

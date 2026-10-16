@@ -335,7 +335,7 @@ export function sequentialBlue(value: number): string {
 }
 
 /** Shared legend for anything drawn on the sequential confidence ramp. */
-export function ConfidenceScaleLegend({ theta }: { theta?: number | undefined }) {
+export function ConfidenceScaleLegend() {
   return (
     <div className="flex items-center gap-2 text-[11px] text-ink-muted">
       <span>Low confidence</span>
@@ -345,7 +345,6 @@ export function ConfidenceScaleLegend({ theta }: { theta?: number | undefined })
         ))}
       </span>
       <span>High</span>
-      {theta !== undefined && <span className="ml-1">· θ = {theta.toFixed(2)}</span>}
     </div>
   );
 }

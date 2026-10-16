@@ -55,11 +55,6 @@ export function AnalysesPage() {
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-lg font-semibold text-ink">Analyses</h1>
-          <p className="text-sm text-ink-muted">
-            Score any mix of chest X-ray, clinical notes and vitals. Your past runs are listed
-            newest first; runs attached to an admitted patient are on that patient&rsquo;s
-            Predictions tab.
-          </p>
         </div>
         <Link to="/analyze/new" className={NEW_ANALYSIS_CLASS}>
           <span aria-hidden="true">+</span> New analysis
@@ -75,10 +70,9 @@ export function AnalysesPage() {
           <EmptyState
             icon="◷"
             title="No analyses yet"
-            description="Upload a chest X-ray, clinical notes or vitals and see what each input contributes to the model's prediction. Every run you submit is listed here."
             action={
               <Link to="/analyze/new" className={NEW_ANALYSIS_CLASS}>
-                Start your first analysis →
+                New analysis
               </Link>
             }
           />

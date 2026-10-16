@@ -2,8 +2,6 @@ import {
   ANALYZE_LIMITS,
   NOTE_TYPES,
   NOTE_TYPES_BY_TASK,
-  chunkCount,
-  estimateTokens,
   type NoteType,
   type Task,
 } from '@pneumovision/shared';
@@ -67,15 +65,9 @@ export function NotesEditor({
 
   return (
     <div className="space-y-3">
-      {notes.length === 0 && (
-        <p className="text-sm text-ink-secondary">No notes — the text branches will be missing.</p>
-      )}
-
       {notes.map((note, i) => {
         const n = i + 1;
         const excluded = noteExcluded(task, note);
-        const tokens = estimateTokens(note.text);
-        const chunks = chunkCount(tokens);
         const tooLong = noteTooLong(note);
         return (
           <div
@@ -101,11 +93,8 @@ export function NotesEditor({
                   ))}
                 </select>
               </label>
-              <span className="text-[11px] text-ink-muted">
-                → {note.type === 'discharge' ? 'DN (discharge) encoder' : 'RR encoder'}
-              </span>
               <label className="ml-auto cursor-pointer text-xs text-ink-secondary hover:text-ink">
-                Load .txt
+                Upload file
                 <input
                   aria-label={`Note ${n} file`}
                   type="file"
@@ -131,8 +120,7 @@ export function NotesEditor({
             {excluded && (
               <p className="mt-2 flex items-center gap-1 text-xs font-medium text-ink-secondary">
                 <span aria-hidden="true">⊘</span>
-                Excluded to prevent outcome leakage — discharge notes describe the outcome a
-                mortality prediction is trying to forecast. It will not be stored or sent.
+                Not used for mortality
               </p>
             )}
 
@@ -142,19 +130,15 @@ export function NotesEditor({
               disabled={excluded}
               onChange={(e) => update(note.id, { text: e.target.value, error: null })}
               rows={5}
-              placeholder="Paste or type a synthetic clinical note…"
+              placeholder="Note text"
               className="mt-2 w-full rounded-md border border-hairline bg-surface-2 p-2 text-sm text-ink disabled:cursor-not-allowed"
             />
-            <div className="mt-1 flex flex-wrap gap-3 text-[11px] text-ink-muted">
-              <span className="tnum">
-                ≈ {tokens} tokens · {chunks} chunk{chunks === 1 ? '' : 's'} of 512
-              </span>
-              {chunks > 1 && <span>Long note — the text encoder will split and pool it.</span>}
-              {tooLong && (
-                <span className="text-status-critical">✕ Longer than the 200 KB note limit</span>
-              )}
-              {note.error && <span className="text-status-critical">✕ {note.error}</span>}
-            </div>
+            {(tooLong || note.error) && (
+              <div className="mt-1 flex flex-wrap gap-3 text-xs text-status-critical">
+                {tooLong && <span>Note is too long (max 200 KB)</span>}
+                {note.error && <span>{note.error}</span>}
+              </div>
+            )}
           </div>
         );
       })}

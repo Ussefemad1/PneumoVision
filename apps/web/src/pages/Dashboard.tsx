@@ -33,7 +33,6 @@ export function DashboardPage() {
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-lg font-semibold text-ink">Ward dashboard</h1>
-          <p className="text-sm text-ink-muted">Active stays ranked by 48-hour mortality risk.</p>
         </div>
 
         {/* Filters sit in one row above the content. */}
@@ -77,11 +76,6 @@ export function DashboardPage() {
           <EmptyState
             icon="◎"
             title={data?.rows.length ? 'No stays match these filters' : 'No active stays'}
-            description={
-              data?.rows.length
-                ? 'Widen the ward or risk filter to see more patients.'
-                : 'Seeded demo data should appear here. Check the API logs if this stays empty.'
-            }
           />
         ) : (
           <div className="overflow-x-auto">

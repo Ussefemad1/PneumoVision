@@ -22,11 +22,9 @@ export function CxrDrop({
 }) {
   const [dragging, setDragging] = useState(false);
   const [preview, setPreview] = useState<string | null>(null);
-  const [size, setSize] = useState<{ w: number; h: number } | null>(null);
   const problem = file ? cxrProblem(file) : null;
 
   useEffect(() => {
-    setSize(null);
     if (!file || problem || typeof URL.createObjectURL !== 'function') {
       setPreview(null);
       return;
@@ -55,8 +53,7 @@ export function CxrDrop({
           dragging ? 'border-[var(--series-mortality)] bg-surface-2' : 'border-hairline',
         )}
       >
-        <span className="text-sm text-ink">Drop a chest X-ray here, or choose a file</span>
-        <span className="mt-1 text-[11px] text-ink-muted">PNG or JPEG, up to 20 MB</span>
+        <span className="text-sm text-ink">Upload X-ray</span>
         <input
           aria-label="Chest X-ray file"
           type="file"
@@ -75,20 +72,14 @@ export function CxrDrop({
             <img
               src={preview}
               alt="Chest X-ray preview"
-              onLoad={(e) =>
-                setSize({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })
-              }
               className="h-24 w-24 rounded border border-hairline bg-black object-contain"
             />
           )}
           <div className="min-w-0 flex-1 text-xs">
             <div className="truncate font-medium text-ink">{file.name}</div>
-            <div className="text-ink-muted">
-              {(file.size / 1024).toFixed(0)} KB{size ? ` · ${size.w}×${size.h}px` : ''}
-            </div>
             {problem && <p className="mt-1 text-status-critical">✕ {problem}</p>}
             <Button size="sm" variant="ghost" className="mt-1 -ml-2" onClick={() => onFile(null)}>
-              Remove image
+              Remove
             </Button>
           </div>
         </div>

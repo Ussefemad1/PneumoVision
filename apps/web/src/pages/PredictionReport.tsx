@@ -1,5 +1,5 @@
 import type { Modality, ModalitySource, Prediction, StayDetail } from '@pneumovision/shared';
-import { MEDPATCH_REFERENCE_METRICS, TASK_SPEC } from '@pneumovision/shared';
+import { TASK_SPEC } from '@pneumovision/shared';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router-dom';
 
@@ -65,7 +65,6 @@ export function PredictionReportPage() {
     .filter((key) => !result.missingness.vector[key])
     .map((key) => MODALITY_LABELS[key] ?? key);
 
-  const band = riskBand(result.probability);
   // Old predictions carry no provenance: everything was simulated then.
   const sources = result.sources;
   const fusionKind = sources?.fusion ?? 'mock';
@@ -106,54 +105,18 @@ export function PredictionReportPage() {
           <span aria-hidden="true" className="text-[#8a5d00] dark:text-status-warning">
             ◆
           </span>
-          <div>
-            <p className="font-medium text-ink">Reduced-input prediction</p>
-            <p className="mt-0.5 text-ink-secondary">
-              This score was produced without {missing.join(', ')}. The missingness branch accounted
-              for the absent {missing.length === 1 ? 'source' : 'sources'}, but the result is less
-              well supported than a full multimodal prediction.
-            </p>
-          </div>
+          <p>
+            <span className="font-medium text-ink">Reduced input</span>
+            <span className="text-ink-secondary"> · Missing: {missing.join(', ')}</span>
+          </p>
         </div>
       )}
 
-      {/* Which numbers are real model outputs and which are simulated */}
-      {fusionSimulated && trained.length > 0 && (
-        <div
-          role="note"
-          className="flex items-start gap-2 rounded-lg border border-[var(--series-mortality)]/40 bg-[var(--series-mortality)]/10 px-4 py-3 text-sm"
-        >
-          <span aria-hidden="true" className="text-[var(--series-mortality)]">
-            ✓
-          </span>
-          <div>
-            <p className="font-medium text-ink">
-              Real model outputs for {trained.map((key) => MODALITY_LABELS[key] ?? key).join(', ')}
-            </p>
-            <p className="mt-0.5 text-ink-secondary">
-              Scores marked <strong>Trained model</strong> come from the team&rsquo;s trained
-              single-modality models.{' '}
-              {fusionKind === 'average' ? (
-                <>
-                  The MedPatch fusion is not trained yet, so the combined score is the{' '}
-                  <strong>simple average</strong> of those scores, and evidence strength and
-                  modality contribution are <strong>simulated</strong>.
-                </>
-              ) : (
-                <>
-                  The MedPatch fusion is not trained yet, so evidence strength, modality
-                  contribution and the fused decision are <strong>simulated</strong>.
-                </>
-              )}
-            </p>
-          </div>
-        </div>
-      )}
 
       {/* F11: evidence left → decision right */}
       <div className="grid gap-4 xl:grid-cols-[1.1fr_1fr_0.9fr]">
         {/* F1 */}
-        <Card title="1 · Evidence by source" subtitle="What each modality predicts on its own">
+        <Card title="By source">
           <ul className="space-y-2">
             {taskModalities.map((key) => {
               const value = result.unimodal[key];
@@ -169,9 +132,6 @@ export function PredictionReportPage() {
                 >
                   <div className="min-w-0 flex-1">
                     <div className="text-sm font-medium text-ink">{MODALITY_LABELS[key]}</div>
-                    <div className="text-[11px] text-ink-muted">
-                      {present ? 'Contributed to the fused score' : 'Not available for this stay'}
-                    </div>
                     {present && sources?.[key] && <SourceChip source={sources[key]} />}
                   </div>
                   {present && typeof value === 'number' ? (
@@ -196,8 +156,7 @@ export function PredictionReportPage() {
 
         {/* F4 + F2 */}
         <Card
-          title="2 · Evidence strength"
-          subtitle={`Tokens split at θ = ${result.confidence.theta.toFixed(2)}`}
+          title="Confidence"
           actions={simulatedTag}
         >
           <div className="grid grid-cols-2 gap-3">
@@ -208,9 +167,6 @@ export function PredictionReportPage() {
               <div className="tnum mt-1 text-xl font-semibold text-ink">
                 {percent(result.joint.high)}
               </div>
-              <p className="mt-1 text-[11px] text-ink-muted">
-                Pooled from tokens the model was confident about
-              </p>
             </div>
             <div className="rounded-lg border border-dashed border-hairline p-3">
               <div className="text-[11px] uppercase tracking-wide text-ink-muted">
@@ -219,15 +175,12 @@ export function PredictionReportPage() {
               <div className="tnum mt-1 text-xl font-semibold text-ink-secondary">
                 {percent(result.joint.low)}
               </div>
-              <p className="mt-1 text-[11px] text-ink-muted">
-                Pooled from the remaining, uncertain tokens
-              </p>
             </div>
           </div>
 
           <div className="mt-4">
             <div className="mb-2 text-[11px] uppercase tracking-wide text-ink-muted">
-              Share of tokens above θ
+              Above threshold
             </div>
             <ul className="space-y-1.5">
               {taskModalities.map((key) => {
@@ -260,17 +213,13 @@ export function PredictionReportPage() {
             <div className="tnum mt-0.5 text-sm font-medium text-ink">
               {percent(result.missingness.prediction)}
             </div>
-            <p className="mt-1 text-[11px] text-ink-muted">
-              What the pattern of available sources alone implies
-            </p>
           </div>
         </Card>
 
         {/* F6 + fused decision */}
         <div className="space-y-4">
           <Card
-            title="3 · Modality contribution"
-            subtitle="Softmax-normalised fusion weights (α̂)"
+            title="Contribution"
             actions={simulatedTag}
           >
             <AlphaContributionChart alphas={result.alphas} />
@@ -278,7 +227,7 @@ export function PredictionReportPage() {
 
           <Card
             className="border-2"
-            title={fusionKind === 'average' ? '4 · Combined score' : '4 · Fused decision'}
+            title={fusionKind === 'average' ? 'Combined score' : 'Fused decision'}
             actions={fusionKind === 'average' ? <AverageChip /> : simulatedTag}
           >
             <div className="flex flex-col items-center gap-3">
@@ -287,7 +236,7 @@ export function PredictionReportPage() {
                 label={data.task === 'mortality' ? '48-hour mortality' : 'Pneumonia phenotype'}
                 sublabel={
                   fusionKind === 'average'
-                    ? 'Average of trained models'
+                    ? 'Average'
                     : fusionKind === 'mock'
                       ? 'Simulated'
                       : 'Calibrated'
@@ -299,23 +248,9 @@ export function PredictionReportPage() {
                     ({averaged.map((key) => percent(result.unimodal[key])).join(' + ')}) ÷{' '}
                     {averaged.length} = {percent(result.probability)}
                   </p>
-                  <p className="mt-2">
-                    Simple average of{' '}
-                    {averaged.map((key) => MODALITY_LABELS[key] ?? key).join(', ')}.{' '}
-                    <span style={{ color: band.cssVar }} className="font-medium">
-                      {band.label} risk
-                    </span>
-                    . Not the MedPatch fusion, which weighs sources by learned confidence.
-                  </p>
                 </div>
               ) : (
-                <p className="text-center text-xs text-ink-secondary">
-                  Weighted combination of every branch above.{' '}
-                  <span style={{ color: band.cssVar }} className="font-medium">
-                    {band.label} risk
-                  </span>
-                  .
-                </p>
+                null
               )}
             </div>
           </Card>
@@ -331,22 +266,12 @@ export function PredictionReportPage() {
           <Field label="Cut-off time">{shortDateTime(data.cutoffTime)}</Field>
           <Field label="Latency">{durationMs(data.latencyMs)}</Field>
           <Field label="Requested">{shortDateTime(data.createdAt)}</Field>
-          <Field label="θ">{result.confidence.theta.toFixed(2)}</Field>
+          <Field label="Threshold">{result.confidence.theta.toFixed(2)}</Field>
           <Field label="Input hash">
             <code className="text-[11px]">{data.inputHash.slice(0, 12)}…</code>
           </Field>
         </dl>
 
-        <p className="mt-4 border-t border-hairline pt-3 text-[11px] text-ink-muted">
-          Reference (MedPatch paper, not this model):{' '}
-          {data.task === 'mortality'
-            ? `trimodal mortality AUROC ${MEDPATCH_REFERENCE_METRICS.mortality.auroc} / AUPRC ${MEDPATCH_REFERENCE_METRICS.mortality.auprc}`
-            : `pneumonia phenotype AUROC ${MEDPATCH_REFERENCE_METRICS.pneumonia.auroc}`}
-          .{' '}
-          {trained.length > 0
-            ? `Scores marked Trained model are real outputs of the team’s single-modality models, evaluated on held-out MIMIC-IV test data; ${fusionKind === 'average' ? 'the combined score is their simple average' : 'the fused prediction is simulated'} until the fusion model is trained. Not clinically validated.`
-            : 'This prediction comes from a mock model — the numbers above are not clinically meaningful.'}
-        </p>
       </Card>
 
       <Disclaimer />
@@ -362,12 +287,12 @@ function SourceChip({ source }: { source: ModalitySource }) {
         title={source.model ?? undefined}
         className="mt-1 inline-flex items-center gap-1 rounded-full bg-[var(--series-mortality)]/12 px-2 py-0.5 text-[10px] font-semibold text-[var(--series-mortality)]"
       >
-        <span aria-hidden="true">✓</span> Trained model
+        <span aria-hidden="true">✓</span> Trained
         <span className="tnum font-normal">
           ·{' '}
           {source.testAuroc !== null
-            ? `test AUROC ${source.testAuroc.toFixed(3)}`
-            : 'test AUROC not reported yet'}
+            ? `AUROC ${source.testAuroc.toFixed(3)}`
+            : 'AUROC pending'}
         </span>
       </span>
     );
@@ -381,7 +306,7 @@ function AverageChip() {
       title="The plain mean of the trained models' scores. Not the MedPatch fusion."
       className="inline-flex items-center gap-1 rounded-full bg-[var(--series-mortality)]/12 px-2 py-0.5 text-[10px] font-semibold text-[var(--series-mortality)]"
     >
-      <span aria-hidden="true">=</span> Simple average · not MedPatch
+      <span aria-hidden="true">=</span> Average
     </span>
   );
 }

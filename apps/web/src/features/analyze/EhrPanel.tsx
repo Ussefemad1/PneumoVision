@@ -6,7 +6,7 @@ import {
   type EhrVariable,
   type ParsedEhrCsv,
 } from '@pneumovision/shared';
-import { useId, useState } from 'react';
+import { useId } from 'react';
 
 import { cn } from '../../lib/cn.js';
 import { readText } from '../../lib/files.js';
@@ -69,8 +69,8 @@ export function EhrPanel({
   const baseId = useId();
   const tabs: { key: EhrTab; label: string }[] = [
     { key: 'grid', label: 'Grid' },
-    { key: 'csv', label: 'CSV upload' },
-    { key: 'synthetic', label: 'Synthetic example' },
+    { key: 'csv', label: 'Upload CSV' },
+    { key: 'synthetic', label: 'Examples' },
   ];
 
   return (
@@ -96,11 +96,6 @@ export function EhrPanel({
           </button>
         ))}
       </div>
-      <p className="mt-2 text-[11px] text-ink-muted">
-        {tab === 'csv'
-          ? 'The uploaded CSV is sent; the grid is ignored while this tab is open.'
-          : 'The grid is sent. Empty cells are gaps — nothing is filled in for you.'}
-      </p>
 
       <div
         role="tabpanel"
@@ -123,12 +118,8 @@ export function EhrPanel({
                 className="rounded-lg border border-hairline p-3 text-left hover:bg-surface-2"
               >
                 <span className="block text-sm font-medium text-ink">{preset.label}</span>
-                <span className="mt-1 block text-[11px] text-ink-muted">{preset.description}</span>
               </button>
             ))}
-            <p className="text-[11px] text-ink-muted sm:col-span-3">
-              Fabricated values for demonstration. Loading a preset replaces the grid.
-            </p>
           </div>
         )}
       </div>
@@ -149,9 +140,8 @@ function EhrGrid({ rows, onRows }: { rows: GridRow[]; onRows: (rows: GridRow[]) 
   if (rows.length === 0) {
     return (
       <div className="rounded-lg border border-dashed border-hairline p-4 text-center">
-        <p className="text-sm text-ink-secondary">No EHR rows — the EHR branch will be missing.</p>
-        <Button size="sm" className="mt-3" onClick={addEarlier}>
-          Add an hour
+        <Button size="sm" onClick={addEarlier}>
+          Add hour
         </Button>
       </div>
     );
@@ -254,14 +244,11 @@ function EhrGrid({ rows, onRows }: { rows: GridRow[]; onRows: (rows: GridRow[]) 
       </div>
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <Button size="sm" onClick={addEarlier} disabled={rows.length >= MAX_ROWS}>
-          Add earlier hour
+          Add hour
         </Button>
         <Button size="sm" variant="ghost" onClick={() => onRows([])}>
-          Clear EHR
+          Clear
         </Button>
-        <span className="text-[11px] text-ink-muted">
-          {rows.length} of {MAX_ROWS} hours · newest row is the hour ending now
-        </span>
       </div>
     </div>
   );
@@ -292,47 +279,38 @@ export function csvHasErrors(csv: CsvState | null): boolean {
 }
 
 function EhrCsv({ csv, onCsv }: { csv: CsvState | null; onCsv: (csv: CsvState | null) => void }) {
-  const [reading, setReading] = useState(false);
-
   return (
     <div>
       <label className="block">
-        <span className="text-xs text-ink-secondary">
-          Header: <code>hour</code> (0 = now, −1 = an hour earlier …) or <code>ts</code> (ISO time),
-          then any of the 17 variable names. At most 48 rows, 1 MB.
-        </span>
         <input
           aria-label="EHR CSV file"
           type="file"
           accept=".csv,text/csv"
-          className="mt-2 block w-full text-xs"
+          className="block w-full text-xs"
           onChange={(e) => {
             const file = e.target.files?.[0];
             e.target.value = '';
             if (!file) return;
-            setReading(true);
-            void readCsvFile(file)
-              .then(onCsv)
-              .finally(() => setReading(false));
+            void readCsvFile(file).then(onCsv);
           }}
         />
       </label>
 
-      {reading && <p className="mt-2 text-xs text-ink-muted">Reading…</p>}
 
       {csv && (
         <div className="mt-3">
           <div className="flex items-center justify-between gap-2">
             <span className="truncate text-xs text-ink-secondary">{csv.file.name}</span>
             <Button size="sm" variant="ghost" onClick={() => onCsv(null)}>
-              Remove CSV
+              Remove
             </Button>
           </div>
-          {csv.error && <p className="mt-1 text-xs text-status-critical">✕ {csv.error}</p>}
+          {csv.error && <p className="mt-1 text-xs text-status-critical">{csv.error}</p>}
           {csv.parsed?.headerError && (
-            <p className="mt-1 text-xs text-status-critical">✕ {csv.parsed.headerError.message}</p>
+            <p className="mt-1 text-xs text-status-critical">{csv.parsed.headerError.message}</p>
           )}
-          {csv.parsed && csv.parsed.rows.length > 0 && (
+          {/* Rows are only listed when one needs fixing. */}
+          {csv.parsed && csv.parsed.rows.some((r) => r.errors.length > 0) && (
             <div className="mt-2 max-h-64 overflow-auto rounded-lg border border-hairline">
               <table aria-label="CSV preview" className="w-full text-xs">
                 <thead className="sticky top-0 bg-surface-2 text-left">
@@ -352,7 +330,7 @@ function EhrCsv({ csv, onCsv }: { csv: CsvState | null; onCsv: (csv: CsvState | 
                   </tr>
                 </thead>
                 <tbody>
-                  {csv.parsed.rows.map((row) => (
+                  {csv.parsed.rows.filter((r) => r.errors.length > 0).map((row) => (
                     <tr key={row.line} className="border-t border-hairline align-top">
                       <td className="px-2 py-1">Line {row.line}</td>
                       <td className="px-2 py-1">

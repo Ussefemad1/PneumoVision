@@ -80,9 +80,6 @@ export function AlertsPage() {
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-lg font-semibold text-ink">Alerts</h1>
-          <p className="text-sm text-ink-muted">
-            Raised when risk crosses a threshold or climbs sharply within a window.
-          </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -125,11 +122,6 @@ export function AlertsPage() {
           <EmptyState
             icon="✓"
             title="Nothing to action"
-            description={
-              status === 'open'
-                ? 'No open alerts. Deteriorating patients will appear here as soon as a prediction crosses a rule.'
-                : 'No alerts match these filters.'
-            }
           />
         </Card>
       ) : (

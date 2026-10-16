@@ -32,15 +32,14 @@ export function ReceivedInputs({ prediction }: { prediction: Prediction }) {
   return (
     <Card
       title="Inputs the model received"
-      subtitle="Reported by the inference service from the decoded request"
       actions={
         received?.mode === 'mock' ? (
           <span className="inline-flex items-center gap-1 rounded-full border border-status-warning/60 bg-status-warning/15 px-2 py-0.5 text-[11px] font-semibold text-ink">
-            <span aria-hidden="true">◆</span> MOCK MODEL — not a clinical result
+            <span aria-hidden="true">◆</span> Mock model
           </span>
         ) : received?.mode === 'readers' ? (
           <span className="inline-flex items-center gap-1 rounded-full border border-[var(--series-mortality)]/50 bg-[var(--series-mortality)]/10 px-2 py-0.5 text-[11px] font-semibold text-ink">
-            <span aria-hidden="true">✓</span> TRAINED READERS · combined by simple average
+            <span aria-hidden="true">✓</span> Trained models
           </span>
         ) : null
       }
@@ -76,7 +75,7 @@ export function ReceivedInputs({ prediction }: { prediction: Prediction }) {
                 </dl>
               </div>
             ) : (
-              <p className="mt-2 text-xs text-ink-muted">— none received</p>
+              <p className="mt-2 text-xs text-ink-muted">—</p>
             )}
           </section>
 
@@ -91,7 +90,7 @@ export function ReceivedInputs({ prediction }: { prediction: Prediction }) {
                 </span>
               </p>
             ) : (
-              <p className="mt-2 text-xs text-ink-muted">— none received</p>
+              <p className="mt-2 text-xs text-ink-muted">—</p>
             )}
           </section>
 
@@ -101,15 +100,12 @@ export function ReceivedInputs({ prediction }: { prediction: Prediction }) {
               <ul className="mt-2 space-y-1 text-xs">
                 {received.notes.map((note, i) => (
                   <li key={note.id} className="text-ink">
-                    {i + 1}. {NOTE_LABEL[note.type] ?? note.type} ·{' '}
-                    <span className="tnum">
-                      {note.tokens} tokens · {note.chunks} chunk{note.chunks === 1 ? '' : 's'}
-                    </span>
+                    {i + 1}. {NOTE_LABEL[note.type] ?? note.type}
                   </li>
                 ))}
               </ul>
             ) : (
-              <p className="mt-2 text-xs text-ink-muted">— none received</p>
+              <p className="mt-2 text-xs text-ink-muted">—</p>
             )}
             {prediction.excludedInputs.length > 0 && (
               <div className="mt-2 text-xs text-ink-secondary">
