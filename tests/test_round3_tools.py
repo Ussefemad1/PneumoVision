@@ -162,7 +162,11 @@ def test_record_writes_the_row_notes_and_results(lineage, monkeypatch):
         assert text in row["notes"], text
     table = (Path(plan["save_dir"]) / "r3_results.csv").read_text().splitlines()
     assert table[1].startswith("variant,chosen_head,split") and len(table) == 2 + 4
-    with pytest.raises(SystemExit, match="already in"):
+    rows_before = manifest.read_rows()
+    assert round3.step_record(plan, o, "test")["id"] == row["id"]  # rerun: nothing to do
+    assert manifest.read_rows() == rows_before
+    best.write_bytes(b"a different checkpoint")
+    with pytest.raises(SystemExit, match="different checkpoint"):
         round3.step_record(plan, o, "test")
 
 

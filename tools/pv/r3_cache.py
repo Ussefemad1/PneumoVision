@@ -34,6 +34,7 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -490,7 +491,13 @@ class CacheLoader:
     every epoch (torch.Generator seeded by seed + epoch), batches carried across
     shard boundaries, last partial batch dropped -- like the train DataLoader
     (shuffle=True, drop_last=True). Unshuffled: dataset order, last partial
-    batch kept -- like val/test. `preload` keeps every shard in memory.
+    batch kept -- like val/test.
+
+    Only the keys this loader needs are ever read: shards are opened with
+    torch.load(mmap=True) and filtered by needed_keys() -- the run's own
+    (0.75) groups, plus one swept threshold's groups when `threshold` is set.
+    The other thresholds' groups stay on disk. `preload` copies just those
+    keys into RAM.
     """
 
     def __init__(self, cache_dir, split, batch_size, *, shuffle, drop_last, classes,
@@ -503,16 +510,27 @@ class CacheLoader:
         # Threshold sweep: batches split at `threshold` (from main's groups).
         self.threshold, self.main = threshold, main
         self.dataset = _Classes(classes)
-        self._kept = [self._load(p) for p in self.paths] if preload else None
+        self._kept = None
+        if preload:  # only the needed keys, copied out of the mapped files
+            self._kept = [{k: v.clone() for k, v in self._load(p).items()} for p in self.paths]
         sizes = [int(self._shard(i)["y"].shape[0]) for i in range(len(self.paths))]
         self.stays = sum(sizes)
 
-    @staticmethod
-    def _load(path):
-        return torch.load(path, map_location="cpu", weights_only=True)
+    def _load(self, path):
+        """The shard's needed keys, memory-mapped: unused keys are never read from disk."""
+        try:
+            shard = torch.load(path, map_location="cpu", weights_only=True, mmap=True)
+        except TypeError:  # torch < 2.1 has no mmap: read the whole file
+            shard = torch.load(path, map_location="cpu", weights_only=True)
+        return {k: v for k, v in shard.items() if needed_key(k, self.threshold)}
 
     def _shard(self, i):
         return self._kept[i] if self._kept is not None else self._load(self.paths[i])
+
+    def nbytes(self) -> int:
+        """Bytes of the keys this loader reads, over all its shards."""
+        return sum(v.numel() * v.element_size()
+                   for i in range(len(self.paths)) for v in self._shard(i).values())  # fmt: skip
 
     def __len__(self):
         full, rest = divmod(self.stays, self.batch_size)
@@ -529,7 +547,7 @@ class CacheLoader:
         buffer: list[dict[str, torch.Tensor]] = []
         held = 0
         for i in order:
-            shard = {k: v for k, v in self._shard(i).items() if k not in INDEX_KEYS}
+            shard = self._shard(i)  # needed keys only (no index keys)
             n = shard["y"].shape[0]
             rows = torch.randperm(n, generator=g) if self.shuffle else torch.arange(n)
             start = 0
@@ -549,6 +567,18 @@ class CacheLoader:
         if self.threshold is None:
             return batch
         return at_threshold(batch, self.threshold, self.main)
+
+
+_SWEEP_KEY = re.compile(r"_t\d{3}_(mean|n|conf|is_high)$")
+
+
+def needed_key(key: str, threshold: float | None) -> bool:
+    """Whether a loader at `threshold` (None: the run's own) needs this cached key."""
+    if key in INDEX_KEYS:
+        return False
+    if not _SWEEP_KEY.search(key):
+        return True  # the main groups, features, counts, missingness, labels
+    return threshold is not None and f"_t{round(threshold * 100):03d}_" in key
 
 
 class _Classes:

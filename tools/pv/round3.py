@@ -327,16 +327,25 @@ class _Tee(io.TextIOBase):
             s.flush()
 
 
+#: The step main() is running; its whole output already goes to <save_dir>/<step>.log.
+_ACTIVE_STEP: str | None = None
+
+
 @contextlib.contextmanager
 def logged(run: dict, step: str):
-    """Tee stdout to <save_dir>/<step>.log; collect medpatch/ strays into the run folder."""
+    """Tee stdout to <save_dir>/<step>.log; collect medpatch/ strays into the run folder.
+
+    Inside main(), each step's whole output already goes to <step>.log, so a
+    part named like the running step is not written twice.
+    """
     from tools.pv.run import _collect_stray_outputs  # noqa: PLC0415
 
     save_dir = Path(run["save_dir"])
     save_dir.mkdir(parents=True, exist_ok=True)
     before = {p.name for p in MEDPATCH.iterdir()}
     buffer = io.StringIO()
-    with open(save_dir / f"{step}.log", "a", encoding="utf-8") as log:
+    target = os.devnull if step == _ACTIVE_STEP else save_dir / f"{step}.log"
+    with open(target, "a", encoding="utf-8") as log:
         tee = _Tee(sys.stdout, log, buffer)
         try:
             with contextlib.redirect_stdout(tee):
@@ -571,19 +580,20 @@ def cache_loaders(run: dict, args, preload: bool, threshold: float | None = None
     from datasets.DataFusion import CLASSES  # noqa: PLC0415
 
     classes = CLASSES[: args.num_classes] if args.num_classes > 1 else ["mortality"]
-    kw = {"classes": classes, "preload": preload, "threshold": threshold,
-          "main": r3_cache.main_threshold(main_args)}  # fmt: skip
-    return (
-        r3_cache.CacheLoader(
-            cache_dir, "train", args.batch_size, shuffle=True, drop_last=True, **kw
-        ),
-        r3_cache.CacheLoader(
-            cache_dir, "val", args.batch_size, shuffle=False, drop_last=False, **kw
-        ),
-        r3_cache.CacheLoader(
-            cache_dir, "test", args.batch_size, shuffle=False, drop_last=False, **kw
-        ),
-    )
+    kw = {"classes": classes, "threshold": threshold, "main": r3_cache.main_threshold(main_args)}
+    loaders = (  # --preload: train and val (read every epoch); test is read once, at the end
+        r3_cache.CacheLoader(cache_dir, "train", args.batch_size, shuffle=True, drop_last=True,
+                             preload=preload, **kw),
+        r3_cache.CacheLoader(cache_dir, "val", args.batch_size, shuffle=False, drop_last=False,
+                             preload=preload, **kw),
+        r3_cache.CacheLoader(cache_dir, "test", args.batch_size, shuffle=False, drop_last=False,
+                             preload=False, **kw),
+    )  # fmt: skip
+    if preload:
+        held = sum(dl.nbytes() for dl in loaders[:2])
+        print(f"[r3] --preload: {held / 2**30:.1f} GB of train + val keys in RAM "
+              f"(threshold {threshold if threshold is not None else 'main'})")  # fmt: skip
+    return loaders
 
 
 def variant_names(opts) -> list[str]:
@@ -615,6 +625,12 @@ def train_variant(run: dict, name: str, args, opts, threshold: float | None = No
     if finished(args):
         print(f"[r3] {name}: already trained ({args.epochs} epochs or early-stopped); skipped")
         return str(_best(args))
+    # Every epoch MSMA_Trainer bootstraps 95% CIs for 5 heads x every class on
+    # train and val (1,000 pandas resamples each): ~1 h of CPU per phenotyping
+    # epoch. Checkpoint and head selection use only the point estimates
+    # (auroc_mean), so the CIs during training change nothing; the record /
+    # sweep / ablation scores compute them on val and test (score_variant).
+    args.bootstrap_iters = opts.train_bootstrap_iters
     with logged(run, f"train_{name}") as out:
         loaders = cache_loaders(run, args, opts.preload, threshold)
         trainer = build_trainer(args, loaders)
@@ -753,20 +769,73 @@ def score_variant(run: dict, args, opts, threshold: float | None = None) -> dict
         cache_loaders(run, args, opts.preload, threshold) if run["cached"] else live_loaders(args)
     )
     args.resume = False
+    iters = args.bootstrap_iters  # the run's (paper: 1000), for the reported CIs
+    args.bootstrap_iters = 0  # trainer-internal metrics: point estimates only
     trainer = build_trainer(args, loaders)
     trainer.load_state(str(best))
     if getattr(trainer, "best_head", None) is None:
         trainer.best_head = trainer.choose_head_on_validation()
     trainer.model.eval()
-    with torch.no_grad():
-        val = dict(zip(trainer.HEADS, trainer.validate(trainer.val_dl, False)[:5], strict=True))
-        test = dict(zip(trainer.HEADS, trainer.validate(trainer.test_dl, True)[:5], strict=True))
     head, target = trainer.best_head, TARGET[run["task"]]
+    with torch.no_grad():
+        val_y, val_p = predict_heads(trainer, trainer.val_dl)
+        test_y, test_p = predict_heads(trainer, trainer.test_dl)
     return {
         "checkpoint": str(best),
         "head": head,
-        "val": metrics(val[head], target),
-        "test": metrics(test[head], target),
+        "val": head_metrics(val_y, val_p[head], target, iters),
+        "test": head_metrics(test_y, test_p[head], target, iters),
+    }
+
+
+def predict_heads(trainer, dl):
+    """(labels [N, C], {head: predictions [N, C]}) for the five Round 3 heads.
+
+    The same outputs and combinations MSMA_Trainer.validate collects:
+    combined = (high + low + late) / 3, less_combined = (high + late) / 2.
+    """
+    import torch  # noqa: PLC0415
+
+    ys, preds = [], {h: [] for h in trainer.HEADS}
+    for output, y in trainer.batch_outputs(dl):
+        high = trainer.fusion_logits(output, "high_conf")
+        low = trainer.fusion_logits(output, "low")
+        late = trainer.fusion_logits(output, "late")
+        for name, value in (("high", high), ("low", low), ("late", late),
+                            ("combined", (high + low + late) / 3),
+                            ("less_combined", (high + late) / 2)):  # fmt: skip
+            preds[name].append(value.detach().cpu())
+        ys.append(y.detach().cpu())
+
+    def as_2d(chunks):
+        out = torch.cat(chunks).numpy()
+        return out[:, None] if out.ndim == 1 else out
+
+    return as_2d(ys), {h: as_2d(v) for h, v in preds.items()}
+
+
+def head_metrics(labels, preds, target: int, iters: int) -> dict:
+    """Macro AUROC / AUPRC over the classes (point estimates, as computeAUROC) and the
+    target class with its 95% bootstrap CI (medpatch get_model_performance, `iters`)."""
+    import numpy as np  # noqa: PLC0415
+    import pandas as pd  # noqa: PLC0415
+    from trainers.utils import evaluate_new, get_model_performance  # noqa: PLC0415
+
+    per_class = [evaluate_new(pd.DataFrame({"y_truth": labels[:, c], "y_pred": preds[:, c]}))
+                 for c in range(labels.shape[1])]  # fmt: skip
+    auprc = np.array([p for p, _ in per_class], dtype=float)
+    auroc = np.array([a for _, a in per_class], dtype=float)
+    df = pd.DataFrame({"y_truth": labels[:, target], "y_pred": preds[:, target]})
+    (t_prc, prc_a, prc_b), (t_roc, roc_a, roc_b) = get_model_performance(
+        df, label="target", num_iter=iters, verbose=False
+    )
+    return {
+        "macro_auroc": float(np.nanmean(auroc)),
+        "macro_auprc": float(np.nanmean(auprc)),
+        "target_auroc": float(t_roc),
+        "target_auprc": float(t_prc),
+        "target_auroc_ci": [float(min(roc_a, roc_b)), float(max(roc_a, roc_b))],
+        "target_auprc_ci": [float(min(prc_a, prc_b)), float(max(prc_a, prc_b))],
     }
 
 
@@ -786,8 +855,18 @@ def metrics(ret: dict, target: int) -> dict:
 
 
 def step_record(run: dict, opts, who: str) -> dict[str, str]:
-    if manifest.find(run["id"]) is not None:
-        raise SystemExit(f"[r3] {run['id']} is already in {manifest.manifest_path()}")
+    existing = manifest.find(run["id"])
+    if existing is not None:
+        # Rerunning record after a stop is harmless: the same checkpoint is already
+        # recorded. A different checkpoint under the same id is refused.
+        best = _best(trainer_args(run))
+        same = (best.is_file() and existing["file_path"] == best.as_posix()
+                and existing["sha256"] == manifest.sha256_file(best))  # fmt: skip
+        if same:
+            print(f"[r3] {run['id']} is already recorded with this checkpoint; nothing to do")
+            return existing
+        raise SystemExit(f"[r3] {run['id']} is already in {manifest.manifest_path()} "
+                         "with a different checkpoint")  # fmt: skip
     with logged(run, "record"):
         scores = {}
         for name, args in variants(run, opts):
@@ -939,6 +1018,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--equivalence-threshold", dest="equivalence_threshold", type=float,
                    help="the swept threshold --step equivalence also checks "
                         "(default: the one farthest from 0.75)")  # fmt: skip
+    p.add_argument("--train-bootstrap-iters", dest="train_bootstrap_iters", type=int, default=0,
+                   help="bootstrap resamples for the per-epoch CIs while training (default 0: "
+                        "point estimates only; selection never uses the CIs)")  # fmt: skip
     p.add_argument(
         "--disk-margin-gb",
         dest="disk_margin_gb",
@@ -1008,24 +1090,53 @@ def main(argv: list[str] | None = None) -> dict | None:
         steps = tuple(s for s in steps if s in ("train", "record"))
     row = None
     for step in steps:
-        print(f"\n=== r3 {run['id']}: {step} ===", flush=True)
-        if step == "cache":
-            step_cache(run, opts)
-        elif step == "equivalence":
-            step_equivalence(run, opts)
-        elif step == "train":
-            step_train(run, opts)
-        elif step == "ablations":
-            step_ablations(run, opts)
-        elif step == "sweep":
-            step_sweep(run, opts)
-        elif step == "share":
-            step_share(run, opts)
-        else:
-            row = step_record(run, opts, opts.who)
-            print(f"[pv] {row['id']} recorded: val {TARGET_NAME[run['task']]} AUROC "
-                  f"{row['val_auroc']} AUPRC {row['val_auprc']} -> "
-                  f"{manifest.manifest_path()}")  # fmt: skip
+        row = run_step(run, opts, step) or row
+    return row
+
+
+def _duration(seconds: float) -> str:
+    h, rest = divmod(int(seconds), 3600)
+    return f"{h}h{rest // 60:02d}m{rest % 60:02d}s" if h else f"{rest // 60}m{rest % 60:02d}s"
+
+
+def run_step(run: dict, opts, step: str):
+    """One step: its whole output (and any traceback) in <save_dir>/<step>.log, then
+    `[r3] <step> OK (<duration>)`. A failure raises before the OK line."""
+    global _ACTIVE_STEP
+    from tools.pv import logtee  # noqa: PLC0415
+
+    row = None
+    started = time.time()
+    _ACTIVE_STEP = step
+    try:
+        with logtee.tee_to_log(Path(run["save_dir"]) / f"{step}.log"):
+            print(f"\n=== r3 {run['id']}: {step} ===", flush=True)
+            row = _run_step(run, opts, step)
+            print(f"[r3] {step} OK ({_duration(time.time() - started)})", flush=True)
+    finally:
+        _ACTIVE_STEP = None
+    return row
+
+
+def _run_step(run: dict, opts, step: str):
+    row = None
+    if step == "cache":
+        step_cache(run, opts)
+    elif step == "equivalence":
+        step_equivalence(run, opts)
+    elif step == "train":
+        step_train(run, opts)
+    elif step == "ablations":
+        step_ablations(run, opts)
+    elif step == "sweep":
+        step_sweep(run, opts)
+    elif step == "share":
+        step_share(run, opts)
+    else:
+        row = step_record(run, opts, opts.who)
+        print(f"[pv] {row['id']} recorded: val {TARGET_NAME[run['task']]} AUROC "
+              f"{row['val_auroc']} AUPRC {row['val_auprc']} -> "
+              f"{manifest.manifest_path()}")  # fmt: skip
     return row
 
 
