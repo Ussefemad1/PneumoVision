@@ -105,6 +105,24 @@ def cxr_projection_dims(cxr_model, args):
     return cxr_model.full_feats_dim, args.patch_output_dim, None
 
 
+def temperature_for(temperature, seq_len):
+    """The first `seq_len` per-position temperatures, 1.0 beyond the learned ones.
+
+    The EHR temperature has 2,646 positions (phenotyping) or 48 (mortality), and
+    the code sliced it with [:seq_len]. Phenotyping collate pads EHR to at least
+    2,646 hours but never truncates, and MIMIC-IV has longer stays: the slice
+    was then shorter than the sequence and the division crashed. Positions past
+    the learned ones get temperature 1.0 (uncalibrated); every hour is still
+    used. For seq_len <= len(temperature) this is the slice it always was.
+    See docs/model_track_notes.md, "EHR beyond 2,646 hours".
+    """
+    if seq_len <= temperature.shape[0]:
+        return temperature[:seq_len]
+    tail = torch.ones((seq_len - temperature.shape[0],) + tuple(temperature.shape[1:]),
+                      dtype=temperature.dtype, device=temperature.device)
+    return torch.cat([temperature, tail], dim=0)
+
+
 def reorder_by_modalities(modalities, order, *lists):
     """Put per-modality lists in `modalities` order (F4).
 
@@ -1042,7 +1060,7 @@ class TempCUnimodalEHR(nn.Module):
         ehr_confidences = self.ehr_confidence_predictor(full_ehr_feats)
         # Scale them by dividing by temperature
         seq_len = ehr_confidences.shape[1]
-        temp_for_seq = self.ehr_temperature[:seq_len]
+        temp_for_seq = temperature_for(self.ehr_temperature, seq_len)  # 1.0 past 2,646 h
         temp_for_seq = temp_for_seq.clamp_min(1e-9)
         
         scaled_ehr_confidences = ehr_confidences / temp_for_seq.unsqueeze(0)
@@ -1614,7 +1632,7 @@ class CMSMAFusion(nn.Module):
             
             ehr_conf_logits = self.ehr_confidence_predictor(full_ehr_conf_feats)
             seq_len = ehr_conf_logits.shape[1]
-            temp_ehr = self.ehr_temperature[:seq_len].clamp_min(1e-9)
+            temp_ehr = temperature_for(self.ehr_temperature, seq_len).clamp_min(1e-9)  # 1.0 past 2,646 h
             scaled_ehr_conf_logits = ehr_conf_logits / temp_ehr.unsqueeze(0)
 
             # 3) take the maximum across classes -> [B, L]
@@ -2665,7 +2683,7 @@ class EMSMAFusion(nn.Module):
             
             ehr_conf_logits = self.ehr_confidence_predictor(full_ehr_conf_feats)
             seq_len = ehr_conf_logits.shape[1]
-            temp_ehr = self.ehr_temperature[:seq_len].clamp_min(1e-9)
+            temp_ehr = temperature_for(self.ehr_temperature, seq_len).clamp_min(1e-9)  # 1.0 past 2,646 h
             scaled_ehr_conf_logits = ehr_conf_logits / temp_ehr.unsqueeze(0)
 
             # 3) take the maximum across classes -> [B, L]
