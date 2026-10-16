@@ -5,13 +5,13 @@ import { Link, useParams } from 'react-router-dom';
 
 import { apiErrorMessage, getData } from '../lib/api.js';
 import { cn } from '../lib/cn.js';
-import { durationMs, percent, shortDateTime } from '../lib/format.js';
+import { percent } from '../lib/format.js';
 import { riskBand } from '../lib/risk.js';
 import { AlphaContributionChart } from '../components/charts.jsx';
 import { Disclaimer } from '../components/Disclaimer.jsx';
 import { ReceivedInputs } from '../features/analyze/ReceivedInputs.jsx';
 import { RiskGauge } from '../components/risk.jsx';
-import { Button, Card, ErrorState, Field, Skeleton } from '../components/ui.jsx';
+import { Button, Card, ErrorState, Skeleton } from '../components/ui.jsx';
 
 const MODALITY_LABELS: Record<string, string> = {
   ehr: 'EHR (vitals)',
@@ -258,21 +258,6 @@ export function PredictionReportPage() {
       </div>
 
       <ReceivedInputs prediction={data} />
-
-      {/* Provenance */}
-      <Card title="Provenance">
-        <dl className="grid gap-4 sm:grid-cols-3 lg:grid-cols-6">
-          <Field label="Model version">{data.modelVersion}</Field>
-          <Field label="Cut-off time">{shortDateTime(data.cutoffTime)}</Field>
-          <Field label="Latency">{durationMs(data.latencyMs)}</Field>
-          <Field label="Requested">{shortDateTime(data.createdAt)}</Field>
-          <Field label="Threshold">{result.confidence.theta.toFixed(2)}</Field>
-          <Field label="Input hash">
-            <code className="text-[11px]">{data.inputHash.slice(0, 12)}…</code>
-          </Field>
-        </dl>
-
-      </Card>
 
       <Disclaimer />
     </div>
