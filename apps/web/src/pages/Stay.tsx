@@ -119,6 +119,13 @@ export function StayPage() {
 }
 
 function StayHeader({ stay }: { stay: StayDetail }) {
+  // An Analyze run is stored as a stay with a placeholder ward and bed; show
+  // it as an analysis, not as an admission.
+  const adhoc = stay.status === 'adhoc';
+  const demographics = stay.patient.demographics
+    ? `${stay.patient.demographics.age}y · ${stay.patient.demographics.sex} · `
+    : '';
+
   return (
     <Card>
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -126,24 +133,28 @@ function StayHeader({ stay }: { stay: StayDetail }) {
           <div className="flex items-center gap-2">
             <h1 className="text-lg font-semibold text-ink">{stay.patient.pseudoId}</h1>
             <span className="rounded-full bg-surface-3 px-2 py-0.5 text-[11px] capitalize text-ink-secondary">
-              {stay.status}
+              {adhoc ? 'Analysis' : stay.status}
             </span>
           </div>
-          <p className="mt-0.5 text-sm text-ink-muted">
-            {stay.patient.demographics
-              ? `${stay.patient.demographics.age}y · ${stay.patient.demographics.sex}`
-              : 'Demographics unknown'}{' '}
-            · {stay.ward} · bed {stay.bedLabel}
-          </p>
+          {!adhoc && (
+            <p className="mt-0.5 text-sm text-ink-muted">
+              {demographics}
+              {stay.ward} · bed {stay.bedLabel}
+            </p>
+          )}
         </div>
 
         <dl className="flex flex-wrap items-start gap-6">
-          <Field label="Admitted">{shortDateTime(stay.admittedAt)}</Field>
-          <Field label="Open alerts">
-            <span className="tnum">{stay.openAlertCount}</span>
-          </Field>
+          <Field label={adhoc ? 'Created' : 'Admitted'}>{shortDateTime(stay.admittedAt)}</Field>
+          {!adhoc && (
+            <Field label="Open alerts">
+              <span className="tnum">{stay.openAlertCount}</span>
+            </Field>
+          )}
           <div>
-            <dt className="text-[11px] uppercase tracking-wide text-ink-muted">Modalities</dt>
+            <dt className="text-[11px] uppercase tracking-wide text-ink-muted">
+              {adhoc ? 'Inputs' : 'Modalities'}
+            </dt>
             <dd className="mt-1">
               <ModalityBadges availability={stay.availability} />
             </dd>
