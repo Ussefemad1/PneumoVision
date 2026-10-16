@@ -9,6 +9,58 @@ Newest first.
 
 ---
 
+## 2026-10-18 — Round 3 threshold sweep (binned capture), share step
+
+Approved: mortality sweeps 0.60, 0.65, 0.70, 0.75, 0.80, 0.85; phenotyping
+sweeps 0.65, 0.75, 0.85. Both fp32, phenotyping on the Colab disk only. **The
+final model is always θ = 0.75.** The sweep variants are ablations only: never
+the manifest row, the reported result, the shared copy or the checkpoint the
+website loads.
+
+33. **Capture** (`models/fusion.py:1497`, called at `:1494` and `:1674`;
+    off unless `_capture_thresholds` is set).
+    - The run's own threshold keeps its high/low groups, computed by the
+      unchanged code, so they are **bit-for-bit** the plain capture (tested).
+    - For each other swept threshold t, per stay and class, the side of t with
+      **fewer tokens** is stored (mean, count, mean confidence), with
+      `_is_high` saying which side.
+    - `r3_cache.at_threshold` (`tools/pv/r3_cache.py:153`) rebuilds t's other
+      side in float64 as all tokens minus the stored side. The total comes
+      from the main groups' sums.
+    - **Why the smaller side:** the rebuilt side then holds at least half the
+      tokens, so the fp32 rounding of the stored means costs ~2·eps·max|x|
+      (≤ 1.8e-7 measured), whatever the stay length.
+    - **Why not plain bins:** storing the side fixed by "t vs 0.75" gave 2e-4
+      on 2,646-token EHR sequences. Plain bins can't give a bit-exact 0.75
+      (summing bins rounds differently from the direct masked sum).
+    - **Size:** K + 1 groups for K thresholds, about 58 GB for phenotyping
+      (3 thresholds) and 1.4 GB for mortality (6).
+34. **Cache identity.**
+    - A sweep cache lives in its own directory, `<task>-sweep-<thresholds>`;
+      the plain cache of a recorded run is never touched.
+    - The fingerprint adds `sweep_thresholds` and `capture_semantics` (an
+      explicit version to bump when a stored key's values change). The
+      capture-code commit is now recorded for provenance only.
+    - Adding keys therefore does not invalidate existing caches.
+      `r3-fusion-001`'s plain cache still matches (tested with a pre-change
+      fingerprint).
+35. **Equivalence** checks cached == live at θ = 0.75 **and** at one swept
+    threshold (farthest from 0.75 by default), each ≤ 1e-5. Unit tests: every
+    swept θ, both tasks, stub and real LSTM, outputs ≤ 1e-6.
+36. **`--step sweep`**: one variant per other threshold from the same cache,
+    and `r3_threshold_sweep.csv` (val and test, 95% CIs). The 0.75 row is the
+    recorded main run, not a retrain. The manifest is untouched.
+37. **Disk.** `--step cache` measures bytes per stay on one captured batch
+    and refuses to start when free disk < remaining estimate +
+    `--disk-margin-gb` (20). It prints the measured size per split. The
+    pre-flight uses the same rule.
+38. **`--step share --share-to`** copies only the main run: the manifest row's
+    best checkpoint (sha256 checked), `run.json`, the tables and the top-level
+    logs. No variant subfolder (sweep or ablation) is ever copied. The
+    notebooks use it instead of `cp -r`.
+
+---
+
 ## 2026-10-17 — run r3 exit codes, cache copy, requested variants, ablations step
 
 Mortality Round 3 ran on Colab (7f2d783): `r3-fusion-001`, test mortality

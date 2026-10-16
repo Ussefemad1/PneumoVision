@@ -496,7 +496,9 @@ command runs all four.
   sides and reports a failed file without failing the step. To copy later,
   rerun `--step cache --copy-cache-to <dir>`: finished shards are skipped.
 - **equivalence:** compares cached and live forwards on real validation
-  batches and prints only the maximum differences.
+  batches and prints only the maximum differences. With `--sweep-thresholds`
+  it checks θ = 0.75 and one swept threshold (the one farthest from 0.75, or
+  `--equivalence-threshold`); both must agree to ≤ 1e-5.
 - **train:**
   - trains the main run, then the same with `--ablation
 without_missingness_module`, both from the same cache;
@@ -511,10 +513,17 @@ without_missingness_module`, both from the same cache;
     late_weights_per_class and mask_missing_tokens.
   - `--variants …` picks a subset.
   - Rerunning skips variants that have finished training.
-
-Every step exits 0 on success and non-zero on an error, so a failing cell
-stops a "Run all".
-
+- **sweep** (after `record`, not part of `all`; needs `--sweep-thresholds`):
+  - trains and scores one variant per swept threshold from the sweep cache and
+    writes `r3_threshold_sweep.csv` (val and test, 95% CIs);
+  - the 0.75 row is the recorded main run, not a retrain;
+  - the swept variants are **ablations only**: they never become the manifest
+    row, the reported result, the shared copy or the checkpoint the website
+    loads.
+- **share** (`--share-to <dir>`): copies the main run only to the shared
+  folder: its best checkpoint (the manifest row's file, sha256 checked),
+  `run.json`, the result tables and the top-level logs. It never copies a
+  sweep or ablation variant (those live in subfolders).
 - **record:**
   - scores the chosen head on val and test and writes `r3_results.csv` (main
     and ablation, macro and target AUROC/AUPRC with 95% CIs);
@@ -524,6 +533,9 @@ stops a "Run all".
     chosen head;
   - the notes also record presence counts and the share ≥ 0.75 per split, the
     equivalence result and every deviation.
+
+Every step exits 0 on success and non-zero on an error, so a failing cell
+stops a "Run all".
 
 **Before training,** `train` checks the cache's fingerprint against the run:
 parents' sha256, thresholds, task, the lists' md5, the capture code commit and
@@ -594,39 +606,62 @@ RID = 'r3-fusion-001'   # <- the id the dry run printed; every step below uses i
 !python -m tools.pv.run r3 --task mortality --data real {DATA} --run-id {RID} --step record
 !python -m tools.pv.run r3 --task mortality --data real {DATA} --run-id {RID} --step ablations
 !PV_CHECK_TASK=in-hospital-mortality python -m pytest -m round3 -s
-!mkdir -p /content/drive/MyDrive/PneumoVision_shared/round3/mortality
-!cp -r "$RUNS_ROOT/in-hospital-mortality/r3/{RID}" /content/drive/MyDrive/PneumoVision_shared/round3/mortality/
+!python -m tools.pv.run r3 --task mortality --data real {DATA} --run-id {RID} --step share --share-to /content/drive/MyDrive/PneumoVision_shared/round3/mortality
 ```
 
 If the session dies during `train`, rerun the same `--step train` command: it
 resumes each variant from its `last_checkpoint_…`. If it dies after training
 but before the row is written, use `--step record`, or `--record-only`.
 
-### Notebook 3 — phenotyping Round 3
+### Notebook 3 — phenotyping Round 3, with the threshold sweep
 
-The cache is about 30 GB; check that the pre-flight's free-space line allows
-it.
+One binned cache serves the main run and the sweep. It holds the θ = 0.75
+groups exactly as a plain cache does, plus one group per swept threshold.
+That is about **58 GB on the Colab disk** for 0.65 / 0.75 / 0.85; it is not
+copied to Drive. It goes to its own directory
+(`/content/r3_cache/real/phenotyping-sweep-065-075-085`). `--step cache`
+refuses to start unless free disk ≥ the estimate + 20 GB, and prints the
+measured size per split. The main run (θ = 0.75) is the result; the sweep
+variants are ablations only.
 
 ```python
 !python -m tools.pv.run r3 --task phenotyping --data real {DATA} --dry-run   # prints the next id
 RID = 'r3-fusion-002'   # <- the id the dry run printed
-!python -m tools.pv.run r3 --task phenotyping --data real {DATA} --run-id {RID} --step cache   # rerun to resume
-!python -m tools.pv.run r3 --task phenotyping --data real {DATA} --run-id {RID} --step equivalence --equivalence-batches 2
-!python -m tools.pv.run r3 --task phenotyping --data real {DATA} --run-id {RID} --step train
-!python -m tools.pv.run r3 --task phenotyping --data real {DATA} --run-id {RID} --step record
-!python -m tools.pv.run r3 --task phenotyping --data real {DATA} --run-id {RID} --step ablations
+SWEEP = '--sweep-thresholds 0.65 0.75 0.85'
+!python -m tools.pv.run r3 --task phenotyping --data real {DATA} --run-id {RID} {SWEEP} --step cache   # rerun to resume
+!python -m tools.pv.run r3 --task phenotyping --data real {DATA} --run-id {RID} {SWEEP} --step equivalence --equivalence-batches 2
+!python -m tools.pv.run r3 --task phenotyping --data real {DATA} --run-id {RID} {SWEEP} --step train
+!python -m tools.pv.run r3 --task phenotyping --data real {DATA} --run-id {RID} {SWEEP} --step record
+!python -m tools.pv.run r3 --task phenotyping --data real {DATA} --run-id {RID} {SWEEP} --step ablations
+!python -m tools.pv.run r3 --task phenotyping --data real {DATA} --run-id {RID} {SWEEP} --step sweep
 !PV_CHECK_TASK=phenotyping python -m pytest -m round3 -s
-!mkdir -p /content/drive/MyDrive/PneumoVision_shared/round3/phenotyping
-!cp -r "$RUNS_ROOT/phenotyping/r3/{RID}" /content/drive/MyDrive/PneumoVision_shared/round3/phenotyping/
+!python -m tools.pv.run r3 --task phenotyping --data real {DATA} --run-id {RID} {SWEEP} --step share --share-to /content/drive/MyDrive/PneumoVision_shared/round3/phenotyping
 ```
 
-**Mortality r3-fusion-001 (already recorded):** to add its ablations, run only
-the ablations step and the checks:
+Pass `{SWEEP}` on **every** command of this run: it selects the sweep cache
+the main run trains from. Without it the command looks for a plain cache that
+does not exist.
+
+### Mortality: the sweep for the recorded r3-fusion-001
+
+The recorded run keeps its plain cache (`/content/r3_cache/real/in-hospital-mortality`)
+and its manifest row. The sweep captures a **new** cache in its own directory
+(`…/in-hospital-mortality-sweep-060-065-070-075-080-085`, about 1.4 GB), so
+the old one is never overwritten. Its 0.75 groups are bit-for-bit those of the
+plain capture, so the 0.75 row of the table is the recorded run.
 
 ```python
-!python -m tools.pv.run r3 --task mortality --data real {DATA} --run-id r3-fusion-001 --step ablations
+SWEEP_M = '--sweep-thresholds 0.60 0.65 0.70 0.75 0.80 0.85'
+!python -m tools.pv.run r3 --task mortality --data real {DATA} --run-id r3-fusion-001 {SWEEP_M} --step cache
+!python -m tools.pv.run r3 --task mortality --data real {DATA} --run-id r3-fusion-001 {SWEEP_M} --step equivalence --equivalence-batches 2
+!python -m tools.pv.run r3 --task mortality --data real {DATA} --run-id r3-fusion-001 {SWEEP_M} --step sweep
 !PV_CHECK_TASK=in-hospital-mortality python -m pytest -m round3 -s
+!python -m tools.pv.run r3 --task mortality --data real {DATA} --run-id r3-fusion-001 --step share --share-to /content/drive/MyDrive/PneumoVision_shared/round3/mortality
 ```
+
+`r3_threshold_sweep.csv` is written in the run folder. The run's ablations
+(`--step ablations`, with no `{SWEEP_M}`) use the plain cache. If the VM was
+reset since the run, rebuild that cache first with `--step cache` (it resumes).
 
 ---
 
