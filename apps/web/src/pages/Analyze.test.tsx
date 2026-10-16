@@ -90,16 +90,16 @@ describe('AnalyzePage', () => {
     );
     renderPage();
     fireEvent.click(screen.getByRole('radio', { name: /mortality/i }));
-    addNote('Synthetic nursing note: comfortable overnight.', 'nursing');
+    addNote('Synthetic radiology note: no acute change.', 'radiology');
 
     fireEvent.click(runButton());
 
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent('Heart Rate is wrong');
     expect(screen.getByLabelText('Note 1 text')).toHaveValue(
-      'Synthetic nursing note: comfortable overnight.',
+      'Synthetic radiology note: no acute change.',
     );
-    expect(screen.getByLabelText('Note 1 type')).toHaveValue('nursing');
+    expect(screen.getByLabelText('Note 1 type')).toHaveValue('radiology');
     expect(screen.getByRole('radio', { name: /mortality/i })).toBeChecked();
     expect(runButton()).toBeEnabled();
   });

@@ -1,6 +1,5 @@
 import {
   ANALYZE_LIMITS,
-  NOTE_TYPES,
   NOTE_TYPES_BY_TASK,
   type NoteType,
   type Task,
@@ -35,6 +34,9 @@ export const usableNotes = (task: Task, notes: DraftNote[]) =>
 
 export const noteTooLong = (note: DraftNote) =>
   new Blob([note.text]).size > ANALYZE_LIMITS.noteFileBytes;
+
+// The trained text readers read radiology reports and discharge notes only.
+const NOTE_CHOICES: NoteType[] = ['radiology', 'discharge'];
 
 const TYPE_LABEL: Record<NoteType, string> = {
   radiology: 'Radiology',
@@ -86,7 +88,7 @@ export function NotesEditor({
                   onChange={(e) => update(note.id, { type: e.target.value as NoteType })}
                   className="rounded-md border border-hairline bg-surface-1 px-2 py-1 text-xs text-ink"
                 >
-                  {NOTE_TYPES.map((t) => (
+                  {NOTE_CHOICES.map((t) => (
                     <option key={t} value={t}>
                       {TYPE_LABEL[t]}
                     </option>
