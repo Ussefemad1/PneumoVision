@@ -613,55 +613,153 @@ If the session dies during `train`, rerun the same `--step train` command: it
 resumes each variant from its `last_checkpoint_…`. If it dies after training
 but before the row is written, use `--step record`, or `--record-only`.
 
-### Notebook 3 — phenotyping Round 3, with the threshold sweep
+### Cost on an L4 (estimates; budget in compute units, L4 ≈ 3 CU/h)
+
+**Measured** (synthetic shards with phenotyping's exact shapes, laptop CPU):
+
+- **Bytes per stay:** a stay is 962 KB in the sweep cache. The main run (and
+  each ablation) reads only its 0.75 keys, **484 KB**. A swept θ reads
+  723 KB. The other thresholds' groups stay on disk: shards are memory-mapped
+  and filtered by key.
+- **`--preload` (main):** holds train + val keys, about 42,327 + 4,756 stays ×
+  484 KB ≈ **23 GB** of the L4's ~53 GB RAM. Test is read once, at the end,
+  and never preloaded.
+- **Loader time per batch of 16:** 3–6.5 ms (main) and 20–25 ms (swept θ,
+  because of the float64 split rebuild).
+- **Training compute per batch of 16:** 67 ms on the laptop CPU, a few ms on
+  the L4. The trainable part is 4.8M parameters for phenotyping, 1.2M for
+  mortality.
+- **Per-epoch metrics:** MSMA_Trainer bootstrapped 95% CIs for 5 heads × 25
+  classes on train and val every epoch, about 59 min of CPU per phenotyping
+  epoch. Training now runs with `--train-bootstrap-iters 0` (point estimates
+  only). Checkpoint and head selection never used the CIs (tested: identical
+  best checkpoint). Scoring bootstraps only the chosen head's target class
+  (1,000 resamples) on val and test.
+
+**Per phenotyping epoch (main):** about 1–1.5 min.
+
+- ~40 s for the 2,645 training batches;
+- ~5 s of validation;
+- 15–30 s saving `last_checkpoint` to Drive (~550 MB: it includes the
+  frozen BERT and ViT).
+
+The first epoch reads ~20 GB from the VM disk (~1–2 min more) unless
+`--preload`; later epochs come from the page cache. A swept-θ variant takes
+about +1 min per epoch for the split rebuild.
+
+**Epochs:** early stopping after 15 epochs without a better validation
+macro AUROC, so best epoch + 16 (at most 100). The estimates below assume
+~30.
+
+| Phenotyping                                                   | Time         | CU         |
+| ------------------------------------------------------------- | ------------ | ---------- |
+| cache (reader pass, 58,928 stays: BERT on RR + DN, ViT, LSTM) | 3–4.5 h      | 9–14       |
+| equivalence (0.75 and 0.85, 2 batches each)                   | ~10 min      | 0.5        |
+| train main + without_missingness (2 × ~40 min)                | ~1.3 h       | 4          |
+| record (2 variants, ~4 min each) + share                      | ~10 min      | 0.5        |
+| **required total**                                            | **~5–6 h**   | **~14–19** |
+| sweep 0.65 / 0.85 (2 × ~65 min + scoring)                     | ~2.3 h       | ~7         |
+| ablations × 4 (4 × ~40 min + scoring)                         | ~3 h         | ~9         |
+| **phenotyping total**                                         | **~10–12 h** | **~30–35** |
+
+**Assumptions:**
+
+- The reader pass is scaled from Round 2's measured 70–85 min per note-reader
+  epoch: RR and DN once each, over 58,928 stays instead of the train split.
+  It is the largest uncertainty. Check `cache.log` after the first shards
+  (seconds per shard × shards).
+- Every variant also spends ~2–3 min building the trainer: BERT, ViT and the
+  strict parent load.
+
+Mortality's remaining work (block below) is about 3–4 h, ~9–12 CU, so the two
+together come to ~40–47 CU. If the ~40 CU budget gets tight, drop
+without_joint_module and without_late_module from the phenotyping ablations
+(`--variants late_weights_per_class mask_missing_tokens`). That saves ~4.5 CU.
+
+### Notebook 3 — phenotyping Round 3 (required first, extras after)
 
 One binned cache serves the main run and the sweep. It holds the θ = 0.75
-groups exactly as a plain cache does, plus one group per swept threshold.
-That is about **58 GB on the Colab disk** for 0.65 / 0.75 / 0.85; it is not
-copied to Drive. It goes to its own directory
-(`/content/r3_cache/real/phenotyping-sweep-065-075-085`). `--step cache`
-refuses to start unless free disk ≥ the estimate + 20 GB, and prints the
-measured size per split. The main run (θ = 0.75) is the result; the sweep
-variants are ablations only.
+groups exactly as a plain cache does, plus one group per swept threshold:
+about **58 GB on the Colab disk** for 0.65 / 0.75 / 0.85, not copied to Drive,
+in its own directory (`/content/r3_cache/real/phenotyping-sweep-065-075-085`).
+`--step cache` refuses to start unless free disk ≥ the estimate + 20 GB, and
+prints the measured size per split. The main run (θ = 0.75) is the result; the
+sweep variants are ablations only.
+
+**Stop-safe.**
+
+- Every step ends with one line, `[r3] <step> OK (<duration>)`, and writes
+  its whole output to `$RUNS_ROOT/phenotyping/r3/{RID}/<step>.log`.
+- After a stop, rerun from the first step without an OK line; every step
+  resumes or skips what is done:
+  - **cache** skips finished shards;
+  - **train**, **sweep** and **ablations** skip finished variants and resume
+    an interrupted one from `last_checkpoint`;
+  - **record** is a no-op once its row exists;
+  - **share** overwrites the shared copy.
+- The required part (steps 1–6) is finished and shared before any extra
+  starts. Pass `{SWEEP}` on **every** command: it selects the cache the main
+  run trains from.
 
 ```python
 !python -m tools.pv.run r3 --task phenotyping --data real {DATA} --dry-run   # prints the next id
 RID = 'r3-fusion-002'   # <- the id the dry run printed
 SWEEP = '--sweep-thresholds 0.65 0.75 0.85'
-!python -m tools.pv.run r3 --task phenotyping --data real {DATA} --run-id {RID} {SWEEP} --step cache   # rerun to resume
-!python -m tools.pv.run r3 --task phenotyping --data real {DATA} --run-id {RID} {SWEEP} --step equivalence --equivalence-batches 2
-!python -m tools.pv.run r3 --task phenotyping --data real {DATA} --run-id {RID} {SWEEP} --step train
-!python -m tools.pv.run r3 --task phenotyping --data real {DATA} --run-id {RID} {SWEEP} --step record
-!python -m tools.pv.run r3 --task phenotyping --data real {DATA} --run-id {RID} {SWEEP} --step ablations
-!python -m tools.pv.run r3 --task phenotyping --data real {DATA} --run-id {RID} {SWEEP} --step sweep
-!PV_CHECK_TASK=phenotyping python -m pytest -m round3 -s
-!python -m tools.pv.run r3 --task phenotyping --data real {DATA} --run-id {RID} {SWEEP} --step share --share-to /content/drive/MyDrive/PneumoVision_shared/round3/phenotyping
+SHARE = '--share-to /content/drive/MyDrive/PneumoVision_shared/round3/phenotyping'
+# --- required ---
+!python -m tools.pv.run r3 --task phenotyping --data real {DATA} --run-id {RID} {SWEEP} --step cache        # 1  (3-4.5 h; rerun resumes)
+!python -m tools.pv.run r3 --task phenotyping --data real {DATA} --run-id {RID} {SWEEP} --step equivalence --equivalence-threshold 0.85 --equivalence-batches 2   # 2
+!python -m tools.pv.run r3 --task phenotyping --data real {DATA} --run-id {RID} {SWEEP} --step train        # 3  main + without_missingness_module
+!python -m tools.pv.run r3 --task phenotyping --data real {DATA} --run-id {RID} {SWEEP} --step record       # 4
+!python -m tools.pv.run r3 --task phenotyping --data real {DATA} --run-id {RID} {SWEEP} --step share {SHARE}   # 5
+!PV_CHECK_TASK=phenotyping python -m pytest -m round3 -s                                                     # 6
+# --- extra 1: threshold sweep ---
+!python -m tools.pv.run r3 --task phenotyping --data real {DATA} --run-id {RID} {SWEEP} --step sweep        # 7
+!python -m tools.pv.run r3 --task phenotyping --data real {DATA} --run-id {RID} {SWEEP} --step share {SHARE}   # 8  adds r3_threshold_sweep.csv
+# --- extra 2: ablations ---
+!python -m tools.pv.run r3 --task phenotyping --data real {DATA} --run-id {RID} {SWEEP} --step ablations    # 9
+!python -m tools.pv.run r3 --task phenotyping --data real {DATA} --run-id {RID} {SWEEP} --step share {SHARE}   # 10 adds r3_ablations.csv
 ```
 
-Pass `{SWEEP}` on **every** command of this run: it selects the sweep cache
-the main run trains from. Without it the command looks for a plain cache that
-does not exist.
+`--preload` (on steps 3, 7 and 9) keeps the needed train + val keys in RAM,
+about 23 GB for main. Without it, the page cache usually does the same after
+the first epoch.
 
-### Mortality: the sweep for the recorded r3-fusion-001
+### Mortality — remaining work for the recorded r3-fusion-001
 
-The recorded run keeps its plain cache (`/content/r3_cache/real/in-hospital-mortality`)
-and its manifest row. The sweep captures a **new** cache in its own directory
-(`…/in-hospital-mortality-sweep-060-065-070-075-080-085`, about 1.4 GB), so
-the old one is never overwritten. Its 0.75 groups are bit-for-bit those of the
-plain capture, so the 0.75 row of the table is the recorded run.
+These run later, from saved caches. The plain cache
+(`/content/r3_cache/real/in-hospital-mortality`) and the sweep cache
+(`…/in-hospital-mortality-sweep-060-065-070-075-080-085`, ~1.4 GB) both live
+on the VM disk.
+
+**If the VM was reset,** both are gone:
+
+- `--step cache` rebuilds the plain one (~45–75 min, resumes).
+- The sweep capture rebuilds the sweep one (~45–75 min).
+
+Times are for an L4.
 
 ```python
 SWEEP_M = '--sweep-thresholds 0.60 0.65 0.70 0.75 0.80 0.85'
-!python -m tools.pv.run r3 --task mortality --data real {DATA} --run-id r3-fusion-001 {SWEEP_M} --step cache
-!python -m tools.pv.run r3 --task mortality --data real {DATA} --run-id r3-fusion-001 {SWEEP_M} --step equivalence --equivalence-batches 2
-!python -m tools.pv.run r3 --task mortality --data real {DATA} --run-id r3-fusion-001 {SWEEP_M} --step sweep
-!PV_CHECK_TASK=in-hospital-mortality python -m pytest -m round3 -s
-!python -m tools.pv.run r3 --task mortality --data real {DATA} --run-id r3-fusion-001 --step share --share-to /content/drive/MyDrive/PneumoVision_shared/round3/mortality
+SHARE_M = '--share-to /content/drive/MyDrive/PneumoVision_shared/round3/mortality'
+# ablations (plain cache; rebuild it first if the VM was reset: --step cache, ~45-75 min)
+!python -m tools.pv.run r3 --task mortality --data real {DATA} --run-id r3-fusion-001 --step cache            # only after a reset
+!python -m tools.pv.run r3 --task mortality --data real {DATA} --run-id r3-fusion-001 --step ablations        # 4 variants, ~1-1.3 h
+# threshold sweep (its own cache)
+!python -m tools.pv.run r3 --task mortality --data real {DATA} --run-id r3-fusion-001 {SWEEP_M} --step cache           # ~45-75 min
+!python -m tools.pv.run r3 --task mortality --data real {DATA} --run-id r3-fusion-001 {SWEEP_M} --step equivalence --equivalence-batches 2   # ~5 min
+!python -m tools.pv.run r3 --task mortality --data real {DATA} --run-id r3-fusion-001 {SWEEP_M} --step sweep           # 5 variants, ~1.5-2 h
+!PV_CHECK_TASK=in-hospital-mortality python -m pytest -m round3 -s                                                   # ~5-10 min
+!python -m tools.pv.run r3 --task mortality --data real {DATA} --run-id r3-fusion-001 --step share {SHARE_M}          # < 1 min
 ```
 
-`r3_threshold_sweep.csv` is written in the run folder. The run's ablations
-(`--step ablations`, with no `{SWEEP_M}`) use the plain cache. If the VM was
-reset since the run, rebuild that cache first with `--step cache` (it resumes).
+**Cheaper alternative if the VM was reset.** Skip the plain rebuild (~3 CU)
+and run the ablations from the sweep cache: add `{SWEEP_M}` to
+`--step ablations`. Its 0.75 groups are bit-for-bit those of the plain cache,
+so the ablations train on the same inputs.
+
+**Time per mortality variant:** each trains in ~15–20 min: 1,191 batches per
+epoch plus the checkpoint save, ~30 epochs.
 
 ---
 

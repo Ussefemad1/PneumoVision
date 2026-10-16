@@ -9,6 +9,47 @@ Newest first.
 
 ---
 
+## 2026-10-19 — Round 3 training cost; stop-safe steps (last code round before phenotyping)
+
+No change to the 0.75 main path or to anything `r3-fusion-001` depends on.
+Only `tools/pv` and docs changed.
+
+39. **Per-epoch bootstrap.**
+    - **Cost:** `MSMA_Trainer` bootstrapped 95% CIs (1,000 pandas resamples)
+      for 5 heads × every class on train and val every epoch. Measured: 23 ms
+      per train resample (42,327 stays) and 5 ms per val resample. That is
+      ~48 + 11 min of CPU per phenotyping epoch; point estimates alone take
+      ~3 s.
+    - **Fix:** Round 3 training now uses `--train-bootstrap-iters 0`.
+    - **Why this changes nothing kept:** selection uses `auroc_mean`, the
+      point estimates (`trainer.py`, computeAUROC). Tested: identical best
+      checkpoint, epoch and head with 0 and 5 resamples.
+    - **Scoring:** `score_variant` computes point metrics for every head (the
+      same `evaluate_new`, so equal to `validate`; tested) and bootstraps
+      only the reported target class (1,000) on val and test.
+40. **Only the needed keys** (`r3_cache.CacheLoader`).
+    - **How:** shards are opened with `torch.load(mmap=True)` and filtered:
+      main / ablations read the 0.75 groups (484 of 962 KB per phenotyping
+      stay); a swept θ adds its own groups (723 KB).
+    - **`--preload`:** copies only those keys for train and val, ~23 GB for
+      phenotyping main.
+    - **Constructor:** it no longer reads every whole shard just to count
+      stays.
+41. **Stop-safe steps.**
+    - Each `run r3` step writes its whole output to `<save_dir>/<step>.log`
+      and ends with `[r3] <step> OK (<duration>)`.
+    - `record` is a no-op when the row exists with the same checkpoint (it
+      still refuses a different one).
+    - `share` copies `r3_ablations.csv` / `r3_threshold_sweep.csv` when they
+      exist (tested).
+42. **Docs.**
+    - `REAL_RUNS.md`: cost estimates, the phenotyping order (required,
+      shared, then sweep and ablations), and the mortality follow-up block.
+    - `docs/PR_round3.md`: the PR text.
+    - `docs/REAL_INFERENCE_PLAN.md`: serving the checkpoints (plan only).
+
+---
+
 ## 2026-10-18 — Round 3 threshold sweep (binned capture), share step
 
 Approved: mortality sweeps 0.60, 0.65, 0.70, 0.75, 0.80, 0.85; phenotyping
