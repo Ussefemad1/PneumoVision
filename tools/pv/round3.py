@@ -23,6 +23,18 @@ Steps (``--step``; ``all`` runs them in this order):
                    late_weights_per_class, mask_missing_tokens) into
                    r3_ablations.csv; the manifest row is left untouched.
 
+- ``sweep``        (not part of ``all``; needs ``--sweep-thresholds``) train and
+                   score one variant per swept threshold from the binned cache
+                   into r3_threshold_sweep.csv. The run's own threshold (0.75)
+                   is the recorded main run; the swept ones are ablations only and
+                   never become the manifest row, the reported result or the
+                   checkpoint anyone loads.
+
+``--sweep-thresholds`` makes the cache step capture, besides the 0.75 groups
+(stored exactly as without it), one group per other threshold
+(tools/pv/r3_cache.at_threshold). Such a cache lives in its own directory
+(<task>-sweep-<thresholds>), so a plain cache is never overwritten.
+
 Exit code 0 when the steps succeed, non-zero on an error.
 
 The command is Confidence-Patching.sh with: --fusion_type c-msma (c-e-msma
@@ -161,11 +173,18 @@ def data_dirs(args, task: str) -> dict[str, str]:
     return dirs
 
 
-def default_cache_dir(task: str, data: str) -> Path:
-    """On the Colab VM disk (/content), never Drive by default; else under runs/ (gitignored)."""
+def default_cache_dir(task: str, data: str, sweep=()) -> Path:
+    """On the Colab VM disk (/content), never Drive by default; else under runs/ (gitignored).
+
+    A sweep cache gets its own directory (<task>-sweep-065-075-085), so it never
+    overwrites the plain cache a recorded run was trained from.
+    """
     base = (
         Path("/content/r3_cache") if Path("/content").is_dir() else REPO_ROOT / "runs" / "r3_cache"
     )
+    if sweep:
+        name = f"{task}-sweep-" + "-".join(f"{round(t * 100):03d}" for t in sweep)
+        return base / data / name
     return base / data / task
 
 
@@ -188,6 +207,11 @@ def plan(args) -> dict:
         raise manifest.ManifestError(f"text parents must record one bert_model_name, got {bert}")
     bert_name = bert.pop()
 
+    sweep = sorted({round(float(t), 4) for t in (args.sweep_thresholds or ())})
+    if any(not 0.5 < t <= 1.0 for t in sweep):
+        raise SystemExit(f"--sweep-thresholds must lie in (0.5, 1]: {sweep}")
+    if sweep and fusion != ROUND3_FUSION:
+        raise SystemExit("--sweep-thresholds needs the cache (c-msma)")
     run_id = args.run_id or manifest.next_id(STAGE, READER)
     save_dir = (manifest.runs_root() / task / STAGE / run_id).resolve()
     defaults = VIRTUAL_DEFAULTS if args.data == "virtual" else {"epochs": 100}
@@ -256,8 +280,9 @@ def plan(args) -> dict:
         "bert_model_name": bert_name,
         "save_dir": str(save_dir),
         "cache_dir": str(
-            Path(args.cache_dir) if args.cache_dir else default_cache_dir(task, args.data)
+            Path(args.cache_dir) if args.cache_dir else default_cache_dir(task, args.data, sweep)
         ),
+        "sweep_thresholds": sweep,
         "script": str(round3_script(task).relative_to(REPO_ROOT)).replace("\\", "/"),
         "argv": argv,
         "deviations": deviations,
@@ -370,7 +395,8 @@ def step_cache(run: dict, opts) -> None:
         loaders = live_loaders(args)
         trainer = build_trainer(args, loaders)
         run["f2"] = f2_lines(out.getvalue())
-        current = r3_cache.fingerprint(args, run["parents"])
+        sweep = run.get("sweep_thresholds") or []
+        current = r3_cache.fingerprint(args, run["parents"], sweep)
         meta = r3_cache.read_meta(cache_dir)
         if meta is not None:
             problems = r3_cache.fingerprint_mismatch(meta["fingerprint"], current)
@@ -387,11 +413,12 @@ def step_cache(run: dict, opts) -> None:
             }
             r3_cache.write_meta(cache_dir, meta)
         modalities = args.modalities.split("-")
+        check_disk(trainer, loaders, cache_dir, opts, sweep)
         for split, dl in zip(r3_cache.SPLITS, loaders, strict=True):
             info = r3_cache.build_split(
                 trainer.model, dl.dataset, split, cache_dir, batch_size=args.batch_size,
                 collate_fn=dl.collate_fn, device=trainer.device, shard_size=opts.shard_size,
-                num_workers=dl.num_workers,
+                num_workers=dl.num_workers, thresholds=sweep,
             )  # fmt: skip
             info.update(r3_cache.split_summary(cache_dir, split, modalities))
             info["images_missing_on_disk"] = missing_images(dl.dataset)
@@ -401,10 +428,39 @@ def step_cache(run: dict, opts) -> None:
         size = r3_cache.dir_bytes(cache_dir)
         print(f"[r3 cache] done: {size / 2**30:.2f} GB at {cache_dir}, "
               f"free {shutil.disk_usage(cache_dir).free / 2**30:.1f} GB")  # fmt: skip
-        run["cache"] = {"bytes": size, "splits": meta["splits"]}
+        info = {"dir": str(cache_dir), "bytes": size, "splits": meta["splits"]}
+        # A run trained from a plain cache keeps it as "cache"; its later sweep
+        # cache is recorded beside it, never in its place.
+        previous = run.get("cache")
+        if previous and previous.get("dir", "") != str(cache_dir):
+            run["sweep_cache"] = info
+        else:
+            run["cache"] = info
         if opts.copy_cache_to:
             copy_cache(cache_dir, Path(opts.copy_cache_to) / cache_dir.name)
     save_run(run)
+
+
+def check_disk(trainer, loaders, cache_dir: Path, opts, sweep) -> None:
+    """Refuse to start when free disk < the estimated remaining cache + --disk-margin-gb."""
+    batch = next(iter(loaders[1]))
+    per_stay = r3_cache.stays_bytes(
+        r3_cache.capture_batch(trainer.model, batch, trainer.device, sweep)
+    )
+    total = sum(len(dl.dataset) for dl in loaders)
+    built = r3_cache.dir_bytes(cache_dir) if cache_dir.is_dir() else 0
+    remaining = max(0.0, per_stay * total * 1.02 - built)  # +2%: index keys, file overhead
+    anchor = next((p for p in [cache_dir, *cache_dir.parents] if p.exists()), Path.cwd())
+    free = shutil.disk_usage(anchor).free
+    margin = opts.disk_margin_gb * 2**30
+    print(f"[r3 cache] estimate: {per_stay / 1024:.0f} KB per stay x {total} stays = "
+          f"{per_stay * total / 2**30:.1f} GB; {built / 2**30:.1f} GB already built; "
+          f"free {free / 2**30:.1f} GB at {anchor}; margin {opts.disk_margin_gb} GB")  # fmt: skip
+    if free < remaining + margin:
+        raise SystemExit(
+            f"[r3 cache] not enough disk: {remaining / 2**30:.1f} GB still to write + "
+            f"{opts.disk_margin_gb} GB margin > {free / 2**30:.1f} GB free"
+        )
 
 
 def _files(root: Path) -> dict[str, int]:
@@ -460,31 +516,52 @@ def step_equivalence(run: dict, opts, tol: float = 1e-5) -> dict:
     with logged(run, "equivalence"):
         loaders = live_loaders(args)
         trainer = build_trainer(args, loaders)
-        reports = []
-        for i, batch in enumerate(loaders[1]):
-            if i >= opts.equivalence_batches:
-                break
-            reports.append(r3_cache.compare_live_cached(trainer.model, batch, trainer.device))
-        worst = {k: max(r[k] for r in reports) for k in reports[0] if k.startswith("max_abs")}
-        stays = int(sum(r["stays"] for r in reports))
-        print(f"[r3 equivalence] {len(reports)} val batch(es), {stays} stays: "
-              + ", ".join(f"{k} {v:.2e}" for k, v in worst.items()))  # fmt: skip
-        run["equivalence"] = {"batches": len(reports), "stays": stays, **worst, "tolerance": tol}
+        sweep = run.get("sweep_thresholds") or []
+        main = r3_cache.main_threshold(args)
+        checks = [("equivalence", None)]
+        if sweep:
+            other = opts.equivalence_threshold or max(
+                (t for t in sweep if abs(t - main) > 1e-9), key=lambda t: abs(t - main)
+            )
+            checks.append(("equivalence_sweep", other))
+        failed = {}
+        for key, threshold in checks:
+            reports = []
+            for i, batch in enumerate(loaders[1]):
+                if i >= opts.equivalence_batches:
+                    break
+                reports.append(
+                    r3_cache.compare_live_cached(
+                        trainer.model, batch, trainer.device, threshold=threshold, sweep=sweep
+                    )
+                )
+            worst = {k: max(r[k] for r in reports) for k in reports[0] if k.startswith("max_abs")}
+            stays = int(sum(r["stays"] for r in reports))
+            at = main if threshold is None else threshold
+            print(
+                f"[r3 equivalence] threshold {at:.2f}: {len(reports)} val batch(es), "
+                f"{stays} stays: " + ", ".join(f"{k} {v:.2e}" for k, v in worst.items())
+            )
+            run[key] = {"threshold": at, "batches": len(reports), "stays": stays, **worst,
+                        "tolerance": tol}  # fmt: skip
+            failed.update({f"{at:.2f} {k}": v for k, v in worst.items() if v > tol})
         save_run(run)
-        failed = {k: v for k, v in worst.items() if v > tol}
         if failed:
             raise SystemExit(f"[r3 equivalence] FAILED (> {tol}): {failed}")
         print("[r3 equivalence] PASS")
     return run["equivalence"]
 
 
-def cache_loaders(run: dict, args, preload: bool):
+def cache_loaders(run: dict, args, preload: bool, threshold: float | None = None):
+    """Train / val / test loaders on the run's cache; `threshold`: split at a swept one."""
     cache_dir = Path(run["cache_dir"])
     meta = r3_cache.read_meta(cache_dir)
     if meta is None:
         raise SystemExit(f"[r3] no cache at {cache_dir}; run --step cache first")
+    main_args = trainer_args(run)  # a sweep variant changes the thresholds, not the cache
     problems = r3_cache.fingerprint_mismatch(
-        meta["fingerprint"], r3_cache.fingerprint(args, run["parents"])
+        meta["fingerprint"],
+        r3_cache.fingerprint(main_args, run["parents"], run.get("sweep_thresholds") or []),
     )
     if problems:
         raise SystemExit("[r3] the cache does not match this run:\n  " + "\n  ".join(problems))
@@ -494,7 +571,8 @@ def cache_loaders(run: dict, args, preload: bool):
     from datasets.DataFusion import CLASSES  # noqa: PLC0415
 
     classes = CLASSES[: args.num_classes] if args.num_classes > 1 else ["mortality"]
-    kw = {"classes": classes, "preload": preload}
+    kw = {"classes": classes, "preload": preload, "threshold": threshold,
+          "main": r3_cache.main_threshold(main_args)}  # fmt: skip
     return (
         r3_cache.CacheLoader(
             cache_dir, "train", args.batch_size, shuffle=True, drop_last=True, **kw
@@ -532,13 +610,13 @@ def variants(run: dict, opts) -> list[tuple[str, object]]:
     return [(name, variant_args(run, name)) for name in variant_names(opts)]
 
 
-def train_variant(run: dict, name: str, args, opts) -> str:
+def train_variant(run: dict, name: str, args, opts, threshold: float | None = None) -> str:
     """Train one variant on the cache (skipped when already finished); its best checkpoint."""
     if finished(args):
         print(f"[r3] {name}: already trained ({args.epochs} epochs or early-stopped); skipped")
         return str(_best(args))
     with logged(run, f"train_{name}") as out:
-        loaders = cache_loaders(run, args, opts.preload)
+        loaders = cache_loaders(run, args, opts.preload, threshold)
         trainer = build_trainer(args, loaders)
         run.setdefault("f2", f2_lines(out.getvalue()))
         for module in (trainer.model.fusion_model.text_model, trainer.model.fusion_model.cxr_model):
@@ -576,6 +654,66 @@ def step_ablations(run: dict, opts) -> Path:
     return write_ablations(run)
 
 
+def step_share(run: dict, opts) -> Path:
+    """Copy the main run (θ = the run's own threshold) to --share-to; never a variant.
+
+    The final model is always the recorded main run. Sweep and ablation
+    variants live in subfolders of the run folder and are never copied: the
+    shared folder holds the main best checkpoint (the manifest row's file),
+    run.json, the result tables (r3_results, r3_ablations, r3_threshold_sweep:
+    tables, labelled as ablations) and the top-level logs.
+    """
+    if not opts.share_to:
+        raise SystemExit("--step share needs --share-to <dir>")
+    row = manifest.find(run["id"])
+    if row is None:
+        raise SystemExit(f"[r3] {run['id']} is not recorded; run --step record first")
+    best = Path(row["file_path"])
+    if manifest.sha256_file(best) != row["sha256"]:
+        raise SystemExit(f"[r3] {best} no longer matches the manifest sha256")
+    save_dir, target = Path(run["save_dir"]), Path(opts.share_to)
+    files = [best] + sorted(
+        f for f in save_dir.iterdir()
+        if f.is_file() and f.suffix in (".json", ".csv", ".log", ".txt")
+    )  # fmt: skip
+    target.mkdir(parents=True, exist_ok=True)
+    for f in files:
+        shutil.copyfile(f, target / f.name)  # bytes only: Drive's FUSE rejects copystat
+    print(f"[r3 share] {len(files)} files of the main run -> {target} "
+          f"(checkpoint {best.name}; no sweep or ablation variant)")  # fmt: skip
+    return target
+
+
+def sweep_name(t: float) -> str:
+    return f"theta_{t:.2f}"
+
+
+def step_sweep(run: dict, opts) -> Path:
+    """One variant per swept threshold from the sweep cache -> r3_threshold_sweep.csv.
+
+    The run's own threshold is the recorded main run (its scores, not a retrain);
+    every other threshold is an ablation and never touches the manifest.
+    """
+    sweep = run.get("sweep_thresholds") or []
+    if not sweep:
+        raise SystemExit("[r3] --step sweep needs --sweep-thresholds (and their cache)")
+    main = r3_cache.main_threshold(trainer_args(run))
+    if any(abs(t - main) < 1e-9 for t in sweep) and "main" not in run.get("scores", {}):
+        raise SystemExit("[r3] the main run is not recorded yet; run --step record first")
+    for t in sweep:
+        if abs(t - main) < 1e-9:
+            continue
+        name = sweep_name(t)
+        args = trainer_args(run, save_dir=str(Path(run["save_dir"]) / name))
+        r3_cache.set_threshold(args, t)
+        run.setdefault("trained", {})[name] = train_variant(run, name, args, opts, threshold=t)
+        save_run(run)
+        with logged(run, f"score_{name}"):
+            run.setdefault("sweep_scores", {})[name] = score_variant(run, args, opts, threshold=t)
+        save_run(run)
+    return write_sweep(run, main)
+
+
 def finished(args) -> bool:
     """A variant whose 'last' checkpoint covers every epoch (or ran out of patience)."""
     import torch  # noqa: PLC0415
@@ -603,7 +741,7 @@ def _best(args) -> Path:
     return checkpoint_path(args)
 
 
-def score_variant(run: dict, args, opts) -> dict:
+def score_variant(run: dict, args, opts, threshold: float | None = None) -> dict:
     """The chosen head's val and test scores, from the best checkpoint and the cache."""
     import torch  # noqa: PLC0415
 
@@ -611,7 +749,9 @@ def score_variant(run: dict, args, opts) -> dict:
     if not best.is_file():
         raise SystemExit(f"[r3] no best checkpoint at {best}")
     # c-e-msma (--allow-entropy) has no cache: score it on the live loaders.
-    loaders = cache_loaders(run, args, opts.preload) if run["cached"] else live_loaders(args)
+    loaders = (
+        cache_loaders(run, args, opts.preload, threshold) if run["cached"] else live_loaders(args)
+    )
     args.resume = False
     trainer = build_trainer(args, loaders)
     trainer.load_state(str(best))
@@ -741,6 +881,22 @@ def write_ablations(run: dict) -> Path:
                         "the manifest row is the main run")  # fmt: skip
 
 
+def write_sweep(run: dict, main: float) -> Path:
+    """r3_threshold_sweep.csv: one row pair (val, test) per swept threshold."""
+    scores = {}
+    for t in run["sweep_thresholds"]:
+        if abs(t - main) < 1e-9:
+            scores[f"{sweep_name(t)} main run (recorded)"] = run["scores"]["main"]
+        elif sweep_name(t) in run.get("sweep_scores", {}):
+            scores[sweep_name(t)] = run["sweep_scores"][sweep_name(t)]
+    return _write_table(
+        run,
+        "r3_threshold_sweep.csv",
+        scores,
+        f" -- threshold sweep (ablations); the result is the main run at {main:.2f}",
+    )
+
+
 def _write_table(run: dict, filename: str, scores: dict, title: str) -> Path:
     path = Path(run["save_dir"]) / filename
     cols = RESULT_COLUMNS
@@ -769,7 +925,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--task", choices=sorted(TASK_ALIASES), required=True)
     p.add_argument("--data", choices=manifest.DATA_KINDS, required=True)
-    p.add_argument("--step", choices=("all", *STEPS, "ablations"), default="all")
+    p.add_argument("--step", choices=("all", *STEPS, "ablations", "sweep", "share"),
+                   default="all")  # fmt: skip
+    p.add_argument("--share-to", dest="share_to",
+                   help="--step share: copy the main run (never a variant) here")  # fmt: skip
+    p.add_argument(
+        "--sweep-thresholds",
+        dest="sweep_thresholds",
+        type=float,
+        nargs="+",
+        help="capture these thresholds too (own cache dir) for --step sweep",
+    )
+    p.add_argument("--equivalence-threshold", dest="equivalence_threshold", type=float,
+                   help="the swept threshold --step equivalence also checks "
+                        "(default: the one farthest from 0.75)")  # fmt: skip
+    p.add_argument(
+        "--disk-margin-gb",
+        dest="disk_margin_gb",
+        type=float,
+        default=20.0,
+        help="--step cache refuses to start below estimate + this much free disk",
+    )
     p.add_argument("--variants", nargs="+", choices=sorted(VARIANTS),
                    help="--step ablations: which variants "
                         f"(default {' '.join(DEFAULT_ABLATION_STEP)})")  # fmt: skip
@@ -822,7 +998,8 @@ def main(argv: list[str] | None = None) -> dict | None:
     if saved.is_file():  # keep what earlier steps recorded (cache counts, F2, equivalence)
         previous = json.loads(saved.read_text(encoding="utf-8"))
         for key in ("cache", "f2", "equivalence", "trained", "requested_variants", "scores",
-                    "requested_ablations", "ablation_scores", "manifest_row"):  # fmt: skip
+                    "requested_ablations", "ablation_scores", "manifest_row", "sweep_cache",
+                    "equivalence_sweep", "sweep_scores"):  # fmt: skip
             if key in previous:
                 run.setdefault(key, previous[key])
     save_run(run)
@@ -840,6 +1017,10 @@ def main(argv: list[str] | None = None) -> dict | None:
             step_train(run, opts)
         elif step == "ablations":
             step_ablations(run, opts)
+        elif step == "sweep":
+            step_sweep(run, opts)
+        elif step == "share":
+            step_share(run, opts)
         else:
             row = step_record(run, opts, opts.who)
             print(f"[pv] {row['id']} recorded: val {TARGET_NAME[run['task']]} AUROC "

@@ -129,7 +129,11 @@ def _run(argv: list[str] | None = None) -> int:
     for batch in loaders[1]:
         if seen >= opts.sample:
             break
-        captured.append(r3_cache.capture_batch(trainer.model, batch, trainer.device))
+        captured.append(
+            r3_cache.capture_batch(
+                trainer.model, batch, trainer.device, run.get("sweep_thresholds") or []
+            )
+        )
         seen += captured[-1]["y"].shape[0]
     sample = r3_cache.concat(captured)
     for m in args.modalities.split("-"):
@@ -148,9 +152,9 @@ def _run(argv: list[str] | None = None) -> int:
     free = shutil.disk_usage(anchor).free
     print(f"   ~{bytes_per_stay / 1024:.0f} KB per stay x {total_stays} stays = "
           f"{estimate / 2**30:.1f} GB (fp32); free at {anchor}: {free / 2**30:.1f} GB")  # fmt: skip
-    if estimate > 0.9 * free:
+    if estimate + opts.disk_margin_gb * 2**30 > free:  # as --step cache refuses
         ok = False
-        print("   STOP: not enough free space for the cache")
+        print(f"   STOP: needs {estimate / 2**30:.1f} GB + {opts.disk_margin_gb} GB margin")
     print("PREFLIGHT " + ("OK" if ok else "FAILED (see STOP lines)"))
     return 0 if ok else 1
 

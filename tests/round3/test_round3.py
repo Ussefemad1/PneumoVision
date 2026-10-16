@@ -107,6 +107,23 @@ def test_e_trained_the_requested_variants(run):
             assert any(line.startswith(f"{name},") for line in table.splitlines()), name
 
 
+def test_g_threshold_sweep(run):
+    """When a sweep ran: cached == live at its threshold, and the table, beside the row."""
+    if not run.get("sweep_scores"):
+        pytest.skip("no threshold sweep for this run")
+    e = run.get("equivalence_sweep") or {}
+    print(f"\nsweep equivalence: {e}")
+    assert e and all(v <= TOL for k, v in e.items() if k.startswith("max_abs")), e
+    table = (Path(run["save_dir"]) / "r3_threshold_sweep.csv").read_text(encoding="utf-8")
+    rows = [line.split(",")[0] for line in table.splitlines()[2:]]
+    for t in run["sweep_thresholds"]:
+        label = f"theta_{t:.2f}"
+        assert any(r.startswith(label) for r in rows), label
+    assert "main run (recorded)" in table  # 0.75 is the recorded main run, not a retrain
+    row = manifest.find(run["id"])
+    assert row["file_path"] == run["row"]["file_path"]  # the manifest row stays the main run
+
+
 def test_f_last_validation_batch_of_one_and_missing_image(run):
     cache_dir = Path(run["cache_dir"])
     args = round3.trainer_args(run)

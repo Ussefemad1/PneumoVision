@@ -45,6 +45,10 @@ import torch
 from tools.pv.medpatch_bridge import REPO_ROOT
 
 CACHE_FORMAT = 1
+#: Bump when the values stored under an existing key change. The capture-code
+#: commit is recorded for provenance only: adding keys (the threshold sweep)
+#: must not invalidate a cache whose stored values the code still reproduces.
+CAPTURE_SEMANTICS = 1
 SPLITS = ("train", "val", "test")
 #: Code that decides what is captured: a cache built from other code is refused.
 CAPTURE_CODE = (
@@ -108,20 +112,104 @@ def live_inputs(batch, device):
 
 
 @torch.no_grad()
-def capture_batch(model, batch, device) -> dict[str, torch.Tensor]:
-    """The cached tensors for one collate batch (CPU, fp32; counts as fp32 too)."""
+def capture_batch(model, batch, device, thresholds=()) -> dict[str, torch.Tensor]:
+    """The cached tensors for one collate batch (CPU, fp32; counts as fp32 too).
+
+    `thresholds`: the sweep. Besides the run's own (main) high/low groups, one
+    group per other threshold is captured (CMSMAFusion._capture_sweep), so any
+    of them can be rebuilt later with at_threshold().
+    """
     fm = model.fusion_model
     x, seq_lengths, img, pairs, rr, dn, y = live_inputs(batch, device)
     fm._capture = {}
+    fm._capture_thresholds = tuple(thresholds) or None
     try:
         with reuse_reader_calls(fm):
             model(x, seq_lengths, img, pairs, rr, dn)
         captured = fm._capture
     finally:
         fm._capture = None
+        fm._capture_thresholds = None
     out = {k: v.detach().to("cpu", torch.float32) for k, v in captured.items()}
     out["y"] = y.detach().cpu()
     return out
+
+
+# ── threshold sweep: any captured threshold from the main groups ─────────────
+
+
+def sweep_key(name: str, t: float) -> str:
+    return f"{name}_t{round(t * 100):03d}"
+
+
+def _group_keys(name: str) -> tuple[str, str]:
+    return ("ehr_high", "ehr_low") if name == "ehr" else (f"{name}_high_mean", f"{name}_low_mean")
+
+
+def modality_names(batch: dict) -> list[str]:
+    return sorted(k[: -len("_n_high")] for k in batch if k.endswith("_n_high"))
+
+
+def at_threshold(batch: dict, t: float, main: float) -> dict:
+    """The batch with every modality's high/low groups split at `t` instead of `main`.
+
+    t == main returns the batch itself: the stored main groups, bit for bit.
+    Otherwise t's captured group -- per stay and class, whichever side of t has
+    fewer tokens (``_is_high`` says which) -- is used as stored, and the other
+    side is the total minus it, in float64: total = main high sum + main low sum
+    (mean x count). That side holds at least half the tokens, so the rounding
+    of the stored fp32 means costs ~2 * eps * max|x|, whatever the stay length.
+    Counts are exact; an empty side is exactly 0, as forward() gives.
+    """
+    if abs(t - main) < 1e-9:
+        return batch
+    out = dict(batch)
+    for name in modality_names(batch):
+        high_key, low_key = _group_keys(name)
+        key = sweep_key(name, t)
+        if f"{key}_mean" not in batch:
+            raise KeyError(f"threshold {t} was not captured for {name} (no {key}_mean)")
+        hi, lo = batch[high_key].double(), batch[low_key].double()
+        nh, nl = batch[f"{name}_n_high"].double(), batch[f"{name}_n_low"].double()
+        ch, cl = batch[f"{name}_conf_high"].double(), batch[f"{name}_conf_low"].double()
+        s_mean, s_n = batch[f"{key}_mean"].double(), batch[f"{key}_n"].double()
+        s_conf = batch[f"{key}_conf"].double()
+        is_high = batch[f"{key}_is_high"] > 0.5  # shaped like the counts
+        o_n = nh + nl - s_n
+        o_mean = torch.where(o_n > 0, (hi * nh + lo * nl - s_mean * s_n) / o_n.clamp_min(1), 0.0)
+        c_n, c_s, c_o = nh.squeeze(-1), s_n.squeeze(-1), o_n.squeeze(-1)
+        conf_total = ch * c_n + cl * nl.squeeze(-1)
+        o_conf = torch.where(c_o > 0, (conf_total - s_conf * c_s) / c_o.clamp_min(1), 0.0)
+        hi_c = is_high.squeeze(-1)  # the confidences have no trailing axis
+        groups = (
+            torch.where(is_high, s_mean, o_mean),
+            torch.where(is_high, o_mean, s_mean),
+            torch.where(is_high, s_n, o_n),
+            torch.where(is_high, o_n, s_n),
+            torch.where(hi_c, s_conf, o_conf),
+            torch.where(hi_c, o_conf, s_conf),
+        )
+        for k, v in zip(
+            (high_key, low_key, f"{name}_n_high", f"{name}_n_low",
+             f"{name}_conf_high", f"{name}_conf_low"),
+            groups, strict=True,
+        ):  # fmt: skip
+            out[k] = v.to(batch[k].dtype)
+    return out
+
+
+def main_threshold(args) -> float:
+    """The run's threshold; the sweep needs one shared by every modality."""
+    mods = [m.lower() for m in args.modalities.split("-")]
+    values = {getattr(args, f"{m}_confidence_threshold") for m in mods}
+    if len(values) != 1:
+        raise ValueError(f"the threshold sweep needs one threshold for all modalities: {values}")
+    return values.pop()
+
+
+def set_threshold(args, t: float) -> None:
+    for m in ("ehr", "cxr", "rr", "dn"):
+        setattr(args, f"{m}_confidence_threshold", t)
 
 
 # ── live vs cached ───────────────────────────────────────────────────────────
@@ -141,8 +229,14 @@ def _loss(trainer_args, out, y, num_classes):
     return total
 
 
-def compare_live_cached(model, batch, device, lr: float = 1e-3) -> dict[str, float]:
+def compare_live_cached(
+    model, batch, device, lr: float = 1e-3, threshold: float | None = None, sweep=()
+) -> dict[str, float]:
     """Max |live - cached| for high_conf / low / late, their gradients, and one SGD step.
+
+    `threshold` (with `sweep`, the captured thresholds): compare at that
+    threshold instead of the run's own -- the live model splits at it, the
+    cached batch is rebuilt with at_threshold().
 
     The step is plain SGD, linear in the gradient. Adam's first step is about
     lr * sign(g), so a near-zero gradient that differs only by float round-off
@@ -155,8 +249,14 @@ def compare_live_cached(model, batch, device, lr: float = 1e-3) -> dict[str, flo
     import copy  # noqa: PLC0415
 
     model.eval()
-    cached_batch = {k: v.to(device) for k, v in capture_batch(model, batch, device).items()}
+    captured = capture_batch(model, batch, device, thresholds=sweep)
+    main = main_threshold(model.args)
+    if threshold is not None:
+        captured = at_threshold(captured, threshold, main)
+    cached_batch = {k: v.to(device) for k, v in captured.items()}
     live_model, cached_model = copy.deepcopy(model), copy.deepcopy(model)
+    if threshold is not None:
+        set_threshold(live_model.fusion_model.args, threshold)
     x, seq_lengths, img, pairs, rr, dn, y = live_inputs(batch, device)
     report: dict[str, float] = {}
 
@@ -220,8 +320,8 @@ def capture_code_commit() -> str:
     return commit + ("+dirty" if dirty else "")
 
 
-def fingerprint(args, parents: dict[str, dict[str, str]]) -> dict:
-    """What a cache depends on. `parents`: reader -> {"id", "sha256"}."""
+def fingerprint(args, parents: dict[str, dict[str, str]], sweep=()) -> dict:
+    """What a cache depends on. `parents`: reader -> {"id", "sha256"}; `sweep`: thresholds."""
     lists = {}
     for split in SPLITS:
         path = Path(args.ehr_data_dir) / args.task / f"{split}_listfile.csv"
@@ -241,14 +341,29 @@ def fingerprint(args, parents: dict[str, dict[str, str]]) -> dict:
         "timestep": args.timestep,
         "parents": {r: parents[r]["sha256"] for r in sorted(parents)},
         "lists_md5": lists,
+        "sweep_thresholds": sorted(float(t) for t in sweep),
+        "capture_semantics": CAPTURE_SEMANTICS,
         "capture_code_commit": capture_code_commit(),
     }
 
 
+#: Fingerprint keys a cache written before they existed is taken to have.
+FINGERPRINT_DEFAULTS = {"sweep_thresholds": [], "capture_semantics": 1}
+#: Recorded, not compared (see CAPTURE_SEMANTICS).
+PROVENANCE_ONLY = ("capture_code_commit",)
+
+
 def fingerprint_mismatch(saved: dict, current: dict) -> list[str]:
-    keys = sorted(set(saved) | set(current))
+    saved = {**FINGERPRINT_DEFAULTS, **saved}
+    keys = sorted((set(saved) | set(current)) - set(PROVENANCE_ONLY))
     return [f"{k}: cache {saved.get(k)!r}, now {current.get(k)!r}" for k in keys
             if saved.get(k) != current.get(k)]  # fmt: skip
+
+
+def stays_bytes(sample: dict[str, torch.Tensor]) -> float:
+    """Bytes per stay of a captured batch (what a shard stores per stay, fp32)."""
+    n = sample["y"].shape[0]
+    return sum(v.numel() * v.element_size() for v in sample.values()) / n
 
 
 # ── shards ───────────────────────────────────────────────────────────────────
@@ -280,7 +395,7 @@ def dir_bytes(path: Path) -> int:
 
 
 def build_split(model, dataset, split, cache_dir, *, batch_size, collate_fn, device,
-                shard_size=1024, num_workers=0, log=print) -> dict:  # fmt: skip
+                shard_size=1024, num_workers=0, log=print, thresholds=()) -> dict:  # fmt: skip
     """Capture one split into shards; skip the ones already written. Returns counts."""
     from torch.utils.data import DataLoader, Subset  # noqa: PLC0415
 
@@ -306,7 +421,7 @@ def build_split(model, dataset, split, cache_dir, *, batch_size, collate_fn, dev
             Subset(dataset, idx), batch_size, shuffle=False, collate_fn=collate_fn,
             num_workers=num_workers, drop_last=False,
         )  # fmt: skip
-        parts = [capture_batch(model, batch, device) for batch in dl]
+        parts = [capture_batch(model, batch, device, thresholds) for batch in dl]
         shard = concat(parts)
         shard["stay_id"] = torch.as_tensor(stay_ids[idx[0] : idx[-1] + 1], dtype=torch.int64)
         shard["index"] = torch.as_tensor(idx, dtype=torch.int64)
@@ -321,7 +436,10 @@ def build_split(model, dataset, split, cache_dir, *, batch_size, collate_fn, dev
             f"{path.stat().st_size / 2**20:.1f} MB; cache {dir_bytes(cache_dir) / 2**30:.2f} GB, "
             f"free {free / 2**30:.1f} GB, {time.time() - started:.0f}s"
         )
-    return {"stays": n, "shards": shards, "written": done, "skipped": skipped}
+    size = dir_bytes(Path(cache_dir) / split) if (Path(cache_dir) / split).is_dir() else 0
+    log(f"[r3 cache] {split}: {n} stays, {shards} shards, measured {size / 2**30:.2f} GB "
+        f"({size / max(n, 1) / 1024:.0f} KB per stay)")  # fmt: skip
+    return {"stays": n, "shards": shards, "written": done, "skipped": skipped, "bytes": size}
 
 
 def _stay_ids(dataset, n):
@@ -365,6 +483,9 @@ def split_summary(cache_dir: Path, split: str, modalities: list[str]) -> dict:
 class CacheLoader:
     """Batches of cached stays (dicts of tensors) for MSMA_Trainer.batch_outputs.
 
+    With `threshold`, every batch is split at that swept threshold
+    (at_threshold); without, at the run's own.
+
     Shuffled: a fresh permutation of shards and of the stays inside each shard
     every epoch (torch.Generator seeded by seed + epoch), batches carried across
     shard boundaries, last partial batch dropped -- like the train DataLoader
@@ -373,12 +494,14 @@ class CacheLoader:
     """
 
     def __init__(self, cache_dir, split, batch_size, *, shuffle, drop_last, classes,
-                 seed=379647, preload=False):  # fmt: skip
+                 seed=379647, preload=False, threshold=None, main=None):  # fmt: skip
         self.paths = sorted((Path(cache_dir) / split).glob("shard_*.pt"))
         if not self.paths:
             raise SystemExit(f"[r3 cache] no shards for {split} in {cache_dir}")
         self.batch_size, self.shuffle, self.drop_last = batch_size, shuffle, drop_last
         self.seed, self.epoch = seed, 0
+        # Threshold sweep: batches split at `threshold` (from main's groups).
+        self.threshold, self.main = threshold, main
         self.dataset = _Classes(classes)
         self._kept = [self._load(p) for p in self.paths] if preload else None
         sizes = [int(self._shard(i)["y"].shape[0]) for i in range(len(self.paths))]
@@ -417,10 +540,15 @@ class CacheLoader:
                 held += take
                 start += take
                 if held == self.batch_size:
-                    yield concat(buffer)
+                    yield self._at(concat(buffer))
                     buffer, held = [], 0
         if buffer and not self.drop_last:
-            yield concat(buffer)
+            yield self._at(concat(buffer))
+
+    def _at(self, batch):
+        if self.threshold is None:
+            return batch
+        return at_threshold(batch, self.threshold, self.main)
 
 
 class _Classes:

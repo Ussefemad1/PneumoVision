@@ -93,7 +93,7 @@ def _run(argv: list[str] | None = None) -> int:
     batch = batch_size_for(summary["split_sizes"]["val"])
     common = [
         "--task", args.task, "--data", "virtual", "--data-root", str(root),
-        "--batch-size", str(batch), "--missing-image-as-absent",
+        "--batch-size", str(batch), "--missing-image-as-absent", "--disk-margin-gb", "1",
     ]  # fmt: skip
     code = step("r3_preflight", lambda: r3_preflight._run([*common, "--sample", "32"]))
     if code:
@@ -108,6 +108,14 @@ def _run(argv: list[str] | None = None) -> int:
         "--variants", "late_weights_per_class", "mask_missing_tokens",
         "--cache-dir", str(REPO_ROOT / "runs" / "r3_cache" / "virtual" / task),
     ]))  # fmt: skip
+    # Threshold sweep: its own binned cache beside the plain one, then the
+    # equivalence check at 0.75 and 0.60, then one variant per threshold.
+    sweep = ["--run-id", row["id"], "--epochs", str(args.epochs), "--shard-size",
+             str(batch * 2), "--sweep-thresholds", "0.60", "0.75", "0.85",
+             "--equivalence-batches", "2", "--equivalence-threshold", "0.60"]  # fmt: skip
+    for sweep_step in ("cache", "equivalence", "sweep"):
+        step(f"run r3 --step {sweep_step} (threshold sweep)", lambda s=sweep_step: round3.main(
+            [*common, *sweep, "--step", s]))  # fmt: skip
     code = step("checks: pytest -m round3", lambda: subprocess.call(
         [sys.executable, "-m", "pytest", "-m", "round3", "-s", "-p", "no:warnings", "tests/round3"],
         cwd=REPO_ROOT, env={**os.environ, "PV_CHECK_TASK": task},
