@@ -396,7 +396,8 @@ def dir_bytes(path: Path) -> int:
 
 
 def build_split(model, dataset, split, cache_dir, *, batch_size, collate_fn, device,
-                shard_size=1024, num_workers=0, log=print, thresholds=()) -> dict:  # fmt: skip
+                shard_size=1024, num_workers=0, log=print, thresholds=(),
+                long_after=None) -> dict:  # fmt: skip
     """Capture one split into shards; skip the ones already written. Returns counts."""
     from torch.utils.data import DataLoader, Subset  # noqa: PLC0415
 
@@ -411,6 +412,9 @@ def build_split(model, dataset, split, cache_dir, *, batch_size, collate_fn, dev
     shards = (n + shard_size - 1) // shard_size
     model.eval()
     done = skipped = 0
+    # `long_after`: count stays whose EHR is longer than this many hours (the
+    # EHR temperature's positions), per shard written now. Counts only.
+    long_by_shard: dict[str, int] = {}
     started = time.time()
     for k in range(shards):
         path = shard_path(cache_dir, split, k)
@@ -422,7 +426,13 @@ def build_split(model, dataset, split, cache_dir, *, batch_size, collate_fn, dev
             Subset(dataset, idx), batch_size, shuffle=False, collate_fn=collate_fn,
             num_workers=num_workers, drop_last=False,
         )  # fmt: skip
-        parts = [capture_batch(model, batch, device, thresholds) for batch in dl]
+        parts, n_long = [], 0
+        for batch in dl:
+            parts.append(capture_batch(model, batch, device, thresholds))
+            if long_after is not None:
+                n_long += sum(1 for hours in batch[6] if hours > long_after)
+        if long_after is not None:
+            long_by_shard[str(k)] = n_long
         shard = concat(parts)
         shard["stay_id"] = torch.as_tensor(stay_ids[idx[0] : idx[-1] + 1], dtype=torch.int64)
         shard["index"] = torch.as_tensor(idx, dtype=torch.int64)
@@ -440,7 +450,14 @@ def build_split(model, dataset, split, cache_dir, *, batch_size, collate_fn, dev
     size = dir_bytes(Path(cache_dir) / split) if (Path(cache_dir) / split).is_dir() else 0
     log(f"[r3 cache] {split}: {n} stays, {shards} shards, measured {size / 2**30:.2f} GB "
         f"({size / max(n, 1) / 1024:.0f} KB per stay)")  # fmt: skip
-    return {"stays": n, "shards": shards, "written": done, "skipped": skipped, "bytes": size}
+    return {
+        "stays": n,
+        "shards": shards,
+        "written": done,
+        "skipped": skipped,
+        "bytes": size,
+        "long_stays_new": long_by_shard,
+    }
 
 
 def _stay_ids(dataset, n):

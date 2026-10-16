@@ -231,6 +231,11 @@ def plan(args) -> dict:
         "F5: phenotyping EHR confidence uses the temperature-scaled logits "
         "(released code: unscaled)",
     ]
+    if task == "phenotyping":
+        deviations.append(
+            "EHR hours beyond the 2,646 learned temperature positions use temperature 1.0 "
+            "(uncalibrated); the sequence is not truncated"
+        )
     for name in ("epochs", "batch_size", "bootstrap_iters", "num_workers"):
         value = getattr(args, name, None) or defaults.get(name)
         if value is not None:
@@ -423,12 +428,24 @@ def step_cache(run: dict, opts) -> None:
             r3_cache.write_meta(cache_dir, meta)
         modalities = args.modalities.split("-")
         check_disk(trainer, loaders, cache_dir, opts, sweep)
+        limit = int(trainer.model.fusion_model.ehr_temperature.shape[0])
         for split, dl in zip(r3_cache.SPLITS, loaders, strict=True):
             info = r3_cache.build_split(
                 trainer.model, dl.dataset, split, cache_dir, batch_size=args.batch_size,
                 collate_fn=dl.collate_fn, device=trainer.device, shard_size=opts.shard_size,
-                num_workers=dl.num_workers, thresholds=sweep,
+                num_workers=dl.num_workers, thresholds=sweep, long_after=limit,
             )  # fmt: skip
+            # Stays longer than the EHR temperature's positions (temperature 1.0
+            # beyond). Kept per shard so a resumed cache keeps the earlier counts;
+            # a shard written before the fix has none recorded and holds no such
+            # stay (that code crashed on the first one).
+            previous = (meta["splits"].get(split) or {}).get("long_stays_by_shard", {})
+            by_shard = {**previous, **info.pop("long_stays_new")}
+            info["long_stays_by_shard"] = by_shard
+            info["long_stays"] = sum(by_shard.values())
+            info["ehr_temperature_positions"] = limit
+            print(f"[r3 cache] {split}: {info['long_stays']} stays longer than {limit} h "
+                  f"(EHR temperature 1.0 beyond hour {limit})")  # fmt: skip
             info.update(r3_cache.split_summary(cache_dir, split, modalities))
             info["images_missing_on_disk"] = missing_images(dl.dataset)
             meta["splits"][split] = info
@@ -929,6 +946,10 @@ def notes(run: dict) -> list[str]:
         if info.get("images_missing_on_disk"):
             out.append(f"{split}: {info['images_missing_on_disk']} X-rays missing on disk "
                        "treated as absent")  # fmt: skip
+        if info.get("long_stays") is not None:
+            out.append(f"{split}: {info['long_stays']} stays longer than "
+                       f"{info.get('ehr_temperature_positions')} h "
+                       "(EHR temperature 1.0 beyond)")  # fmt: skip
     if run.get("equivalence"):
         e = run["equivalence"]
         late = e.get("max_abs_diff_late", float("nan"))
