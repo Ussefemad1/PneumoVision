@@ -41,6 +41,8 @@ caroll's*/
 norhan's*/
 # Real MIMIC notes exported for local testing (tools/demo/export_mimic_examples.py).
 mimic-local-examples/
+# Real patient demo cases (MIMIC; PhysioNet agreement): never commit.
+demo_cases/
 
 # Large model/data files
 *.pth
