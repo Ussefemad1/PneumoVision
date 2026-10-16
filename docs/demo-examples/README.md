@@ -36,11 +36,34 @@ average (shown with its formula on the report), not the MedPatch fusion.
 | Mortality, high risk | 89.9% | 68.2% | — | 79.1% |
 | Mortality, low risk | 4.9% | 3.2% | — | 4.1% |
 
-**Chest X-ray:** no image is included, because a made-up picture is not a
-radiograph and the X-ray reader's score on it means nothing. To demo the X-ray
-reader, use a chest radiograph you are allowed to share (for example a
-public-domain or CC-licensed one from Wikimedia Commons, credited) — never a
-MIMIC-CXR image. The reader was trained on frontal (AP) ICU radiographs.
+### Chest X-rays (real, openly licensed — not MIMIC)
+
+| File | Shows | Pneumonia score | Mortality score |
+| --- | --- | --- | --- |
+| `cxr_pneumonia_covid_ap.jpg` | Bilateral COVID-19 pneumonia, portable AP, ICU | 42.7% | 23.1% |
+| `cxr_pneumonia_lobar.jpg` | Right middle lobe pneumonia, standing PA, outpatient | 16.5% | 2.9% |
+
+Read the scores against the base rates in the training data (pneumonia about
+13%, in-hospital mortality about 12%): the AP image is flagged at about three
+times the pneumonia base rate. The PA image scores lower because the reader
+learned from portable AP ICU films (supine patient, leads and tubes); a sharp
+outpatient PA film is out of its distribution. **Use the AP image to demo.**
+The CXR reader is the weakest of the readers (validation AUROC about 0.70).
+
+With the full examples: pneumonia sick + `cxr_pneumonia_lobar.jpg` → average
+54.8%; mortality high risk + `cxr_pneumonia_covid_ap.jpg` → average 60.4%.
+
+Never upload a MIMIC-CXR image to the site.
+
+#### Image credits
+
+- `cxr_pneumonia_lobar.jpg` — "X-ray of lobar pneumonia", Mikael Häggström,
+  M.D. (written informed consent obtained), **CC0**,
+  <https://commons.wikimedia.org/wiki/File:X-ray_of_lobar_pneumonia.jpg>
+- `cxr_pneumonia_covid_ap.jpg` — "COVID-19 Pneumonie - 82m Roe Thorax ap - 001",
+  Hellerhoff, **CC BY-SA 3.0**,
+  <https://commons.wikimedia.org/wiki/File:COVID-19_Pneumonie_-_82m_Roe_Thorax_ap_-_001.jpg>
+  (unmodified; redistributed under the same licence).
 
 On the Railway site (mock mode) every number is simulated.
 
