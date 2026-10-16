@@ -30,6 +30,7 @@ function testKeys() {
 
 const PASSWORD = 'correct-horse-battery';
 let app: ReturnType<typeof createApp>;
+let makeApp: (failedLoginsPer15Min?: number) => ReturnType<typeof createApp>;
 
 beforeAll(async () => {
   await startMemoryMongo();
@@ -51,12 +52,14 @@ beforeAll(async () => {
   const logger = createLogger({ level: 'silent', isProduction: true });
   const keys = loadKeys(env);
 
-  const apiRouter = Router();
-  apiRouter.use('/auth', authRoutes(env, keys));
-  apiRouter.use(requireAuth(keys, env));
-  apiRouter.use(dashboardRoutes());
-
-  app = createApp({ env, logger, apiRouter });
+  makeApp = (failedLoginsPer15Min?: number) => {
+    const apiRouter = Router();
+    apiRouter.use('/auth', authRoutes(env, keys, { failedLoginsPer15Min }));
+    apiRouter.use(requireAuth(keys, env));
+    apiRouter.use(dashboardRoutes());
+    return createApp({ env, logger, apiRouter });
+  };
+  app = makeApp();
 
   await UserModel.create({
     email: 'clinician@pneumovision.local',
@@ -100,6 +103,26 @@ describe('POST /auth/login', () => {
   it('never returns the password hash', async () => {
     const res = await login('clinician@pneumovision.local', PASSWORD);
     expect(JSON.stringify(res.body)).not.toContain('argon2');
+  });
+});
+
+describe('login rate limit', () => {
+  it('blocks a client after too many failed logins, but not for successes', async () => {
+    const limited = makeApp(2);
+    const attempt = (password: string) =>
+      request(limited)
+        .post('/api/v1/auth/login')
+        .send({ email: 'clinician@pneumovision.local', password });
+
+    // Successful logins are not counted.
+    for (let i = 0; i < 3; i += 1) expect((await attempt(PASSWORD)).status).toBe(200);
+    expect((await attempt('wrong-password-1')).status).toBe(401);
+    expect((await attempt('wrong-password-2')).status).toBe(401);
+    const blocked = await attempt('wrong-password-3');
+    expect(blocked.status).toBe(429);
+    expect(blocked.body.error.code).toBe('RATE_LIMITED');
+    // Even the right password waits out the window once the client is blocked.
+    expect((await attempt(PASSWORD)).status).toBe(429);
   });
 });
 

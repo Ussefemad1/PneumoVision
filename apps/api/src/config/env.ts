@@ -57,6 +57,12 @@ const baseSchema = z.object({
   MONGO_DB: z.string().default('pneumovision'),
 
   // ── Seed credentials (demo + any seeded environment) ──────────────────────
+  /**
+   * Full stack (DEMO_MODE=false) only: seed the synthetic demo database and
+   * the bootstrap admin on first start (idempotent; skipped once stays exist).
+   * The clinician account is created only when SEED_CLINICIAN_PASSWORD is set.
+   */
+  SEED_DEMO_DATA: bool(false),
   SEED_ADMIN_EMAIL: z.string().email().default('admin@pneumovision.local'),
   SEED_ADMIN_PASSWORD: z.string().min(8).or(z.literal('')).default(''),
   SEED_CLINICIAN_EMAIL: z.string().email().default('clinician@pneumovision.local'),
@@ -113,6 +119,14 @@ const envSchema = baseSchema.superRefine((value, ctx) => {
       }
     }
     return;
+  }
+
+  if (value.SEED_DEMO_DATA && !value.SEED_ADMIN_PASSWORD) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['SEED_ADMIN_PASSWORD'],
+      message: 'required with SEED_DEMO_DATA=true (the seeded admin would have no password)',
+    });
   }
 
   for (const key of FULL_STACK_REQUIRED) {
