@@ -160,7 +160,8 @@ READERS: list[ReaderSpec] = [
 ]
 
 
-# Round 2b (calibrated) where Youssef's file arrived; otherwise Round 2.
+# Round 2b (calibrated) for every reader; Round 2 would be used for one whose
+# 2b file was missing.
 # Every Round 2 reader carries exactly the Round 1 weights above (checked
 # tensor by tensor), plus the confidence head; load_readers re-checks the
 # classifier at start-up.
@@ -171,7 +172,7 @@ _CONFIDENCE: dict[str, tuple[str, bool]] = {
     "cxr-pneumonia": ("phenotyping/r2b/temp_c-unimodal_cxr.pth.tar", True),
     "rr-mortality": ("mortality/r2b/temp_c-unimodal_rr.pth.tar", True),
     "rr-pneumonia": ("phenotyping/r2b/temp_c-unimodal_rr.pth.tar", True),
-    "dn-pneumonia": ("phenotyping/r2/c-unimodal_dn.pth.tar", False),
+    "dn-pneumonia": ("phenotyping/r2b/temp_c-unimodal_dn.pth.tar", True),
 }
 READERS = [
     replace(spec, confidence_checkpoint=path, calibrated=calibrated)

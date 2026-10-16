@@ -120,10 +120,7 @@ def test_every_reader_names_a_test_auroc_and_mortality_never_has_dn():
     assert all(r.test_auroc is None or 0.5 < r.test_auroc < 1 for r in READERS)
     # Every reader has Youssef's confidence head (Round 2b where it exists).
     assert all(r.confidence_checkpoint for r in READERS)
-    assert {r.key for r in READERS if r.calibrated} == {
-        "ehr-mortality", "ehr-pneumonia", "cxr-mortality", "cxr-pneumonia",
-        "rr-mortality", "rr-pneumonia",
-    }
+    assert all(r.calibrated for r in READERS)
 
 
 def test_confidence_args_switch_only_the_fusion_type():
@@ -278,7 +275,7 @@ def test_readers_mode_scores_each_modality_with_its_trained_reader(readers_clien
         assert 0 < unimodal[modality] < 1
     assert sources["ehr"]["confidence"] == "calibrated"
     assert sources["rr"]["confidence"] == "calibrated"
-    assert sources["dn"]["confidence"] == "uncalibrated"  # its Round 2b file is missing
+    assert sources["dn"]["confidence"] == "calibrated"
     timesteps = out["result"]["confidence"]["ehrTimesteps"]
     assert len(timesteps) == 48 and all(0.5 <= g <= 1 for g in timesteps)
     assert out["result"]["confidence"]["noteSpans"] is None
