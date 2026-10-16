@@ -181,6 +181,47 @@ const TIME_COLUMNS: Record<string, 'hour' | 'ts'> = { hour: 'hour', ts: 'ts', ti
  * Parses an EHR CSV: a header row with a time column (`hour` offset, or
  * `ts`/`timestamp`) and any of the 17 variable names, then one row per hour.
  */
+/** First column of an extracted MIMIC `*_timeseries.csv`: hours since ICU admission. */
+const MIMIC_TIME_COLUMN = 'Hours';
+
+const csvCell = (value: string) => (/[",\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value);
+
+/**
+ * An extracted MIMIC timeseries as hourly rows with `hour` offsets.
+ *
+ * Bins exactly as the training Discretizer does (timestep 1, start time
+ * zero): a reading at t falls in bin `trunc(t - 1e-6)`, readings after 48 h
+ * are dropped, and within a bin the last value of each variable wins. Bin b
+ * becomes `hour = b - 47`, so the window ends at "now".
+ */
+function mimicTimeseriesToHourly(header: string[], rawRows: string[]): string {
+  const variables = header.slice(1).map((h) => h.trim());
+  const bins = new Map<number, Map<string, string>>();
+  for (const raw of rawRows) {
+    const cells = splitCsvLine(raw);
+    const t = Number(cells[0]);
+    if (!cells[0]?.trim() || Number.isNaN(t) || t > EHR_WINDOW_HOURS + 1e-6) continue;
+    const bin = Math.max(0, Math.trunc(t - 1e-6));
+    const values = bins.get(bin) ?? new Map<string, string>();
+    variables.forEach((name, i) => {
+      const value = (cells[i + 1] ?? '').trim();
+      if (value !== '') values.set(name, value);
+    });
+    bins.set(bin, values);
+  }
+  const out = [['hour', ...variables].map(csvCell).join(',')];
+  for (const bin of [...bins.keys()].sort((a, b) => a - b)) {
+    const values = bins.get(bin)!;
+    if (bin >= EHR_WINDOW_HOURS || values.size === 0) continue;
+    out.push(
+      [String(bin - (EHR_WINDOW_HOURS - 1)), ...variables.map((v) => values.get(v) ?? '')]
+        .map(csvCell)
+        .join(','),
+    );
+  }
+  return out.join('\n');
+}
+
 export function parseEhrCsv(text: string): ParsedEhrCsv {
   const lines = text
     .replace(/^\uFEFF/, '') // byte-order mark
@@ -189,6 +230,9 @@ export function parseEhrCsv(text: string): ParsedEhrCsv {
     .filter(({ raw }) => raw.trim() !== '');
 
   const header = lines[0] ? splitCsvLine(lines[0].raw) : [];
+  if (header[0]?.trim() === MIMIC_TIME_COLUMN) {
+    return parseEhrCsv(mimicTimeseriesToHourly(header, lines.slice(1).map((l) => l.raw)));
+  }
   const timeIndex = header.findIndex((h) => h.toLowerCase() in TIME_COLUMNS);
   if (timeIndex < 0) {
     return {

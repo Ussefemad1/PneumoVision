@@ -72,6 +72,36 @@ describe('parseEhrCsv', () => {
     ]);
   });
 
+  it('reads an extracted MIMIC timeseries, binned like the training Discretizer', () => {
+    const csv = [
+      'Hours,Heart Rate,Oxygen saturation,Glascow coma scale total',
+      '0.0,90,,',
+      '0.5,92,97,15',
+      '1.0,94,,', // trunc(1.0 - eps) = 0: still the first hour
+      '1.25,96,95,',
+      '3.75,,93,14',
+      '47.9,120,88,',
+      '48.0,121,,', // the last hour of the window
+      '49.5,130,85,', // after 48 h: dropped
+    ].join('\n');
+    const parsed = parseEhrCsv(csv);
+    expect(parsed.headerError).toBeNull();
+    expect(parsed.rows.map((r) => r.time)).toEqual([
+      { hour: -47 },
+      { hour: -46 },
+      { hour: -44 },
+      { hour: 0 },
+    ]);
+    // Within an hour the last reading of each variable wins.
+    expect(parsed.rows[0]!.values).toEqual({
+      'Heart Rate': 94,
+      'Oxygen saturation': 97,
+      'Glascow coma scale total': '15',
+    });
+    expect(parsed.rows[3]!.values).toEqual({ 'Heart Rate': 121, 'Oxygen saturation': 88 });
+    expect(parsed.rows.every((r) => r.errors.length === 0)).toBe(true);
+  });
+
   it('handles quoted cells and CRLF', () => {
     const result = parseEhrCsv('hour,"Glascow coma scale eye opening"\r\n0,"4 Spontaneously"\r\n');
     expect(result.rows[0]!.values).toEqual({ 'Glascow coma scale eye opening': '4 Spontaneously' });
