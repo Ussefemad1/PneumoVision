@@ -38,8 +38,8 @@ gamma = max(p, 1 - p) for this task's output, used for the report's
 | --- | --- | --- |
 | EHR mortality / pneumonia | `{mortality,phenotyping}/r2b/temp_c-unimodal_ehr.pth.tar` | calibrated |
 | CXR mortality / pneumonia | `{mortality,phenotyping}/r2b/temp_c-unimodal_cxr.pth.tar` | calibrated |
-| RR pneumonia | `phenotyping/r2b/temp_c-unimodal_rr.pth.tar` | calibrated |
-| RR mortality, DN pneumonia | `{mortality,phenotyping}/r2/c-unimodal_*.pth.tar` | Round 2 only (2b files not received) |
+| RR mortality / pneumonia | `{mortality,phenotyping}/r2b/temp_c-unimodal_rr.pth.tar` | calibrated |
+| DN pneumonia | `phenotyping/r2/c-unimodal_dn.pth.tar` | Round 2 only (2b file not received) |
 
 All seven Round 2 files carry exactly the Round 1 reader weights (checked
 tensor by tensor); start-up re-checks each head's classifier against its

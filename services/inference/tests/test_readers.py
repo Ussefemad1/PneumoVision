@@ -121,7 +121,8 @@ def test_every_reader_names_a_test_auroc_and_mortality_never_has_dn():
     # Every reader has Youssef's confidence head (Round 2b where it exists).
     assert all(r.confidence_checkpoint for r in READERS)
     assert {r.key for r in READERS if r.calibrated} == {
-        "ehr-mortality", "ehr-pneumonia", "cxr-mortality", "cxr-pneumonia", "rr-pneumonia",
+        "ehr-mortality", "ehr-pneumonia", "cxr-mortality", "cxr-pneumonia",
+        "rr-mortality", "rr-pneumonia",
     }
 
 
