@@ -2,6 +2,7 @@ import { TASK_SPEC, type AnalysisSummary, type PaginationMeta } from '@pneumovis
 import { useQuery } from '@tanstack/react-query';
 import { Link, useSearchParams } from 'react-router-dom';
 
+import { useAuth } from '../app/auth.jsx';
 import { api, apiErrorMessage } from '../lib/api.js';
 import { cn } from '../lib/cn.js';
 import { relativeTime, shortDateTime } from '../lib/format.js';
@@ -25,6 +26,8 @@ const NEW_ANALYSIS_CLASS =
 export function AnalysesPage() {
   const [params, setParams] = useSearchParams();
   const page = Math.max(1, Number(params.get('page')) || 1);
+  // Admins see every user's runs, so the list says whose each one is.
+  const showRequester = useAuth().user?.role === 'admin';
 
   const query = useQuery({
     queryKey: ['analyses', { page }],
@@ -85,6 +88,7 @@ export function AnalysesPage() {
                 <tr className="border-b border-hairline bg-surface-3/60 text-left text-[11px] uppercase tracking-wide text-ink-muted">
                   <th className="px-4 py-2 font-medium">Submitted</th>
                   <th className="px-4 py-2 font-medium">Patient</th>
+                  {showRequester && <th className="px-4 py-2 font-medium">Requested by</th>}
                   <th className="px-4 py-2 font-medium">Task</th>
                   <th className="px-4 py-2 font-medium">Result</th>
                   <th className="px-4 py-2 font-medium">Inputs sent</th>
@@ -94,7 +98,11 @@ export function AnalysesPage() {
               </thead>
               <tbody>
                 {query.data?.data.map((analysis) => (
-                  <AnalysisRow key={analysis.predictionId} analysis={analysis} />
+                  <AnalysisRow
+                    key={analysis.predictionId}
+                    analysis={analysis}
+                    showRequester={showRequester}
+                  />
                 ))}
               </tbody>
             </table>
@@ -126,7 +134,13 @@ export function AnalysesPage() {
   );
 }
 
-function AnalysisRow({ analysis }: { analysis: AnalysisSummary }) {
+function AnalysisRow({
+  analysis,
+  showRequester,
+}: {
+  analysis: AnalysisSummary;
+  showRequester: boolean;
+}) {
   const used = new Set<string>(analysis.inputsUsed.map((m) => m.toUpperCase()));
 
   return (
@@ -136,6 +150,9 @@ function AnalysisRow({ analysis }: { analysis: AnalysisSummary }) {
         <div className="text-[11px] text-ink-muted">{relativeTime(analysis.createdAt)}</div>
       </td>
       <td className="px-4 py-2 font-medium text-ink">{analysis.pseudoId}</td>
+      {showRequester && (
+        <td className="px-4 py-2 text-ink-secondary">{analysis.requestedBy?.name ?? '—'}</td>
+      )}
       <td className="px-4 py-2 capitalize text-ink-secondary">{analysis.task}</td>
       <td className="px-4 py-2">
         {analysis.status === 'done' ? (

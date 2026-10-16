@@ -34,6 +34,7 @@ import {
   PatientModel,
   PredictionModel,
   StayModel,
+  UserModel,
   VitalsModel,
 } from '../../db/models.js';
 import { asyncHandler, ok } from '../../lib/http.js';
@@ -454,7 +455,8 @@ export function analyzeRoutes(
   );
 
   /**
-   * `GET /analyses` — the current user's ad-hoc runs, newest first.
+   * `GET /analyses` — ad-hoc runs, newest first: the current user's own, or
+   * everyone's for an admin.
    *
    * Ad-hoc stays are hidden from the ward dashboard, so without this list a
    * report is lost as soon as the user navigates away from it. Runs attached
@@ -465,7 +467,8 @@ export function analyzeRoutes(
     clinical,
     asyncHandler(async (req, res) => {
       const { page, limit } = paginationQuery.parse(req.query);
-      const requestedBy = new Types.ObjectId(req.user!.id);
+      const scope =
+        req.user!.role === 'admin' ? {} : { requestedBy: new Types.ObjectId(req.user!.id) };
 
       const [facet] = await PredictionModel.aggregate<{
         items: {
@@ -479,11 +482,13 @@ export function analyzeRoutes(
           modelVersion: string;
           error: string | null;
           createdAt: Date;
+          requestedBy: Types.ObjectId | null;
           patient: { pseudoId: string }[];
+          requester: { name: string }[];
         }[];
         total: { n: number }[];
       }>([
-        { $match: { requestedBy } },
+        { $match: scope },
         {
           $lookup: {
             from: StayModel.collection.name,
@@ -508,6 +513,16 @@ export function analyzeRoutes(
                   as: 'patient',
                 },
               },
+              {
+                $lookup: {
+                  from: UserModel.collection.name,
+                  localField: 'requestedBy',
+                  foreignField: '_id',
+                  // Only the display name leaves the users collection.
+                  pipeline: [{ $project: { _id: 0, name: 1 } }],
+                  as: 'requester',
+                },
+              },
             ],
             total: [{ $count: 'n' }],
           },
@@ -527,6 +542,9 @@ export function analyzeRoutes(
         modelVersion: doc.modelVersion,
         error: doc.error,
         createdAt: doc.createdAt.toISOString(),
+        requestedBy: doc.requestedBy
+          ? { id: String(doc.requestedBy), name: doc.requester[0]?.name ?? 'Unknown user' }
+          : null,
       }));
 
       ok(res, items, { page, limit, total, totalPages: Math.ceil(total / limit) });

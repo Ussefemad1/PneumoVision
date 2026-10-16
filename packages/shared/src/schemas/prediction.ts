@@ -310,6 +310,8 @@ export const analysisSummary = z.object({
   modelVersion: z.string(),
   error: z.string().nullable(),
   createdAt: isoDateTime,
+  /** Who submitted it. Admins see everyone's runs; others only their own. */
+  requestedBy: z.object({ id: objectId, name: z.string() }).nullable(),
 });
 export type AnalysisSummary = z.infer<typeof analysisSummary>;
 

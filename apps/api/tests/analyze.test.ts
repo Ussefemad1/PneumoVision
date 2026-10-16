@@ -547,6 +547,31 @@ describe('GET /analyses', () => {
     expect(res.body.data).toEqual([]);
   });
 
+  it('shows an admin every user’s runs, with who requested each', async () => {
+    await predictionFor(await runNote());
+
+    await UserModel.create({
+      email: 'admin@pneumovision.local',
+      passwordHash: await hashPassword(PASSWORD),
+      name: 'Dr Admin',
+      role: 'admin',
+    });
+    const login = await request(app)
+      .post('/api/v1/auth/login')
+      .send({ email: 'admin@pneumovision.local', password: PASSWORD });
+    const adminCookie = (login.headers['set-cookie'] as unknown as string[])
+      .map((c) => c.split(';')[0])
+      .join('; ');
+
+    const res = await request(app).get('/api/v1/analyses').set('Cookie', adminCookie);
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(1);
+    expect(res.body.data[0].requestedBy.name).toBe('Dr Demo');
+
+    const own = await request(app).get('/api/v1/analyses').set('Cookie', cookie);
+    expect(own.body.data[0].requestedBy.name).toBe('Dr Demo');
+  });
+
   it('pages with ?page&limit', async () => {
     for (let i = 0; i < 3; i++) await predictionFor(await runNote());
 
