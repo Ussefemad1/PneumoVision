@@ -89,3 +89,19 @@ describe('error envelope', () => {
     expect(res.body.error.requestId).toBe(res.headers['x-request-id']);
   });
 });
+
+describe('GET /api/v1/health', () => {
+  it('is the readiness check, reachable through the edge proxy prefix', async () => {
+    const ok = await request(
+      makeApp({ mongo: () => Promise.resolve(true), inference: () => Promise.resolve(true) }),
+    ).get('/api/v1/health');
+    expect(ok.status).toBe(200);
+    expect(ok.body.data).toEqual({ ready: true, checks: { mongo: true, inference: true } });
+
+    const down = await request(
+      makeApp({ mongo: () => Promise.resolve(true), inference: () => Promise.resolve(false) }),
+    ).get('/api/v1/health');
+    expect(down.status).toBe(503);
+    expect(down.body.data.checks.inference).toBe(false);
+  });
+});
