@@ -16,6 +16,7 @@ from typing import Annotated, AsyncIterator
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import JSONResponse
 
 from .config import Settings, get_settings
 from .cxr import decode_cxr
@@ -55,7 +56,6 @@ EHR_VARIABLES = [
 ]
 
 CXR_IMAGE_SIZE = 384
-TEXT_MODEL = "emilyalsentzer/Bio_ClinicalBERT"
 
 
 def resolve_device(preference: str) -> str:
@@ -72,30 +72,61 @@ def resolve_device(preference: str) -> str:
 READERS_MODEL_VERSION = "readers-r1+mock-fusion"
 
 
+def configure_torch(num_threads: int | None) -> None:
+    """One intra-op pool sized to the machine (2 on the EC2 target), no
+    gradient tracking anywhere: the service only ever runs inference."""
+    import torch  # noqa: PLC0415
+
+    if num_threads:
+        torch.set_num_threads(num_threads)
+        try:
+            torch.set_num_interop_threads(1)
+        except RuntimeError:  # already set (a second app in the same process)
+            pass
+    torch.set_grad_enabled(False)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     app.state.device = resolve_device(settings.torch_device)
     app.state.readers = None
+    app.state.models_loaded = False
+    app.state.warmed_up = False
+    app.state.load_error = None
+    app.state.text_model = None
     if settings.mode == "mock":
         # Nothing to load; mock output is generated per request.
-        app.state.models_loaded = False
         app.state.warmed_up = True
         logger.info("inference service started in mock mode (no checkpoints loaded)")
     else:
         # Imported here so mock mode never needs torch installed.
+        from .offline import BERT_MODEL, CXR_TIMM_MODEL, check_caches  # noqa: PLC0415
         from .readers import load_readers  # noqa: PLC0415
 
-        app.state.readers = load_readers(
-            settings.medpatch_root, settings.checkpoint_dir, app.state.device
-        )
-        app.state.models_loaded = True
-        app.state.warmed_up = True
-        logger.info(
-            "inference service started in readers mode on %s: %s",
-            app.state.device,
-            ", ".join(app.state.readers.keys),
-        )
+        try:
+            configure_torch(settings.torch_num_threads)
+            check_caches([BERT_MODEL], [CXR_TIMM_MODEL])
+            app.state.readers = load_readers(
+                settings.medpatch_root, settings.checkpoint_dir, app.state.device
+            )
+        except Exception as exc:  # noqa: BLE001 -- reported by /v1/health, never scored
+            # Degraded rather than crashed: /v1/health answers 503 with the
+            # reason (so `restart: always` does not hide it in a loop) and
+            # /v1/predict refuses, so nothing is ever scored by a model that
+            # failed to load.
+            app.state.load_error = f"{type(exc).__name__}: {exc}"
+            logger.error("readers mode failed to load: %s", app.state.load_error)
+        else:
+            app.state.models_loaded = True
+            app.state.warmed_up = True
+            app.state.text_model = app.state.readers.text_model
+            logger.info(
+                "inference service started in readers mode on %s (%s threads): %s",
+                app.state.device,
+                settings.torch_num_threads or "default",
+                ", ".join(app.state.readers.keys),
+            )
     yield
 
 
@@ -111,16 +142,25 @@ app = FastAPI(
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 
 
-@app.get("/v1/health", response_model=HealthResponse)
-async def health(request: Request, settings: SettingsDep) -> HealthResponse:
-    """Unsigned liveness probe — carries no patient data."""
-    return HealthResponse(
-        status="ok",
+@app.get("/v1/health", response_model=HealthResponse, responses={503: {"model": HealthResponse}})
+async def health(request: Request, settings: SettingsDep) -> HealthResponse | JSONResponse:
+    """Unsigned readiness probe — carries no patient data.
+
+    503 ("degraded", with the reason) when the configured models did not load.
+    """
+    error = getattr(request.app.state, "load_error", None)
+    body = HealthResponse(
+        status="degraded" if error else "ok",
+        mode=settings.mode,
         mock=settings.mode == "mock",
         models_loaded=bool(getattr(request.app.state, "models_loaded", False)),
         device=str(getattr(request.app.state, "device", "cpu")),
         warmed_up=bool(getattr(request.app.state, "warmed_up", False)),
+        reason=error,
     )
+    if error:
+        return JSONResponse(status_code=503, content=body.model_dump(by_alias=True))
+    return body
 
 
 @app.get("/v1/model-info", response_model=ModelInfo)
@@ -137,13 +177,30 @@ async def model_info(request: Request, settings: SettingsDep) -> ModelInfo:
         ehr_discretized_width=EHR_DISCRETIZED_WIDTH,
         cxr_patch_grid=CXR_PATCH_GRID,
         cxr_image_size=CXR_IMAGE_SIZE,
-        text_model=TEXT_MODEL,
+        # The BERT actually loaded (from the readers' tokenizer); none in mock.
+        text_model=getattr(request.app.state, "text_model", None) or "none (mock mode)",
     )
 
 
 @app.post("/v1/predict", response_model=PredictResponse, dependencies=[Depends(require_signed_request)])
 async def predict(body: PredictRequest, request: Request, settings: SettingsDep) -> PredictResponse:
     started = time.perf_counter()
+
+    # F8 leakage control: a discharge summary states the outcome, so it is
+    # never an input for mortality. The API filters these out already
+    # (NOTE_TYPES_BY_TASK); the service refuses them too, in every mode.
+    if body.task == "mortality" and any(n.type == "discharge" for n in body.notes or []):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="discharge notes are never used for mortality (outcome leakage); "
+            "send radiology reports only",
+        )
+    error = getattr(request.app.state, "load_error", None)
+    if error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"models not loaded ({settings.mode} mode): {error}",
+        )
 
     # Decode and verify the radiograph before anything else: a hash mismatch
     # or unreadable image is a 400, never a silently image-less prediction.

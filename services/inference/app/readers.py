@@ -322,6 +322,12 @@ class Readers:
     def keys(self) -> list[str]:
         return [r.spec.key for r in self._by_key.values()]
 
+    @property
+    def text_model(self) -> str:
+        """The BERT the text readers actually loaded (their tokenizer's name)."""
+        names = {r.tokenizer.name_or_path for r in self._by_key.values() if r.tokenizer is not None}
+        return ", ".join(sorted(names)) or "none"
+
     def score(self, req: PredictRequest, cxr_bytes: bytes | None = None) -> dict[str, ReaderScore]:
         """Unimodal probabilities for every modality a trained reader covers.
 

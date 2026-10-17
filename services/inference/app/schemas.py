@@ -281,7 +281,10 @@ class HealthResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     status: Literal["ok", "degraded"]
+    mode: Literal["mock", "readers", "fusion"] = "mock"
     mock: bool
     models_loaded: bool = Field(alias="modelsLoaded")
     device: str
     warmed_up: bool = Field(alias="warmedUp")
+    # Why the service is degraded: the load error (no patient data).
+    reason: str | None = None
