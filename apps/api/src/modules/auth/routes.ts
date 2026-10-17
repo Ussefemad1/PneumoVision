@@ -1,5 +1,6 @@
 import { loginRequest } from '@pneumovision/shared';
-import { Router } from 'express';
+import { Router, type Request, type Response } from 'express';
+import { rateLimit } from 'express-rate-limit';
 
 import type { Env } from '../../config/env.js';
 import { UserModel } from '../../db/models.js';
@@ -21,12 +22,43 @@ import { ApiError } from '../../middleware/errorHandler.js';
  * reuse detection, account lockout after 5 failures, and an audit entry for
  * every auth event. The shapes below are already the ones those will use.
  */
-export function authRoutes(env: Env, keys: TokenKeys): Router {
+export interface AuthOptions {
+  /** Failed logins allowed per client IP per 15 minutes. */
+  failedLoginsPer15Min?: number;
+}
+
+export function authRoutes(
+  env: Env,
+  keys: TokenKeys,
+  { failedLoginsPer15Min = 10 }: AuthOptions = {},
+): Router {
   const router = Router();
   const auth = requireAuth(keys, env);
 
+  // Brute-force brake in the app itself, on top of nginx's 5 r/min on this
+  // path. Keyed by client IP (`trust proxy 1` makes that nginx's
+  // X-Forwarded-For); successful logins do not count, so a user who signs in
+  // is never locked out by their own earlier typos.
+  const loginLimiter = rateLimit({
+    windowMs: 15 * 60_000,
+    limit: failedLoginsPer15Min,
+    skipSuccessfulRequests: true,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+    handler: (req: Request, res: Response) => {
+      res.status(429).json({
+        error: {
+          code: 'RATE_LIMITED',
+          message: 'Too many failed sign-in attempts — try again in 15 minutes',
+          requestId: req.requestId,
+        },
+      });
+    },
+  });
+
   router.post(
     '/login',
+    loginLimiter,
     asyncHandler(async (req, res) => {
       const { email, password } = loginRequest.parse(req.body);
 

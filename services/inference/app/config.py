@@ -23,18 +23,30 @@ class Settings(BaseSettings):
     # ── Mode ────────────────────────────────────────────────────────────────
     # INFERENCE_MODE:
     #   mock    — every number simulated; no torch needed (Railway default).
-    #   readers — the team's trained single-modality readers (EHR, RR, DN)
-    #             score their own modality; fusion stays simulated until the
-    #             fusion checkpoints exist. Needs torch and CHECKPOINT_DIR.
+    #   readers — the team's trained single-modality readers (EHR, CXR, RR,
+    #             DN) score their own modality; the fused score is their plain
+    #             average, labelled so. Needs torch and CHECKPOINT_DIR.
+    #   fusion  — the trained MedPatch fusion (Round 3, c-msma), one model
+    #             per task from FUSION_DIR/{mortality,phenotyping}/ (checkpoint
+    #             + run.json). The AWS default. See app/fusion.py.
     # When unset, MOCK_MODE (the original flag) decides: true means mock.
-    inference_mode: Literal["mock", "readers"] | None = Field(default=None, alias="INFERENCE_MODE")
+    # (The Railway comments here are historical: the deployment is AWS EC2,
+    # infra/aws/; Railway is no longer used.)
+    inference_mode: Literal["mock", "readers", "fusion"] | None = Field(
+        default=None, alias="INFERENCE_MODE"
+    )
     mock_mode: bool = Field(default=True, alias="MOCK_MODE")
 
     torch_device: Literal["auto", "cpu", "cuda"] = Field(default="auto", alias="TORCH_DEVICE")
+    # torch intra-op threads; unset keeps torch's default (all cores). The
+    # EC2 target has 2 vCPUs and sets 2.
+    torch_num_threads: int | None = Field(default=None, alias="TORCH_NUM_THREADS", ge=1)
 
     # ── Paths ───────────────────────────────────────────────────────────────
     medpatch_root: Path = Field(default=Path("/app/medpatch"), alias="MEDPATCH_ROOT")
     checkpoint_dir: Path = Field(default=Path("/app/checkpoints"), alias="CHECKPOINT_DIR")
+    # Fusion mode: <FUSION_DIR>/mortality/ and <FUSION_DIR>/phenotyping/.
+    fusion_dir: Path = Field(default=Path("/app/checkpoints/round3"), alias="FUSION_DIR")
     normalizer_dir: Path = Field(default=Path("/app/medpatch/normalizers"), alias="NORMALIZER_DIR")
 
     # ── Security ────────────────────────────────────────────────────────────
@@ -49,14 +61,14 @@ class Settings(BaseSettings):
     log_level: str = Field(default="info", alias="LOG_LEVEL")
 
     @property
-    def mode(self) -> Literal["mock", "readers"]:
+    def mode(self) -> Literal["mock", "readers", "fusion"]:
         if self.inference_mode is not None:
             return self.inference_mode
         if self.mock_mode:
             return "mock"
         raise ValueError(
             "MOCK_MODE=false needs INFERENCE_MODE to say which real mode to run "
-            "(currently only 'readers' exists)"
+            "(INFERENCE_MODE=fusion or readers)"
         )
 
     @field_validator("default_theta")

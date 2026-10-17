@@ -110,3 +110,8 @@ infra/nginx/certs/
 # Virtual (synthetic) training runs and their manifest -- generated, never committed.
 # data/virtual/ is already covered by data/*.
 runs/
+
+# AWS server state (infra/aws/bootstrap.sh, cert.sh): the Mongo replica-set
+# keyfile and Let's Encrypt account + certificates.
+infra/mongo/keyfile
+infra/aws/certbot/

@@ -124,8 +124,46 @@ def test_model_info_matches_the_training_input_spec(client: TestClient):
     assert body["ehrWindowHours"] == 48
     assert body["cxrPatchGrid"] == 24
     assert body["cxrImageSize"] == 384
-    assert body["textModel"] == "emilyalsentzer/Bio_ClinicalBERT"
+    # No BERT is loaded in mock mode, so none is claimed (this used to name
+    # Bio_ClinicalBERT, which no trained reader uses).
+    assert body["textModel"] == "none (mock mode)"
     assert body["theta"] == 0.75
+
+
+def test_health_reports_the_mode(client: TestClient):
+    body = client.get("/v1/health").json()
+    assert body["mode"] == "mock"
+    assert body["reason"] is None
+
+
+def test_a_real_mode_that_cannot_load_is_degraded_not_crashed(tmp_path, monkeypatch):
+    # An empty checkpoint folder: the service must start, report why on
+    # /v1/health with a 503, and refuse to predict.
+    monkeypatch.setenv("INFERENCE_MODE", "readers")
+    monkeypatch.setenv("CHECKPOINT_DIR", str(tmp_path))
+    monkeypatch.setenv("MEDPATCH_ROOT", str(Path(__file__).resolve().parents[3] / "medpatch"))
+    get_settings.cache_clear()
+    with TestClient(app) as degraded:
+        res = degraded.get("/v1/health")
+        assert res.status_code == 503
+        body = res.json()
+        assert body["status"] == "degraded"
+        assert body["mode"] == "readers"
+        assert body["modelsLoaded"] is False
+        assert body["reason"]
+
+        raw = b'{"task": "pneumonia", "seed": "s"}'
+        res = degraded.post("/v1/predict", content=raw, headers=signed_headers(raw))
+        assert res.status_code == 503
+        assert "models not loaded" in res.json()["detail"]
+
+
+def test_mock_mode_needs_no_inference_mode():
+    from app.config import Settings
+
+    assert Settings(MOCK_MODE="true").mode == "mock"  # type: ignore[call-arg]
+    with pytest.raises(ValueError, match="INFERENCE_MODE"):
+        _ = Settings(MOCK_MODE="false").mode  # type: ignore[call-arg]
 
 
 # ── HMAC verification ────────────────────────────────────────────────────────
@@ -393,3 +431,34 @@ def test_token_estimate_matches_the_typescript_vectors():
     assert chunk_count(0) == 0
     assert chunk_count(512) == 1
     assert chunk_count(513) == 2
+
+
+# ── F8: discharge notes never reach the mortality model ──────────────────────
+
+
+def test_discharge_note_for_mortality_is_refused_with_400(client: TestClient):
+    res = post_predict(
+        client,
+        {
+            "task": "mortality",
+            "seed": "s",
+            "notes": [
+                {"id": "r", "type": "radiology", "text": "SYNTHETIC: clear lungs."},
+                {"id": "d", "type": "discharge", "text": "SYNTHETIC: discharged home."},
+            ],
+        },
+    )
+    assert res.status_code == 400
+    assert "never used for mortality" in res.json()["detail"]
+
+
+def test_discharge_note_for_pneumonia_is_accepted(client: TestClient):
+    res = post_predict(
+        client,
+        {
+            "task": "pneumonia",
+            "seed": "s",
+            "notes": [{"id": "d", "type": "discharge", "text": "SYNTHETIC: treated with antibiotics."}],
+        },
+    )
+    assert res.status_code == 200, res.text

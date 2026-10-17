@@ -259,8 +259,13 @@ def _format_value(channel: str, value: float | str, categorical: bool, possible:
         raise ReaderInputError(f"{channel}: {value!r} is not a number") from exc
 
 
-def ehr_rows(ehr: EhrInput, discretizer: Any) -> list[list[str]]:
+def ehr_rows(
+    ehr: EhrInput, discretizer: Any, hours: int | None = EHR_WINDOW_HOURS
+) -> list[list[str]]:
     """The hourly grid as timeseries rows: ``[Hours, 17 channels...]``.
+
+    ``hours`` caps the rows read (the 48 h mortality window); None reads them
+    all (phenotyping, which was trained on the whole stay).
 
     Row ``i`` is hour bin ``i`` of the window. Its time is ``i + 0.5`` so the
     discretizer's ``int(t / timestep - eps)`` places it in bin ``i``. Hours
@@ -274,7 +279,7 @@ def ehr_rows(ehr: EhrInput, discretizer: Any) -> list[list[str]]:
         raise ReaderInputError(f"unknown EHR variables: {', '.join(unknown)}")
 
     rows: list[list[str]] = []
-    for hour, values in enumerate(ehr.values[:EHR_WINDOW_HOURS]):
+    for hour, values in enumerate(ehr.values[:hours] if hours is not None else ehr.values):
         row = [""] * len(header)
         row[0] = str(hour + 0.5)
         any_value = False
@@ -321,6 +326,12 @@ class Readers:
     @property
     def keys(self) -> list[str]:
         return [r.spec.key for r in self._by_key.values()]
+
+    @property
+    def text_model(self) -> str:
+        """The BERT the text readers actually loaded (their tokenizer's name)."""
+        names = {r.tokenizer.name_or_path for r in self._by_key.values() if r.tokenizer is not None}
+        return ", ".join(sorted(names)) or "none"
 
     def score(self, req: PredictRequest, cxr_bytes: bytes | None = None) -> dict[str, ReaderScore]:
         """Unimodal probabilities for every modality a trained reader covers.

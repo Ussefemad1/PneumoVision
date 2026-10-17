@@ -330,25 +330,23 @@ export async function seedDemoData(env: Env, logger: Logger): Promise<SeedResult
     return { users: 0, patients: 0, stays: existing, vitalsPoints: 0, images: 0, notes: 0 };
   }
 
-  const [adminHash, clinicianHash] = await Promise.all([
-    hashPassword(env.SEED_ADMIN_PASSWORD),
-    hashPassword(env.SEED_CLINICIAN_PASSWORD),
-  ]);
-
-  const [, clinician] = await Promise.all([
-    UserModel.create({
-      email: env.SEED_ADMIN_EMAIL,
-      passwordHash: adminHash,
-      name: 'Demo Administrator',
-      role: 'admin',
-    }),
-    UserModel.create({
-      email: env.SEED_CLINICIAN_EMAIL,
-      passwordHash: clinicianHash,
-      name: 'Dr Demo Clinician',
-      role: 'clinician',
-    }),
-  ]);
+  const admin = await UserModel.create({
+    email: env.SEED_ADMIN_EMAIL,
+    passwordHash: await hashPassword(env.SEED_ADMIN_PASSWORD),
+    name: 'Demo Administrator',
+    role: 'admin',
+  });
+  // The clinician account only when its password is configured (DEMO_MODE
+  // requires it). A production seed creates the bootstrap admin alone, who
+  // then adds users (apps/api/src/cli/users.ts); no default accounts.
+  const clinician = env.SEED_CLINICIAN_PASSWORD
+    ? await UserModel.create({
+        email: env.SEED_CLINICIAN_EMAIL,
+        passwordHash: await hashPassword(env.SEED_CLINICIAN_PASSWORD),
+        name: 'Dr Demo Clinician',
+        role: 'clinician',
+      })
+    : admin;
 
   const imagesDir = join(process.cwd(), env.DEMO_DATA_DIR, 'images');
   await mkdir(imagesDir, { recursive: true });
@@ -358,7 +356,7 @@ export async function seedDemoData(env: Env, logger: Logger): Promise<SeedResult
   now.setMinutes(0, 0, 0);
 
   const counts: SeedResult = {
-    users: 2,
+    users: clinician === admin ? 1 : 2,
     patients: 0,
     stays: 0,
     vitalsPoints: 0,

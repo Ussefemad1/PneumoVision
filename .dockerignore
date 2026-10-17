@@ -26,3 +26,23 @@ errlogs/
 playwright-report/
 test-results/
 infra/nginx/certs/
+
+# Data-safety (CLAUDE.md hard rule 1): files derived from MIMIC, or of unknown
+# provenance, never enter an image. Serving needs none of them (checked:
+# nothing on the inference import path reads them).
+medpatch/mimic4extract/
+medpatch/ehr_utils/mimic-cxr-ehr-split.csv
+medpatch/ehr_utils/resources/valset*.csv
+**/*_listfile.csv
+**/mimic-cxr-*.csv
+**/discharge.csv
+**/radiology.csv
+**/*.pkl
+**/*.pth
+**/*.pth.tar
+**/*.pt
+**/*.ckpt
+**/*.safetensors
+docs/demo-examples/*.png
+medpatch/**/*.log
+medpatch/wandb/

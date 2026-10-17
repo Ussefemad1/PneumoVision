@@ -94,8 +94,11 @@ export function createApp({ env, logger, apiRouter, readinessChecks = {} }: AppD
     res.json({ data: { status: 'ok', uptimeSeconds: Math.floor(process.uptime()) } });
   });
 
-  // Readiness: every backing service is reachable.
-  app.get('/ready', (_req, res, next) => {
+  // Readiness: every backing service is reachable. Also served at
+  // /api/v1/health, the path the edge proxy exposes, so a deploy can smoke-test
+  // the whole chain (nginx -> api -> mongo + inference) from outside. It
+  // carries only booleans per dependency, nothing about patients or users.
+  app.get(['/ready', `${API_PREFIX}/health`], (_req, res, next) => {
     void (async () => {
       try {
         const names = Object.keys(readinessChecks);

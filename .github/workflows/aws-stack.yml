@@ -1,0 +1,226 @@
+# Builds and runs the AWS production stack (infra/aws/) on a GitHub runner, as
+# the server would: compose validation, image sizes, inference start-up in
+# every mode, then bootstrap.sh + deploy.sh end to end on SYNTHETIC
+# random-weight Round 3 runs (scripts/make_fake_runs.py) -- no real
+# checkpoint and no MIMIC data is ever involved. Results are written as
+# ::notice annotations and to the job summary.
+name: aws-stack
+
+on:
+  push:
+    branches: [deploy/aws]
+    paths:
+      - 'infra/**'
+      - 'services/inference/**'
+      - 'apps/**'
+      - 'packages/**'
+      - 'medpatch/**'
+      - 'docker-compose*.yml'
+      - '.dockerignore'
+      - '.github/workflows/aws-stack.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aws-stack-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  stack:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Compose files are valid
+        run: |
+          printf 'PUBLIC_HOST=x\nMONGO_ROOT_USER=u\nMONGO_ROOT_PASSWORD=p\nREDIS_PASSWORD=r\nS3_ACCESS_KEY=a\nS3_SECRET_KEY=b\nINFERENCE_HMAC_SECRET=%s\nJWT_PRIVATE_KEY_B64=k\nJWT_PUBLIC_KEY_B64=k\nFIELD_ENCRYPTION_KEY_HEX=%s\nCSRF_SECRET=%s\nSEED_ADMIN_PASSWORD=adminpassword\n' \
+            "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" > /tmp/ci.env
+          docker compose --project-directory . --env-file /tmp/ci.env -f infra/aws/docker-compose.aws.yml config -q
+          docker compose --env-file /tmp/ci.env -f docker-compose.yml -f docker-compose.prod.yml config -q
+          docker compose --env-file /tmp/ci.env -f docker-compose.yml config -q
+          echo "::notice title=compose::aws, prod overlay and dev compose files validate"
+
+      - name: nginx config is valid (nginx -t, before any build)
+        run: |
+          CERT_CN=localhost bash infra/scripts/gen-certs.sh
+          mkdir -p /tmp/www
+          docker run --rm --add-host api:127.0.0.1 --add-host web:127.0.0.1 \
+            -v "$PWD/infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro" \
+            -v "$PWD/infra/nginx/proxy_common.conf:/etc/nginx/proxy_common.conf:ro" \
+            -v "$PWD/infra/nginx/certs:/etc/nginx/certs:ro" -v /tmp/www:/var/www/certbot:ro \
+            nginx:1.27-alpine nginx -t
+          rm -rf infra/nginx/certs   # bootstrap.sh makes the server's own
+
+      - name: Build images
+        run: |
+          docker build -f services/inference/Dockerfile --build-arg INSTALL_ML=true -t pneumovision-inference:aws .
+          docker build -f services/inference/Dockerfile -t pneumovision-inference:mock .
+          docker build -f apps/api/Dockerfile -t pneumovision-api:aws .
+          docker build -f apps/web/Dockerfile -t pneumovision-web:aws .
+          sizes="$(docker images --format '{{.Repository}}:{{.Tag}} {{.Size}}' | grep pneumovision | tr '\n' ';')"
+          echo "::notice title=image sizes::$sizes"
+          echo "### Image sizes" >> "$GITHUB_STEP_SUMMARY"
+          docker images --format '| {{.Repository}}:{{.Tag}} | {{.Size}} |' | grep pneumovision >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Inference starts per mode without checkpoints
+        run: |
+          set -u
+          health() {  # mode image -> prints status code and body
+            docker rm -f inf >/dev/null 2>&1 || true
+            docker run -d --name inf -e INFERENCE_HMAC_SECRET=ci-secret-at-least-16-chars \
+              -e MOCK_MODE=$([ "$1" = mock ] && echo true || echo false) -e INFERENCE_MODE="$1" \
+              -e TORCH_DEVICE=cpu --read-only --tmpfs /tmp "$2" >/dev/null
+            for i in $(seq 1 60); do
+              out="$(docker exec inf python -c "import urllib.request as u, urllib.error as e
+          try: r=u.urlopen('http://127.0.0.1:8000/v1/health'); print(r.status, r.read().decode())
+          except e.HTTPError as x: print(x.code, x.read().decode())" 2>/dev/null)" && break
+              sleep 2
+            done
+            echo "$out"
+          }
+          m="$(health mock pneumovision-inference:mock)"; echo "$m"; [[ "$m" == 200* ]]
+          m="$(health mock pneumovision-inference:aws)"; echo "$m"; [[ "$m" == 200* ]]
+          f="$(health fusion pneumovision-inference:aws)"; echo "$f"; [[ "$f" == 503* && "$f" == *degraded* && "$f" == *run.json* ]]
+          r="$(health readers pneumovision-inference:aws)"; echo "$r"; [[ "$r" == 503* && "$r" == *missing* ]]
+          docker rm -f inf
+          echo "::notice title=inference modes::mock 200 (slim and ML images); fusion and readers without checkpoints: 503 degraded with the reason"
+
+      - name: Offline caches are baked (no network)
+        run: |
+          docker run --rm --network none pneumovision-inference:aws python -c "
+          from app.offline import BERT_MODEL, CXR_TIMM_MODEL, missing_caches
+          import transformers, timm
+          assert not missing_caches([BERT_MODEL], [CXR_TIMM_MODEL])
+          transformers.BertModel.from_pretrained(BERT_MODEL); transformers.BertTokenizerFast.from_pretrained(BERT_MODEL)
+          timm.create_model(CXR_TIMM_MODEL, pretrained=True); print('offline OK')"
+
+      - name: Synthetic random-weight Round 3 runs
+        run: |
+          mkdir -p checkpoints/round3 && chmod 777 checkpoints/round3
+          set +e
+          docker run --rm -v "$PWD/checkpoints/round3:/out" \
+            -v "$PWD/services/inference/scripts:/app/scripts:ro" -e MEDPATCH_ROOT=/app/medpatch \
+            pneumovision-inference:aws python /app/scripts/make_fake_runs.py /out > /tmp/gen.log 2>&1
+          status=$?
+          set -e
+          tail -40 /tmp/gen.log
+          if [ $status -ne 0 ]; then echo "::error title=fake runs::$(tail -c 1800 /tmp/gen.log | paste -sd ' ' -)"; exit 1; fi
+          ls -la checkpoints/round3/*
+
+      - name: bootstrap.sh (as on the server)
+        run: |
+          git config --global --add safe.directory "$PWD"
+          set +e
+          PV_DIR="$PWD" PUBLIC_HOST=localhost UNATTENDED_UPGRADES=no bash infra/aws/bootstrap.sh > /tmp/boot.log 2>&1
+          status=$?
+          set -e
+          grep -iv 'password\|^    ' /tmp/boot.log
+          if [ $status -ne 0 ]; then echo "::error title=bootstrap::$(grep -iv 'password\|^    ' /tmp/boot.log | tail -c 1800 | paste -sd ' ' -)"; exit 1; fi
+          test -f .env && test "$(stat -c %a .env)" = 600
+          test "$(sudo stat -c '%a %u' infra/mongo/keyfile)" = "400 999"
+          PV_DIR="$PWD" UNATTENDED_UPGRADES=no bash infra/aws/bootstrap.sh >/dev/null   # rerun: idempotent
+          test "$(grep -c '^SEED_ADMIN_PASSWORD=' .env)" = 1
+          test ! -e medpatch/mimic4extract && test ! -e 'docs/demo-examples/sick cxr.png'
+          echo "::notice title=bootstrap::.env 600, keyfile 400/999, sparse checkout drops the MIMIC-derived files, rerun keeps secrets"
+
+      - name: deploy.sh (guard, sha256, build, start, health, smoke)
+        run: |
+          started=$SECONDS
+          set +e
+          bash infra/aws/deploy.sh --no-pull > /tmp/deploy.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/deploy.log
+          if [ $status -ne 0 ]; then echo "::error title=deploy::$(tail -c 2500 /tmp/deploy.log | paste -sd ' ' -)"; exit 1; fi
+          echo "::notice title=deploy::deploy.sh succeeded in $((SECONDS - started)) s (self-signed fallback; Let's Encrypt cannot issue for localhost)"
+
+      - name: Wait for the demo seed's background scoring to finish
+        run: |
+          for i in $(seq 1 120); do
+            if infra/aws/compose.sh logs api 2>/dev/null | grep -q 'backfilled demo predictions'; then
+              n="$(infra/aws/compose.sh logs api | grep 'backfilled demo predictions' | grep -o '"predictions":[0-9]*' | head -1)"
+              echo "::notice title=seed::synthetic demo seeded and scored through the fusion models ($n)"; exit 0
+            fi
+            sleep 15
+          done
+          echo "::warning title=seed::backfill did not finish within 30 min"
+
+      - name: Measurements
+        if: always()
+        run: |
+          set +e
+          infra/aws/compose.sh ps
+          stats="$(docker stats --no-stream --format '{{.Name}} {{.MemUsage}} {{.CPUPerc}}' | tr '\n' ';')"
+          echo "::notice title=docker stats (idle, after deploy)::$stats"
+          {
+            echo "### docker stats --no-stream"; echo '```'; docker stats --no-stream; echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          h="$(infra/aws/compose.sh exec -T api node -e "fetch('http://inference:8000/v1/health').then(r=>r.text()).then(console.log)")"
+          echo "::notice title=inference health::$h"
+          # Latency of signed predictions from inside the network, 5 runs per task.
+          lat="$(infra/aws/compose.sh exec -T inference python - <<'EOF'
+          import base64, hashlib, io, json, os, time, urllib.request
+          from PIL import Image
+          from app.security import compute_signature
+          buf = io.BytesIO(); Image.new("L", (600, 700), 128).save(buf, format="PNG"); img = buf.getvalue()
+          ehr = {"variables": ["Heart Rate", "Respiratory rate"], "values": [[80 + h, 18] for h in range(48)]}
+          def body(task, words):
+              notes = [{"id": "r", "type": "radiology", "text": "synthetic clear lungs " * 20}]
+              if task == "pneumonia":
+                  notes.append({"id": "d", "type": "discharge", "text": "synthetic treated " * words})
+              return {"task": task, "seed": "ci", "ehr": ehr, "notes": notes,
+                      "cxr": {"contentType": "image/png", "sha256": hashlib.sha256(img).hexdigest(), "dataB64": base64.b64encode(img).decode()}}
+          def call(b):
+              raw = json.dumps(b).encode(); ts = str(int(time.time()))
+              req = urllib.request.Request("http://127.0.0.1:8000/v1/predict", raw, {"content-type": "application/json",
+                  "X-PV-Timestamp": ts, "X-PV-Signature": compute_signature(os.environ["INFERENCE_HMAC_SECRET"], ts, raw)})
+              t = time.perf_counter(); urllib.request.urlopen(req, timeout=600).read(); return time.perf_counter() - t
+          out = []
+          for task in ("mortality", "pneumonia"):
+              ts = sorted(call(body(task, 100)) for _ in range(5))
+              out.append(f"{task} p50 {ts[2]:.2f}s max {ts[-1]:.2f}s")
+          out.append(f"pneumonia long DN (~6k tokens) {call(body('pneumonia', 3000)):.2f}s")
+          print("; ".join(out))
+          EOF
+          )"
+          echo "::notice title=latency (signed /v1/predict, 2 threads)::$lat"
+          h="$(infra/aws/compose.sh exec -T api node -e "fetch('http://inference:8000/v1/health').then(r=>r.text()).then(console.log)")"
+          echo "::notice title=inference health after a long note::$h"
+          stats="$(docker stats --no-stream --format '{{.Name}} {{.MemUsage}}' | tr '\n' ';')"
+          echo "::notice title=docker stats (after predictions)::$stats"
+          echo "### latency"; echo "$lat" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Restart survives (as after an instance stop/start)
+        run: |
+          sudo systemctl restart docker
+          for i in $(seq 1 80); do
+            unhealthy="$(docker ps --format '{{.Names}} {{.Status}}' | grep -v '(healthy)' || true)"
+            if curl -fsSk --resolve localhost:443:127.0.0.1 https://localhost/api/v1/health >/dev/null 2>&1 && [ -z "$unhealthy" ]; then
+              echo "::notice title=restart::every container came back healthy after a docker restart"; exit 0
+            fi
+            sleep 15
+          done
+          docker ps -a; exit 1
+
+      - name: Mongo requires auth
+        run: |
+          out="$(infra/aws/compose.sh exec -T mongo mongosh --quiet --eval 'db.getSiblingDB("pneumovision").users.countDocuments()' 2>&1 || true)"
+          echo "$out"; [[ "$out" == *"requires authentication"* || "$out" == *"Unauthorized"* ]]
+          echo "::notice title=mongo::unauthenticated reads are refused"
+
+      - name: Logs on failure
+        if: failure()
+        run: |
+          infra/aws/compose.sh logs --tail=80 || true
+          for svc in nginx api web; do
+            echo "::error title=logs $svc::$(infra/aws/compose.sh ps -a $svc 2>&1 | tail -1) // $(infra/aws/compose.sh logs --no-color --tail=25 $svc 2>&1 | paste -sd ' ' - | tail -c 1800)"
+          done
+          echo "::error title=certs::$(ls -la infra/nginx/certs infra/aws/certbot/www/.well-known/acme-challenge 2>&1 | paste -sd ' ' -)"

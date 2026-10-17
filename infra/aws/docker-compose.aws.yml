@@ -1,0 +1,252 @@
+# PneumoVision on one AWS EC2 instance (m7i-flex.large: 2 vCPU, 7.6 GiB, no GPU).
+#
+# Standalone, not an overlay of docker-compose.yml + docker-compose.prod.yml:
+# compose merges overlays field by field (ports and volumes are appended,
+# commands and healthchecks replaced, environment maps merged), so the stack
+# that actually runs would be spread across three files. One file is what runs
+# on the server, all of it readable in one place, and the dev stack stays as
+# it is. Run it through the wrapper, which pins the project directory and the
+# .env file:
+#
+#   infra/aws/compose.sh up -d          (deploy.sh does build + up + checks)
+#
+# Memory: every container is capped; the caps add up to 6.3 GiB of the 7.6 GiB
+# (the host and Docker keep the rest, plus 4 GiB of swap). Only nginx
+# publishes ports. Everything restarts by itself when the instance starts.
+
+name: pneumovision
+
+x-hardening: &hardening
+  restart: always
+  security_opt:
+    - no-new-privileges:true
+  logging:
+    driver: json-file
+    options:
+      max-size: '10m'
+      max-file: '3'
+  networks: [pneumonet]
+
+services:
+  # ── MongoDB 7: single-node replica set, auth + keyfile ─────────────────────
+  mongo:
+    <<: *hardening
+    image: mongo:7
+    command:
+      - --replSet
+      - rs0
+      - --bind_ip_all
+      - --auth
+      - --keyFile
+      - /etc/mongo-keyfile
+      - --wiredTigerCacheSizeGB
+      - '0.25'
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:?run infra/aws/bootstrap.sh first}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?run infra/aws/bootstrap.sh first}
+    volumes:
+      - mongo-data:/data/db
+      # Written by bootstrap.sh: chmod 400, owned by the image's mongodb uid 999.
+      - ./infra/mongo/keyfile:/etc/mongo-keyfile:ro
+    # Initiates the replica set on a fresh volume, as the root user the image
+    # created on first start; healthy once this node is a writable primary.
+    # Before the user exists (first boot) the login fails and it simply retries.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          mongosh --quiet -u "$$MONGO_INITDB_ROOT_USERNAME" -p "$$MONGO_INITDB_ROOT_PASSWORD"
+          --authenticationDatabase admin --eval "
+          try { rs.status() } catch (e) {
+            rs.initiate({_id: 'rs0', members: [{_id: 0, host: 'mongo:27017'}]}) }
+          quit(db.hello().isWritablePrimary ? 0 : 1)"
+      interval: 10s
+      timeout: 15s
+      retries: 18
+      start_period: 30s
+    deploy:
+      resources:
+        limits: { memory: 1g }
+
+  # ── Redis 7 (configured for the full stack; the API does not queue yet) ────
+  redis:
+    <<: *hardening
+    image: redis:7-alpine
+    command:
+      - redis-server
+      - --appendonly
+      - 'yes'
+      - --requirepass
+      - ${REDIS_PASSWORD:?run infra/aws/bootstrap.sh first}
+      - --maxmemory
+      - 200mb
+      - --maxmemory-policy
+      - noeviction
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD-SHELL', 'redis-cli -a "$$REDIS_PASSWORD" --no-auth-warning ping | grep -q PONG']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits: { memory: 256m }
+
+  # No MinIO: its images are no longer published on Docker Hub (minio/minio and
+  # minio/mc answer 404 / pull access denied), and the API does not use S3 --
+  # X-rays are stored on the api-data volume. The S3_* settings below only
+  # satisfy the API's full-stack config validation.
+
+  # ── Inference (FastAPI + CPU torch). Never routed through nginx. ───────────
+  inference:
+    <<: *hardening
+    build:
+      context: .
+      dockerfile: services/inference/Dockerfile
+      args:
+        INSTALL_ML: 'true'
+    image: pneumovision-inference:aws
+    environment:
+      # fusion: the Round 3 MedPatch models (readers and mock also work).
+      INFERENCE_MODE: ${INFERENCE_MODE:-fusion}
+      MOCK_MODE: 'false'
+      TORCH_DEVICE: cpu
+      TORCH_NUM_THREADS: ${TORCH_NUM_THREADS:-2}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DEFAULT_THETA: '0.75'
+      INFERENCE_HMAC_SECRET: ${INFERENCE_HMAC_SECRET:?run infra/aws/bootstrap.sh first}
+      INFERENCE_HMAC_MAX_SKEW_SECONDS: '60'
+      MEDPATCH_ROOT: /app/medpatch
+      CHECKPOINT_DIR: /app/checkpoints
+      FUSION_DIR: /app/checkpoints/round3
+      NORMALIZER_DIR: /app/medpatch/normalizers
+    volumes:
+      # Weights live on the server's disk only (copy-checkpoints.md): never in
+      # git, never in the image, read-only here.
+      - ./checkpoints:/app/checkpoints:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/v1/health', timeout=4).status == 200 else 1)"
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      # Loading and warming the models on 2 vCPUs takes a few minutes.
+      start_period: 600s
+    deploy:
+      resources:
+        limits: { memory: 4g }
+
+  # ── API (Express) ──────────────────────────────────────────────────────────
+  api:
+    <<: *hardening
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    image: pneumovision-api:aws
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      inference:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      NODE_OPTIONS: --max-old-space-size=512
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      API_PORT: '4000'
+      DEMO_MODE: 'false'
+      WEB_ORIGIN: https://${PUBLIC_HOST:?run infra/aws/bootstrap.sh first}
+      ACCESS_TOKEN_TTL: 15m
+      REFRESH_TOKEN_TTL: 7d
+      JWT_PRIVATE_KEY_B64: ${JWT_PRIVATE_KEY_B64:?run infra/aws/bootstrap.sh first}
+      JWT_PUBLIC_KEY_B64: ${JWT_PUBLIC_KEY_B64:?run infra/aws/bootstrap.sh first}
+      FIELD_ENCRYPTION_KEY_HEX: ${FIELD_ENCRYPTION_KEY_HEX:?run infra/aws/bootstrap.sh first}
+      CSRF_SECRET: ${CSRF_SECRET:?run infra/aws/bootstrap.sh first}
+      MONGO_URI: mongodb://${MONGO_ROOT_USER}:${MONGO_ROOT_PASSWORD}@mongo:27017/pneumovision?replicaSet=rs0&authSource=admin&directConnection=true
+      MONGO_DB: pneumovision
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+      S3_ENDPOINT: http://unused.invalid:9000
+      S3_BUCKET: ${S3_BUCKET:-pneumovision-cxr}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+      S3_FORCE_PATH_STYLE: 'true'
+      INFERENCE_URL: http://inference:8000
+      INFERENCE_HMAC_SECRET: ${INFERENCE_HMAC_SECRET}
+      INFERENCE_TIMEOUT_MS: ${INFERENCE_TIMEOUT_MS:-180000}
+      # First start only: the synthetic demo stays and the bootstrap admin.
+      # No other account is created -- no clinician password is ever set here.
+      SEED_DEMO_DATA: ${SEED_DEMO_DATA:-true}
+      SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-admin@pneumovision.local}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:?run infra/aws/bootstrap.sh first}
+      SEED_CLINICIAN_PASSWORD: ''
+    volumes:
+      # Seeded and uploaded X-rays (DEMO_DATA_DIR=.demo-data under /repo).
+      - api-data:/repo/.demo-data
+    read_only: true
+    tmpfs:
+      - /tmp
+    deploy:
+      resources:
+        limits: { memory: 768m }
+
+  # ── Web SPA (static build) ─────────────────────────────────────────────────
+  web:
+    <<: *hardening
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    image: pneumovision-web:aws
+    deploy:
+      resources:
+        limits: { memory: 128m }
+
+  # ── Edge proxy: TLS, the only published ports ──────────────────────────────
+  nginx:
+    <<: *hardening
+    image: nginx:1.27-alpine
+    # Started, not healthy: nginx must answer the ACME challenge on port 80
+    # even while the API is still waiting for the models to load.
+    depends_on:
+      api:
+        condition: service_started
+      web:
+        condition: service_started
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./infra/nginx/proxy_common.conf:/etc/nginx/proxy_common.conf:ro
+      - ./infra/nginx/certs:/etc/nginx/certs:ro
+      - ./infra/aws/certbot/www:/var/www/certbot:ro
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          'wget -q -O /dev/null http://127.0.0.1/.well-known/acme-challenge/pv-health || exit 1',
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits: { memory: 128m }
+
+networks:
+  pneumonet:
+    driver: bridge
+
+volumes:
+  mongo-data:
+  redis-data:
+  api-data:

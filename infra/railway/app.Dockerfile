@@ -1,3 +1,4 @@
+# NO LONGER USED: the deployment is AWS EC2 (infra/aws/). Kept for history.
 # PneumoVision — Railway "app" service (web + API in one container).
 #
 # Build from the repo root:

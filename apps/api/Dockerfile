@@ -29,6 +29,10 @@ COPY --from=build --chown=node:node /repo/packages/shared/package.json ./package
 COPY --from=build --chown=node:node /repo/apps/api/dist ./apps/api/dist
 COPY --from=build --chown=node:node /repo/apps/api/package.json ./apps/api/package.json
 
+# Uploaded and seeded X-rays live here (DEMO_DATA_DIR). Created owned by node so
+# a named volume mounted on it is writable with a read-only root filesystem.
+RUN mkdir -p /repo/.demo-data && chown node:node /repo/.demo-data
+
 USER node
 EXPOSE 4000
 # Liveness only; the orchestrator uses /ready for traffic gating.

@@ -105,18 +105,22 @@ A dict with `epoch`, `state_dict`, `best_auroc`, `optimizer`, plus `weights`
 
 ### Model status — read before wiring real inference
 
-- **Round 1 single-modality readers are trained** (EHR by Caroll; RR and DN by
-  Farida). `INFERENCE_MODE=readers` runs them locally; the fusion stays
-  simulated and every result says which numbers are which (`result.sources`).
-  See [`services/inference/READERS.md`](services/inference/READERS.md) for the
-  checkpoint paths, test AUROCs and caveats. Checkpoints are gitignored and
-  live only on team machines / the shared drive.
-- **Trained weights live on the team Drive, not in this repo.** Rounds 1, 2
-  and 2b are finished on real data for both tasks (all readers, CXR included)
-  and recorded in the run manifest (`runs/manifest.csv` on Drive, schema in
-  `tools/pv/manifest.py`). Round 3 (MedPatch fusion, `c-msma`) has run for
-  mortality (`r3-fusion-001`); phenotyping is next. `checkpoints/` here stays
-  empty and gitignored. Railway runs `mock` (no torch in its image).
+- **Round 3 (MedPatch fusion, `c-msma`) is done for both tasks** on real
+  data: mortality `r3-fusion-001` (EHR-CXR-RR, test AUROC 0.865) and pneumonia
+  `r3-fusion-002` (EHR-CXR-RR-DN, phenotype 21, test AUROC 0.900), both with
+  head `late` chosen on validation. The inference service **serves them**:
+  `INFERENCE_MODE=fusion` (`services/inference/app/fusion.py`) rebuilds each
+  run from its `run.json`, refuses a sha256 / BERT / θ mismatch, and reports
+  an uncalibrated probability. `readers` (Round 1 + 2b readers, plain average)
+  and `mock` still work. See `docs/REAL_INFERENCE_PLAN.md` and
+  [`services/inference/READERS.md`](services/inference/READERS.md).
+- **Deployment is AWS EC2** (`infra/aws/`, fusion mode on CPU). Railway is no
+  longer used (`infra/railway/` is kept for history only).
+- **Trained weights live on the team Drive, not in this repo.** Rounds 1, 2,
+  2b and 3 are recorded in the run manifest (`runs/manifest.csv` on Drive,
+  schema in `tools/pv/manifest.py`). `checkpoints/` here stays empty and
+  gitignored; on the server the Round 3 files are copied to
+  `checkpoints/round3/{mortality,phenotyping}/` (`infra/aws/copy-checkpoints.md`).
 - The `--cxr_encoder` / DenseNet defect is **fixed** (defect 6 in
   `docs/cxr_progress_notes.md`); `CXR_encoder` builds the ViT.
 - **The CXR projection defect is fixed.** `CMSMAFusion` used to read
@@ -152,6 +156,8 @@ apps/web/            React 18 + Vite SPA
 packages/shared/     zod schemas, types and constants shared by api + web
 infra/nginx/         edge reverse proxy (TLS) and SPA static config
 infra/scripts/       gen-certs.sh, gen-ehr-constants.mjs
+infra/aws/           EC2 deployment: compose, bootstrap/deploy/cert/backup scripts, README
+infra/railway/       no longer used (kept for history)
 checkpoints/ data/ results/ runs/   gitignored
 ```
 

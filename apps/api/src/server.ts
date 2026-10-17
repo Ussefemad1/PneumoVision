@@ -103,6 +103,20 @@ async function main(): Promise<void> {
     if (env.DEMO_MODE) logger.info(`demo ready — open ${env.WEB_ORIGIN}`);
   });
 
+  // Full stack: seed after the server is up. The admin exists within seconds;
+  // the backfilled scorings (one inference call each, seconds apiece on CPU)
+  // follow in the background on first boot only, so health checks never wait.
+  if (!env.DEMO_MODE && env.SEED_DEMO_DATA) {
+    void (async () => {
+      try {
+        await seedDemoData(env, logger);
+        await backfillPredictions(predictions, logger);
+      } catch (err) {
+        logger.error({ err }, 'demo seed failed');
+      }
+    })();
+  }
+
   let shuttingDown = false;
   const shutdown = (signal: string) => {
     if (shuttingDown) return;
