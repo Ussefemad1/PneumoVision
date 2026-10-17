@@ -99,7 +99,10 @@ def main() -> int:
         return 2
     here = Path(__file__).resolve().parents[1]
     sys.path.insert(0, str(here))
-    medpatch = Path(__import__("os").environ.get("MEDPATCH_ROOT", here.parents[1] / "medpatch"))
+    import os
+
+    env_root = os.environ.get("MEDPATCH_ROOT")
+    medpatch = Path(env_root) if env_root else here.parent.parent / "medpatch"
     sys.path.insert(0, str(medpatch))
     out = Path(sys.argv[1])
     for task in ("mortality", "pneumonia"):
