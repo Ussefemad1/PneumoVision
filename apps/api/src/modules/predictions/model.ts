@@ -99,6 +99,24 @@ const sourcesSchema = new Schema(
   { _id: false },
 );
 
+const HEADS = ['high', 'low', 'late', 'combined', 'less_combined'] as const;
+
+/** The trained MedPatch fusion model behind a result (fusion mode only). */
+const fusionModelSchema = new Schema(
+  {
+    runId: { type: String, required: true },
+    sha256: { type: String, required: true, match: /^[0-9a-f]{12}$/ },
+    head: { type: String, required: true, enum: HEADS },
+    heads: Object.fromEntries(HEADS.map((h) => [h, { ...probability, required: true }])),
+    bertModelName: { type: String, required: true },
+    theta: { ...probability, required: true },
+    modalities: { type: [String], default: [] },
+    calibrated: { type: Boolean, required: true },
+    notes: { type: [String], default: [] },
+  },
+  { _id: false },
+);
+
 /**
  * The complete MedPatch output: every intermediate the paper defines, not just
  * the final probability. The report page is built directly from this.
@@ -145,6 +163,8 @@ const resultSchema = new Schema(
     received: { type: receivedSchema, default: null },
     // Null only on predictions stored before the service reported it.
     sources: { type: sourcesSchema, default: null },
+    // Fusion mode: run id, checkpoint hash, chosen head and every head.
+    fusionModel: { type: fusionModelSchema, default: null },
   },
   { _id: false },
 );

@@ -171,7 +171,10 @@ export type ReceivedInputs = z.infer<typeof receivedInputs>;
 export const modalitySource = z.object({
   kind: z.enum(['trained', 'mock']),
   /** Reader name, when trained. */
-  model: z.string().nullish().transform((v) => v ?? null),
+  model: z
+    .string()
+    .nullish()
+    .transform((v) => v ?? null),
   /** The reader's held-out test AUROC for this task, when trained. */
   testAuroc: nullableNumber,
   /** Token confidences from a trained confidence head; `calibrated` after temperature scaling. */
@@ -209,10 +212,32 @@ export const excludedInput = z.object({
 });
 export type ExcludedInput = z.infer<typeof excludedInput>;
 
+/** Which trained MedPatch fusion model produced a result (fusion mode). */
+export const fusionModelInfo = z.object({
+  runId: z.string(),
+  /** First 12 hex characters of the checkpoint's sha256. */
+  sha256: z.string(),
+  /** The head chosen on validation; its probability is the headline. */
+  head: z.enum(['high', 'low', 'late', 'combined', 'less_combined']),
+  /** Every head's probability for this task's output. */
+  heads: z.record(z.string(), probability),
+  bertModelName: z.string(),
+  theta: probability,
+  modalities: z.array(z.string()),
+  /** False: a raw sigmoid. Round 2b calibrated the confidence heads only. */
+  calibrated: z.boolean(),
+  /** Plain-language caveats for this request. */
+  notes: z.array(z.string()),
+});
+export type FusionModelInfo = z.infer<typeof fusionModelInfo>;
+
 // ── The full result ──────────────────────────────────────────────────────────
 
 export const predictionResult = z.object({
-  /** The final calibrated ŷ_late shown as the headline number. */
+  /**
+   * The headline number: the fused prediction. In fusion mode, the head
+   * chosen on validation, uncalibrated (see `fusionModel`).
+   */
   probability,
   unimodal: unimodalScores,
   joint: jointScores,
@@ -223,6 +248,8 @@ export const predictionResult = z.object({
   received: receivedInputs.nullish().transform((v) => v ?? null),
   /** Null only on predictions stored before the service reported it. */
   sources: resultSources.nullish().transform((v) => v ?? null),
+  /** Set in fusion mode (the Round 3 models); null otherwise. */
+  fusionModel: fusionModelInfo.nullish().transform((v) => v ?? null),
 });
 export type PredictionResult = z.infer<typeof predictionResult>;
 

@@ -1,4 +1,10 @@
-import type { Modality, ModalitySource, Prediction, StayDetail } from '@pneumovision/shared';
+import type {
+  FusionModelInfo,
+  Modality,
+  ModalitySource,
+  Prediction,
+  StayDetail,
+} from '@pneumovision/shared';
 import { TASK_SPEC } from '@pneumovision/shared';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router-dom';
@@ -77,6 +83,9 @@ export function PredictionReportPage() {
   // Token confidences can be real (trained confidence heads) while the
   // high/low groups and missingness still need the fusion model.
   const realConfidence = taskModalities.some((key) => sources?.[key]?.confidence);
+  // Fusion mode: the trained MedPatch model (Round 3). Its token-confidence
+  // maps on this page are still simulated (decision 8, REAL_INFERENCE_PLAN).
+  const fusionModel = result.fusionModel;
 
   return (
     <div className="space-y-4">
@@ -118,7 +127,6 @@ export function PredictionReportPage() {
         </div>
       )}
 
-
       {/* F11: evidence left → decision right */}
       <div className="grid gap-4 xl:grid-cols-[1.1fr_1fr_0.9fr]">
         {/* F1 */}
@@ -138,7 +146,9 @@ export function PredictionReportPage() {
                 >
                   <div className="min-w-0 flex-1">
                     <div className="text-sm font-medium text-ink">{MODALITY_LABELS[key]}</div>
-                    {present && sources?.[key] && <SourceChip source={sources[key]} />}
+                    {present && sources?.[key] && (
+                      <SourceChip source={sources[key]} inFusion={fusionModel !== null} />
+                    )}
                   </div>
                   {present && typeof value === 'number' ? (
                     <div className="text-right">
@@ -187,8 +197,9 @@ export function PredictionReportPage() {
           </div>
 
           <div className="mt-4">
-            <div className="mb-2 text-[11px] uppercase tracking-wide text-ink-muted">
+            <div className="mb-2 flex items-center justify-between text-[11px] uppercase tracking-wide text-ink-muted">
               Above threshold
+              {fusionModel && !realConfidence && <SimulatedChip />}
             </div>
             <ul className="space-y-1.5">
               {taskModalities.map((key) => {
@@ -236,17 +247,22 @@ export function PredictionReportPage() {
 
         {/* F6 + fused decision */}
         <div className="space-y-4">
-          <Card
-            title="Contribution"
-            actions={simulatedTag}
-          >
+          <Card title="Contribution" actions={simulatedTag}>
             <AlphaContributionChart alphas={result.alphas} />
           </Card>
 
           <Card
             className="border-2"
             title={fusionKind === 'average' ? 'Combined score' : 'Fused decision'}
-            actions={fusionKind === 'average' ? <AverageChip /> : simulatedTag}
+            actions={
+              fusionKind === 'average' ? (
+                <AverageChip />
+              ) : fusionModel ? (
+                <FusionChip runId={fusionModel.runId} />
+              ) : (
+                simulatedTag
+              )
+            }
           >
             <div className="flex flex-col items-center gap-3">
               <RiskGauge
@@ -257,7 +273,9 @@ export function PredictionReportPage() {
                     ? 'Average'
                     : fusionKind === 'mock'
                       ? 'Simulated'
-                      : 'Calibrated'
+                      : fusionModel && !fusionModel.calibrated
+                        ? 'Uncalibrated probability'
+                        : 'Calibrated'
                 }
               />
               {fusionKind === 'average' ? (
@@ -267,9 +285,9 @@ export function PredictionReportPage() {
                     {averaged.length} = {percent(result.probability)}
                   </p>
                 </div>
-              ) : (
-                null
-              )}
+              ) : fusionModel ? (
+                <FusionDetails model={fusionModel} />
+              ) : null}
             </div>
           </Card>
         </div>
@@ -283,7 +301,18 @@ export function PredictionReportPage() {
 }
 
 /** Whether one modality's score came from a trained reader or is simulated. */
-function SourceChip({ source }: { source: ModalitySource }) {
+function SourceChip({ source, inFusion }: { source: ModalitySource; inFusion: boolean }) {
+  if (source.kind === 'trained' && inFusion) {
+    return (
+      <span
+        title={source.model ?? undefined}
+        className="mt-1 inline-flex items-center gap-1 rounded-full bg-[var(--series-mortality)]/12 px-2 py-0.5 text-[10px] font-semibold text-[var(--series-mortality)]"
+      >
+        <span aria-hidden="true">✓</span> Trained
+        <span className="font-normal">· reader inside the fusion</span>
+      </span>
+    );
+  }
   if (source.kind === 'trained') {
     return (
       <span
@@ -292,10 +321,7 @@ function SourceChip({ source }: { source: ModalitySource }) {
       >
         <span aria-hidden="true">✓</span> Trained
         <span className="tnum font-normal">
-          ·{' '}
-          {source.testAuroc !== null
-            ? `AUROC ${source.testAuroc.toFixed(3)}`
-            : 'AUROC pending'}
+          · {source.testAuroc !== null ? `AUROC ${source.testAuroc.toFixed(3)}` : 'AUROC pending'}
         </span>
       </span>
     );
@@ -318,6 +344,67 @@ function ConfidenceTag({ level }: { level: 'calibrated' | 'uncalibrated' | null 
       <span aria-hidden="true">✓</span>
       {level === 'calibrated' ? 'Calibrated' : 'Uncalibrated'}
     </span>
+  );
+}
+
+function FusionChip({ runId }: { runId: string }) {
+  return (
+    <span
+      title="The trained MedPatch confidence-guided fusion (c-msma), Round 3"
+      className="inline-flex items-center gap-1 rounded-full bg-[var(--series-mortality)]/12 px-2 py-0.5 text-[10px] font-semibold text-[var(--series-mortality)]"
+    >
+      <span aria-hidden="true">✓</span> MedPatch fusion (Round 3, run {runId})
+    </span>
+  );
+}
+
+const HEAD_LABELS: Record<string, string> = {
+  high: 'High-confidence head',
+  low: 'Low-confidence head',
+  late: 'Late fusion',
+  combined: 'Mean of high, low and late',
+  less_combined: 'Mean of high and late',
+};
+
+/** Every head, the run and its caveats, folded away by default. */
+function FusionDetails({ model }: { model: FusionModelInfo }) {
+  return (
+    <details className="w-full text-xs text-ink-secondary">
+      <summary className="cursor-pointer select-none text-center text-ink">Model details</summary>
+      <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+        <dt className="text-ink-muted">Run</dt>
+        <dd className="tnum">
+          {model.runId} · sha256 {model.sha256}
+        </dd>
+        <dt className="text-ink-muted">Text encoder</dt>
+        <dd>{model.bertModelName}</dd>
+        <dt className="text-ink-muted">θ</dt>
+        <dd className="tnum">{model.theta}</dd>
+        <dt className="text-ink-muted">Modalities</dt>
+        <dd>{model.modalities.join(', ')}</dd>
+      </dl>
+      <table className="mt-2 w-full">
+        <caption className="sr-only">Probability from each fusion head</caption>
+        <tbody>
+          {Object.entries(model.heads).map(([head, p]) => (
+            <tr key={head} className={cn(head === model.head && 'font-semibold text-ink')}>
+              <th scope="row" className="py-0.5 text-left font-normal">
+                {HEAD_LABELS[head] ?? head}
+                {head === model.head && ' (chosen on validation)'}
+              </th>
+              <td className="tnum py-0.5 text-right">{percent(p)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {model.notes.length > 0 && (
+        <ul className="mt-2 list-disc space-y-1 pl-4">
+          {model.notes.map((note) => (
+            <li key={note}>{note}</li>
+          ))}
+        </ul>
+      )}
+    </details>
   );
 }
 
