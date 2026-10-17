@@ -105,7 +105,7 @@ put MONGO_ROOT_PASSWORD "$(hex 24)"
 put S3_ACCESS_KEY "pv$(hex 8)"
 put S3_SECRET_KEY "$(hex 24)"
 put S3_BUCKET pneumovision-cxr
-put INFERENCE_MODE readers
+put INFERENCE_MODE fusion
 put TORCH_NUM_THREADS 2
 put INFERENCE_TIMEOUT_MS 180000
 put SEED_DEMO_DATA true

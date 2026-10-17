@@ -237,10 +237,32 @@ class Sources(BaseModel):
     dn: ModalitySource | None = None
 
 
+class FusionModelInfo(BaseModel):
+    """Which trained MedPatch fusion model produced the result (fusion mode)."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    run_id: str = Field(alias="runId")
+    sha256: str = Field(description="First 12 hex characters of the checkpoint's sha256")
+    # The head chosen on validation (best_head); its probability is the result.
+    head: Literal["high", "low", "late", "combined", "less_combined"]
+    # Every head's probability for this task's output, for "model details".
+    heads: dict[str, Prob]
+    bert_model_name: str = Field(alias="bertModelName")
+    theta: Prob
+    modalities: list[str]
+    # Raw sigmoid of a logit: Round 2b calibrated the confidence heads, not
+    # the fused prediction.
+    calibrated: bool = False
+    # Plain-language caveats for this request (padding, ignored notes, ...).
+    notes: list[str] = Field(default_factory=list)
+
+
 class PredictionResult(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    # The final calibrated ŷ_late.
+    # The fused prediction (ŷ_late, or the head chosen on validation in
+    # fusion mode). Uncalibrated in fusion mode (fusion_model.calibrated).
     probability: Prob
     unimodal: UnimodalScores
     joint: JointScores
@@ -249,6 +271,8 @@ class PredictionResult(BaseModel):
     confidence: ConfidenceMaps
     received: Received
     sources: Sources
+    # Set in fusion mode only.
+    fusion_model: FusionModelInfo | None = Field(default=None, alias="fusionModel")
 
 
 class PredictResponse(BaseModel):
@@ -259,6 +283,17 @@ class PredictResponse(BaseModel):
     latency_ms: int = Field(alias="latencyMs")
     # True when the numbers are synthetic rather than from trained weights.
     mock: bool
+
+
+class FusionModelSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    run_id: str = Field(alias="runId")
+    sha256: str
+    head: str
+    bert_model_name: str = Field(alias="bertModelName")
+    theta: Prob
+    modalities: list[str]
 
 
 class ModelInfo(BaseModel):
@@ -275,6 +310,8 @@ class ModelInfo(BaseModel):
     cxr_patch_grid: int = Field(alias="cxrPatchGrid")
     cxr_image_size: int = Field(alias="cxrImageSize")
     text_model: str = Field(alias="textModel")
+    # Fusion mode: the loaded model per task.
+    fusion: dict[str, FusionModelSummary] | None = None
 
 
 class HealthResponse(BaseModel):
@@ -288,3 +325,5 @@ class HealthResponse(BaseModel):
     warmed_up: bool = Field(alias="warmedUp")
     # Why the service is degraded: the load error (no patient data).
     reason: str | None = None
+    # Resident memory of the service process, in MiB (Linux; None elsewhere).
+    rss_mb: float | None = Field(default=None, alias="rssMb")

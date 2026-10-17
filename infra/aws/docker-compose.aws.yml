@@ -144,8 +144,8 @@ services:
         INSTALL_ML: 'true'
     image: pneumovision-inference:aws
     environment:
-      # readers: the trained single-modality readers (Round 1 + 2b).
-      INFERENCE_MODE: ${INFERENCE_MODE:-readers}
+      # fusion: the Round 3 MedPatch models (readers and mock also work).
+      INFERENCE_MODE: ${INFERENCE_MODE:-fusion}
       MOCK_MODE: 'false'
       TORCH_DEVICE: cpu
       TORCH_NUM_THREADS: ${TORCH_NUM_THREADS:-2}
@@ -155,6 +155,7 @@ services:
       INFERENCE_HMAC_MAX_SKEW_SECONDS: '60'
       MEDPATCH_ROOT: /app/medpatch
       CHECKPOINT_DIR: /app/checkpoints
+      FUSION_DIR: /app/checkpoints/round3
       NORMALIZER_DIR: /app/medpatch/normalizers
     volumes:
       # Weights live on the server's disk only (copy-checkpoints.md): never in

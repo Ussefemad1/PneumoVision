@@ -26,7 +26,7 @@ fail() { printf '\n\033[1;31mdeploy FAILED:\033[0m %s\n' "$*" >&2; exit 1; }
 [[ -f .env ]] || fail "no .env -- run infra/aws/bootstrap.sh first"
 env_value() { grep "^$1=" .env | cut -d= -f2- || true; }
 MODE="$(env_value INFERENCE_MODE)"
-MODE="${MODE:-readers}"
+MODE="${MODE:-fusion}"
 HOST="$(env_value PUBLIC_HOST)"
 
 if [[ "${1:-}" != "--no-pull" ]]; then
