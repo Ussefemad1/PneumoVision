@@ -78,9 +78,10 @@ step "Build images (on this server)"
 
 state_of() {
   local id
-  id="$("$COMPOSE" ps -q "$1" 2>/dev/null || true)"
+  id="$("$COMPOSE" ps -aq "$1" 2>/dev/null | head -1 || true)"
   [[ -n "$id" ]] || { echo absent; return; }
-  docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$id"
+  # restarting / exited / dead win over a stale health status.
+  docker inspect -f '{{if ne .State.Status "running"}}{{.State.Status}}{{else if .State.Health}}{{.State.Health.Status}}{{else}}healthy{{end}}' "$id"
 }
 inference_health() {
   "$COMPOSE" exec -T inference python -c "import urllib.request, urllib.error
@@ -88,27 +89,48 @@ try: print(urllib.request.urlopen('http://127.0.0.1:8000/v1/health', timeout=4).
 except urllib.error.HTTPError as e: print(e.read().decode())
 except Exception as e: print('not answering yet:', e)" 2>&1 || true
 }
-# Wait until every named service is healthy; fail fast if inference reports
-# itself degraded (a missing or mismatched checkpoint), instead of waiting out
-# its 10-minute start period.
+show_logs() {
+  echo "---- $1: $("$COMPOSE" ps -a "$1" 2>&1 | tail -1)" >&2
+  "$COMPOSE" logs --no-color --tail=50 "$1" >&2 || true
+}
+# Wait until every named service is healthy. Fail fast:
+#   - inference reporting itself degraded (missing / mismatched checkpoint);
+#   - any other service restarting, exited or unhealthy for 3 minutes
+#     (inference alone may take its 10-minute start period to load models).
+# On failure the culprit's last 50 log lines are printed.
 wait_healthy() {
   local deadline=$((SECONDS + 1200)) pending s state h
+  declare -A bad_since=()
   while :; do
     pending=()
     for s in "$@"; do
       state="$(state_of "$s")"
-      [[ "$state" == "healthy" ]] || pending+=("$s:$state")
+      if [[ "$state" == "healthy" ]]; then unset "bad_since[$s]"; continue; fi
+      pending+=("$s:$state")
+      if [[ "$s" != inference && "$state" =~ ^(restarting|exited|dead|unhealthy)$ ]]; then
+        : "${bad_since[$s]:=$SECONDS}"
+        if ((SECONDS - bad_since[$s] >= 180)); then
+          show_logs "$s"
+          fail "$s has been $state for 3 minutes (its last 50 log lines are above)"
+        fi
+      elif [[ "$s" == inference && "$state" =~ ^(restarting|exited|dead)$ ]]; then
+        show_logs inference
+        fail "the inference container is $state (its last 50 log lines are above)"
+      fi
     done
     ((${#pending[@]} == 0)) && return 0
     if [[ " $* " == *" inference "* && " ${pending[*]} " == *" inference:"* ]]; then
       h="$(inference_health)"
-      [[ "$h" != *'"status":"degraded"'* ]] \
-        || fail "the inference service is degraded: $h
-(logs: infra/aws/compose.sh logs --tail=50 inference)"
+      if [[ "$h" == *'"status":"degraded"'* ]]; then
+        show_logs inference
+        fail "the inference service is degraded: $h"
+      fi
     fi
-    ((SECONDS < deadline)) || fail "not healthy after 20 minutes: ${pending[*]}
-(see infra/aws/compose.sh ps and infra/aws/compose.sh logs --tail=50 <service>)"
-    printf '  waiting: %s\n' "${pending[*]}"
+    if ((SECONDS >= deadline)); then
+      for s in "${pending[@]}"; do show_logs "${s%%:*}"; done
+      fail "not healthy after 20 minutes: ${pending[*]}"
+    fi
+    echo "  waiting: ${pending[*]}"
     sleep 15
   done
 }
