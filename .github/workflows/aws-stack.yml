@@ -207,4 +207,9 @@ jobs:
 
       - name: Logs on failure
         if: failure()
-        run: infra/aws/compose.sh logs --tail=80 || true
+        run: |
+          infra/aws/compose.sh logs --tail=80 || true
+          for svc in nginx api web; do
+            echo "::error title=logs $svc::$(infra/aws/compose.sh ps -a $svc 2>&1 | tail -1) // $(infra/aws/compose.sh logs --no-color --tail=25 $svc 2>&1 | paste -sd ' ' - | tail -c 1800)"
+          done
+          echo "::error title=certs::$(ls -la infra/nginx/certs infra/aws/certbot/www/.well-known/acme-challenge 2>&1 | paste -sd ' ' -)"
