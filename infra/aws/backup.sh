@@ -11,14 +11,22 @@
 # the account is closed then (not billed), and the instance and its disk go
 # with it.
 #
-# Restore (see README.md, "Backup and restore"):
-#   infra/aws/compose.sh exec -T mongo sh -c 'mongorestore --drop --archive --gzip \
-#     -u "$MONGO_INITDB_ROOT_USERNAME" -p "$MONGO_INITDB_ROOT_PASSWORD" \
-#     --authenticationDatabase admin' < ~/backups/pneumovision-<time>.mongo.gz
+# Restore a database backup (replaces the current data):
+#   ~/PneumoVision/infra/aws/backup.sh restore ~/backups/pneumovision-<time>.mongo.gz
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 COMPOSE="$REPO/infra/aws/compose.sh"
+
+if [[ "${1:-}" == "restore" ]]; then
+  file="${2:?usage: backup.sh restore <file>.mongo.gz}"
+  [[ -s "$file" ]] || { echo "backup: no such backup: $file" >&2; exit 1; }
+  "$COMPOSE" exec -T mongo sh -c 'mongorestore --quiet --drop --archive --gzip \
+    -u "$MONGO_INITDB_ROOT_USERNAME" -p "$MONGO_INITDB_ROOT_PASSWORD" \
+    --authenticationDatabase admin' <"$file"
+  echo "restored $file"
+  exit 0
+fi
 OUT="$HOME/backups"
 STAMP="$(date -u +%Y%m%d-%H%M%SZ)"
 mkdir -p "$OUT"

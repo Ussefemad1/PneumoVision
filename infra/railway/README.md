@@ -1,3 +1,6 @@
+> **No longer used.** PneumoVision is deployed on AWS EC2 now: see
+> [`infra/aws/README.md`](../aws/README.md). This folder is kept for history.
+
 # Railway deployment
 
 Two services, both built from this repo.

@@ -35,41 +35,9 @@ REAL_FUSION_DIR = Path(os.environ.get("CHECKPOINT_DIR", REPO / "checkpoints")) /
 have_ml = all(importlib.util.find_spec(m) for m in ("torch", "transformers", "timm"))
 pytestmark = pytest.mark.skipif(not have_ml, reason="needs torch, transformers and timm")
 
-BERT = "dmis-lab/biobert-v1.1"
-WORDS = "synthetic warm up report summary right lower lobe consolidation clear lungs pneumonia treated with antibiotics".split()
+from scripts.make_fake_runs import ARGV, BERT, FOLDER, RUN_ID, build, write_run  # noqa: E402
 
-ARGV = {
-    "mortality": [
-        "--mode", "train", "--batch_size", "16", "--lr", "0.001", "--num_classes", "1",
-        "--modalities", "EHR-CXR-RR", "--ehr_encoder", "lstm",
-        "--cxr_encoder", "vit_small_patch16_384", "--text_encoder", "biobert",
-        "--classifier", "mlp", "--loss", "bce", "--task", "in-hospital-mortality",
-        "--labels_set", "mortality", "--output_dim", "512", "--output_dim_cxr", "512",
-        "--output_dim_rr", "512", "--fusion_type", "c-msma", "--data_pairs", "partial",
-        "--ehr_confidence_threshold", "0.75", "--cxr_confidence_threshold", "0.75",
-        "--rr_confidence_threshold", "0.75", "--bert_model_name", BERT,
-        "--load_ehr", "/content/drive/r2b-ehr.pth.tar", "--load_cxr", "/content/drive/r2b-cxr.pth.tar",
-        "--load_rr", "/content/drive/r2b-rr.pth.tar", "--ehr_data_dir", "/content/ehr",
-        "--cxr_data_dir", "/content/cxr", "--notes_data_dir", "/content/notes",
-        "--save_dir", "/content/drive/r3/r3-fusion-901", "--resume", "--epochs", "100",
-    ],
-    "pneumonia": [
-        "--mode", "train", "--batch_size", "16", "--lr", "0.001", "--num_classes", "25",
-        "--modalities", "EHR-CXR-RR-DN", "--ehr_encoder", "lstm",
-        "--cxr_encoder", "vit_small_patch16_384", "--text_encoder", "biobert",
-        "--classifier", "mlp", "--loss", "bce", "--task", "phenotyping", "--labels_set", "pheno",
-        "--output_dim", "512", "--output_dim_cxr", "512", "--output_dim_rr", "512",
-        "--output_dim_dn", "512", "--fusion_type", "c-msma", "--data_pairs", "partial",
-        "--ehr_confidence_threshold", "0.75", "--cxr_confidence_threshold", "0.75",
-        "--rr_confidence_threshold", "0.75", "--dn_confidence_threshold", "0.75",
-        "--bert_model_name", BERT,
-        "--load_ehr", "/content/drive/a.pth.tar", "--load_cxr", "/content/drive/b.pth.tar",
-        "--load_rr", "/content/drive/c.pth.tar", "--load_dn", "/content/drive/d.pth.tar",
-        "--save_dir", "/content/drive/r3/r3-fusion-902", "--resume", "--epochs", "100",
-    ],
-}  # fmt: skip
-FOLDER = {"mortality": "mortality", "pneumonia": "phenotyping"}
-RUN_ID = {"mortality": "r3-fusion-901", "pneumonia": "r3-fusion-902"}
+WORDS = "synthetic warm up report summary right lower lobe consolidation clear lungs pneumonia treated with antibiotics".split()
 
 
 def _install_offline_stubs(mp: pytest.MonkeyPatch, vocab_file: Path) -> None:
@@ -99,31 +67,6 @@ def _install_offline_stubs(mp: pytest.MonkeyPatch, vocab_file: Path) -> None:
     mp.setattr(timm, "create_model", create_model)
 
 
-def _build_reference(task: str):
-    """A CMSMAFusion built from the fake run's arguments, as MSMA_Trainer does."""
-    import torch
-    from arguments import args_parser
-    from models.cxr_models import CXR_encoder
-    from models.ehr_models import EHR_encoder
-    from models.fusion import Fusion
-    from models.text_models import Text_encoder
-
-    from app.fusion import clean_argv
-
-    args = args_parser().parse_args(clean_argv(ARGV[task]))
-    torch.manual_seed(7 if task == "mortality" else 11)
-    model = Fusion(
-        args, EHR_encoder(args), CXR_encoder(args), Text_encoder(args, "cpu")
-    ).eval()
-    with torch.no_grad():
-        for name, p in model.named_parameters():
-            if name.endswith("_temperature"):
-                p.uniform_(0.5, 1.5)  # learned per-position temperatures
-            elif name.endswith("weights"):
-                p.normal_(0.0, 1.0)  # late-fusion α logits
-    return args, model
-
-
 @pytest.fixture(scope="module")
 def fake_runs(tmp_path_factory):
     """FUSION_DIR with one fake Round 3 run per task, the stubs active, and
@@ -137,24 +80,10 @@ def fake_runs(tmp_path_factory):
     mp = pytest.MonkeyPatch()
     _install_offline_stubs(mp, vocab)
 
-    from app.fusion import sha256_file
-
     references = {}
     for task in ("mortality", "pneumonia"):
-        args, model = _build_reference(task)
-        folder = root / FOLDER[task]
-        folder.mkdir()
-        ckpt = folder / f"best_checkpoint_0.001_{args.task}_c-msma_{args.modalities}_partial.pth.tar"
-        torch.save({"epoch": 3, "state_dict": model.state_dict(), "best_head": "late"}, ckpt)
-        run = {
-            "id": RUN_ID[task],
-            "stage": "r3",
-            "fusion_type": "c-msma",
-            "bert_model_name": BERT,
-            "argv": ARGV[task],
-            "manifest_row": {"id": RUN_ID[task], "sha256": sha256_file(ckpt), "bert_model_name": BERT},
-        }
-        (folder / "run.json").write_text(json.dumps(run), encoding="utf-8")
+        args, model = build(task)
+        write_run(task, args, model, root)
         references[task] = (args, model)
     yield root, references
     mp.undo()

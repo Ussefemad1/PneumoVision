@@ -1,11 +1,35 @@
 # Plan: serving the real Round 3 checkpoints (replacing MOCK_MODE)
 
-Status: **plan only, nothing built.** The service (`services/inference`) runs in
-MOCK_MODE today, and `MOCK_MODE=false` raises at startup by design. This page
-lists what it needs to serve:
+Status: **built** (2026-10-17). `INFERENCE_MODE=fusion` serves both Round 3
+runs (`services/inference/app/fusion.py`, tests in
+`services/inference/tests/test_fusion.py`), and is the default on the AWS EC2
+deployment (`infra/aws/`):
 
-- mortality: `r3-fusion-001`, available now;
-- phenotyping / pneumonia: the next `r3` run.
+- mortality: `r3-fusion-001` (EHR-CXR-RR, head `late`);
+- pneumonia: `r3-fusion-002` (EHR-CXR-RR-DN, phenotype 21, head `late`).
+
+The open questions at the end were decided as follows:
+
+| #   | Decision                                                                                                                                                 |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Checkpoints on the server's disk in `checkpoints/round3/{mortality,phenotyping}/` (checkpoint + `run.json`), mounted read-only; never in git or an image |
+| 2   | EC2 `m7i-flex.large`: 2 vCPU, 7.6 GiB, CPU only; 1–6 s per request is acceptable (`INFERENCE_TIMEOUT_MS` 180 s)                                          |
+| 3   | BioBERT and timm caches baked into the image, `HF_HUB_OFFLINE=1` at runtime                                                                              |
+| 4   | Radiology reports joined with a space, chronological (`authoredAt`); progress / nursing notes fed to no reader, and the report says so                   |
+| 5   | Mortality: the first 48 h. Pneumonia: whatever the site sends; the report states phenotyping was trained on the whole stay, padded to 2,646 rows         |
+| 6   | The two task models stay separate (no reader sharing)                                                                                                    |
+| 7   | `best_head` (`late`) is the headline; the other heads are in a collapsible "Model details"                                                               |
+| 8   | Explainability maps left as before, labelled simulated                                                                                                   |
+| 9   | Missing modalities as in training: `""` note, all-zero image tensor                                                                                      |
+| 10  | Raw sigmoid, labelled "Uncalibrated probability"                                                                                                         |
+
+Measured on a laptop CPU with 2 torch threads (full-size models, random fusion
+weights): both models loaded ≈ 1.5 GiB RSS (≈ 2.0 GiB peak with a ~6,000-token
+discharge note); p50 latency 2.4 s (mortality) and 4.2 s (pneumonia); 23 s for
+that long note (12 BERT chunks). The service answers CMSMAFusion's second,
+identical pass through each frozen reader from the first, which halves these.
+
+The rest of this page is the original plan, kept as the design record.
 
 Facts below are from `medpatch/`, `tools/pv/round3.py` and the run folders.
 

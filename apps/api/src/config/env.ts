@@ -76,7 +76,8 @@ const baseSchema = z.object({
    *
    * Unset in local development and in the Docker Compose stack, where Nginx
    * serves the static build and proxies the API. Set in single-service
-   * deployments (Railway), where one container has to answer both.
+   * deployments (formerly Railway, no longer used), where one container has to
+   * answer both.
    */
   WEB_DIST_DIR: z.string().optional(),
 
