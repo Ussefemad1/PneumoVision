@@ -2,7 +2,7 @@
 
 One `m7i-flex.large` instance in **eu-north-1** (2 vCPU, 7.6 GiB RAM, no GPU,
 30 GiB gp3, 4 GiB swap) runs the whole stack with Docker Compose: nginx (TLS),
-the web app, the API, MongoDB, Redis, MinIO, and the inference service serving
+the web app, the API, MongoDB, Redis, and the inference service serving
 the **Round 3 MedPatch fusion** models on CPU (`INFERENCE_MODE=fusion`).
 
 - **Address.** No domain is needed. The site is at
@@ -97,7 +97,8 @@ openssl:
 - the JWT Ed25519 keypair;
 - the field-encryption key;
 - the CSRF and HMAC secrets;
-- the Mongo, Redis and MinIO passwords;
+- the Mongo and Redis passwords (and S3 keys, which only satisfy the API's
+  config check: there is no MinIO, see below);
 - the admin password.
 
 ## 3. Copy the checkpoints (first time only)
@@ -258,14 +259,15 @@ group is the firewall.
 | `backup.sh`              | `mongodump` plus the uploaded X-rays, to `~/backups`.                                                       |
 | `copy-checkpoints.md`    | Which weights go where, with sizes and sha256.                                                              |
 
-Memory caps (sum 6.8 GiB):
+Memory caps (sum 6.3 GiB). There is no MinIO: its images are no longer
+published on Docker Hub, and the API keeps X-rays on the `api-data` volume, not
+in S3.
 
 | Service     | Cap     | Notes                                                                |
 | ----------- | ------- | -------------------------------------------------------------------- |
 | `inference` | 4 GiB   | Both models: ~1.5 GiB RSS, ~2.0 GiB peak with a long discharge note. |
 | `mongo`     | 1 GiB   | `--wiredTigerCacheSizeGB 0.25`                                       |
 | `api`       | 768 MiB | `--max-old-space-size=512`                                           |
-| `minio`     | 512 MiB |                                                                      |
 | `redis`     | 256 MiB | `--maxmemory 200mb`                                                  |
 | `web`       | 128 MiB |                                                                      |
 | `nginx`     | 128 MiB |                                                                      |

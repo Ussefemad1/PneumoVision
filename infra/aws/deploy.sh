@@ -114,14 +114,14 @@ wait_healthy() {
 }
 
 step "Start the data stores and the inference service"
-"$COMPOSE" up -d --remove-orphans mongo redis minio minio-init inference \
+"$COMPOSE" up -d --remove-orphans mongo redis inference \
   || fail "docker compose up failed"
-wait_healthy mongo redis minio inference
+wait_healthy mongo redis inference
 echo "  healthy; inference: $(inference_health)"
 
 step "Start the API, the web app and nginx"
 "$COMPOSE" up -d --remove-orphans || fail "docker compose up failed"
-wait_healthy mongo redis minio inference api web nginx
+wait_healthy mongo redis inference api web nginx
 echo "  all healthy"
 
 step "HTTPS certificate"
