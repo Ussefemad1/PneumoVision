@@ -93,16 +93,26 @@ jobs:
 
       - name: Synthetic random-weight Round 3 runs
         run: |
-          mkdir -p checkpoints/round3
-          docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/checkpoints/round3:/out" \
+          mkdir -p checkpoints/round3 && chmod 777 checkpoints/round3
+          set +e
+          docker run --rm -v "$PWD/checkpoints/round3:/out" \
             -v "$PWD/services/inference/scripts:/app/scripts:ro" -e MEDPATCH_ROOT=/app/medpatch \
-            pneumovision-inference:aws python /app/scripts/make_fake_runs.py /out
+            pneumovision-inference:aws python /app/scripts/make_fake_runs.py /out > /tmp/gen.log 2>&1
+          status=$?
+          set -e
+          tail -40 /tmp/gen.log
+          if [ $status -ne 0 ]; then echo "::error title=fake runs::$(tail -c 1800 /tmp/gen.log | paste -sd ' ' -)"; exit 1; fi
           ls -la checkpoints/round3/*
 
       - name: bootstrap.sh (as on the server)
         run: |
           git config --global --add safe.directory "$PWD"
-          PV_DIR="$PWD" PUBLIC_HOST=localhost UNATTENDED_UPGRADES=no bash infra/aws/bootstrap.sh | grep -v 'password' || true
+          set +e
+          PV_DIR="$PWD" PUBLIC_HOST=localhost UNATTENDED_UPGRADES=no bash infra/aws/bootstrap.sh > /tmp/boot.log 2>&1
+          status=$?
+          set -e
+          grep -iv 'password\|^    ' /tmp/boot.log
+          if [ $status -ne 0 ]; then echo "::error title=bootstrap::$(grep -iv 'password\|^    ' /tmp/boot.log | tail -c 1800 | paste -sd ' ' -)"; exit 1; fi
           test -f .env && test "$(stat -c %a .env)" = 600
           test "$(sudo stat -c '%a %u' infra/mongo/keyfile)" = "400 999"
           PV_DIR="$PWD" UNATTENDED_UPGRADES=no bash infra/aws/bootstrap.sh >/dev/null   # rerun: idempotent
@@ -113,7 +123,12 @@ jobs:
       - name: deploy.sh (guard, sha256, build, start, health, smoke)
         run: |
           started=$SECONDS
-          bash infra/aws/deploy.sh --no-pull
+          set +e
+          bash infra/aws/deploy.sh --no-pull > /tmp/deploy.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/deploy.log
+          if [ $status -ne 0 ]; then echo "::error title=deploy::$(tail -c 2500 /tmp/deploy.log | paste -sd ' ' -)"; exit 1; fi
           echo "::notice title=deploy::deploy.sh succeeded in $((SECONDS - started)) s (self-signed fallback; Let's Encrypt cannot issue for localhost)"
 
       - name: Wait for the demo seed's background scoring to finish
