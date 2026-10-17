@@ -409,14 +409,25 @@ class Readers:
         return tuple(float(g) for g in gamma.cpu())
 
 
-def load_readers(medpatch_root: Path, checkpoint_dir: Path, device: str) -> Readers:
-    """Build and load every reader, or raise.
+def load_readers(
+    medpatch_root: Path,
+    checkpoint_dir: Path,
+    device: str,
+    keys: set[str] | None = None,
+    confidence: bool = True,
+) -> Readers:
+    """Build and load every reader (or only ``keys``), or raise.
 
     Refuses to start with a missing checkpoint rather than silently falling
-    back to simulated numbers for that modality.
+    back to simulated numbers for that modality. ``confidence=False`` skips
+    the Round 2/2b confidence heads (fusion mode's fallback needs only the
+    readers' own scores).
     """
-    needed = [spec.checkpoint for spec in READERS] + [
-        spec.confidence_checkpoint for spec in READERS if spec.confidence_checkpoint
+    specs = [spec for spec in READERS if keys is None or spec.key in keys]
+    if not confidence:
+        specs = [replace(spec, confidence_checkpoint=None, calibrated=False) for spec in specs]
+    needed = [spec.checkpoint for spec in specs] + [
+        spec.confidence_checkpoint for spec in specs if spec.confidence_checkpoint
     ]
     missing = [path for path in needed if not (checkpoint_dir / path).is_file()]
     if missing:
@@ -494,7 +505,7 @@ def load_readers(medpatch_root: Path, checkpoint_dir: Path, device: str) -> Read
                 text_encoder.bert = shared_bert
         return model.to(device).eval(), args, text_encoder
 
-    for spec in READERS:
+    for spec in specs:
         started = time.perf_counter()
         model, _, text_encoder = build(spec, spec.args, spec.checkpoint)
 

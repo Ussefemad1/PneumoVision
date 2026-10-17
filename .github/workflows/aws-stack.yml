@@ -8,7 +8,7 @@ name: aws-stack
 
 on:
   push:
-    branches: [deploy/aws]
+    branches: [main, 'deploy/**', 'fix/**']
     paths:
       - 'infra/**'
       - 'services/inference/**'
@@ -28,6 +28,30 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The inference suite -- parity of fusion mode's "By source" with readers
+  # mode, all heads vs medpatch, refusals -- in a clean venv holding only
+  # requirements-serve.txt (CPU torch), as the image does.
+  inference-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Serve-only venv
+        run: |
+          python -m pip install -q --upgrade pip
+          pip install -q --index-url https://download.pytorch.org/whl/cpu torch==2.4.1 torchvision==0.19.1
+          pip install -q -r services/inference/requirements-serve.txt -r services/inference/requirements.txt
+      - name: Inference pytest (includes the By-source parity tests)
+        working-directory: services/inference
+        run: |
+          python -m pytest -q -p no:warnings 2>&1 | tee /tmp/inf.log
+          echo "::notice title=inference pytest (serve-only venv)::$(tail -1 /tmp/inf.log)"
+          python -m pytest -q -p no:warnings tests/test_fusion.py -k "readers_mode or medpatch_forward or standalone or encoder_mismatch" 2>&1 | tail -1 > /tmp/parity.log
+          echo "::notice title=parity (fusion By source == readers mode; heads == medpatch)::$(cat /tmp/parity.log)"
+
   stack:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -108,7 +132,7 @@ jobs:
           set +e
           docker run --rm -v "$PWD/checkpoints/round3:/out" \
             -v "$PWD/services/inference/scripts:/app/scripts:ro" -e MEDPATCH_ROOT=/app/medpatch \
-            pneumovision-inference:aws python /app/scripts/make_fake_runs.py /out > /tmp/gen.log 2>&1
+            pneumovision-inference:aws python /app/scripts/make_fake_runs.py /out /tmp/r1 > /tmp/gen.log 2>&1
           status=$?
           set -e
           tail -40 /tmp/gen.log
@@ -182,12 +206,17 @@ jobs:
               raw = json.dumps(b).encode(); ts = str(int(time.time()))
               req = urllib.request.Request("http://127.0.0.1:8000/v1/predict", raw, {"content-type": "application/json",
                   "X-PV-Timestamp": ts, "X-PV-Signature": compute_signature(os.environ["INFERENCE_HMAC_SECRET"], ts, raw)})
-              t = time.perf_counter(); urllib.request.urlopen(req, timeout=600).read(); return time.perf_counter() - t
+              t = time.perf_counter(); r = urllib.request.urlopen(req, timeout=600).read(); call.last = json.loads(r); return time.perf_counter() - t
           out = []
           for task in ("mortality", "pneumonia"):
               ts = sorted(call(body(task, 100)) for _ in range(5))
               out.append(f"{task} p50 {ts[2]:.2f}s max {ts[-1]:.2f}s")
           out.append(f"pneumonia long DN (~6k tokens) {call(body('pneumonia', 3000)):.2f}s")
+          res = call.last["result"]; fm = res["fusionModel"]
+          assert fm["standalone"] == "installed", fm["standalone"]
+          by_source = {m: round(100 * v, 1) for m, v in res["unimodal"].items() if v is not None}
+          assert set(by_source) == {"ehr", "cxr", "rr", "dn"}, by_source
+          out.append(f"by source (standalone Round 1 readers, fake weights) {by_source}; votes {sorted(fm['internals']['votes'])}")
           print("; ".join(out))
           EOF
           )"

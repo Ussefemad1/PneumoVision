@@ -101,6 +101,27 @@ const sourcesSchema = new Schema(
 
 const HEADS = ['high', 'low', 'late', 'combined', 'less_combined'] as const;
 
+const logitProbSchema = new Schema(
+  { logit: { type: Number, required: true }, probability: { ...probability, required: true } },
+  { _id: false },
+);
+
+/** CMSMAFusion's internal outputs (late-fusion votes, joint and missingness heads). */
+const fusionInternalsSchema = new Schema(
+  {
+    votes: {
+      ehr: { type: logitProbSchema, default: null },
+      cxr: { type: logitProbSchema, default: null },
+      rr: { type: logitProbSchema, default: null },
+      dn: { type: logitProbSchema, default: null },
+    },
+    high: { type: logitProbSchema, required: true },
+    low: { type: logitProbSchema, required: true },
+    missingness: { type: logitProbSchema, required: true },
+  },
+  { _id: false },
+);
+
 /** The trained MedPatch fusion model behind a result (fusion mode only). */
 const fusionModelSchema = new Schema(
   {
@@ -113,6 +134,12 @@ const fusionModelSchema = new Schema(
     modalities: { type: [String], default: [] },
     calibrated: { type: Boolean, required: true },
     notes: { type: [String], default: [] },
+    standalone: {
+      type: String,
+      default: null,
+      enum: ['installed', 'partial', 'not-installed', null],
+    },
+    internals: { type: fusionInternalsSchema, default: null },
   },
   { _id: false },
 );

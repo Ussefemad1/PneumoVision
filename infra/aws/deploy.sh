@@ -53,7 +53,18 @@ case "$MODE" in
         || fail "${ckpts[0]}: sha256 $actual does not match $run_id's manifest row ($expected). Copy the file again."
       printf '  %-12s %-14s %s  %s  sha256 %s OK\n' "$task" "$run_id" \
         "$(du -h "${ckpts[0]}" | cut -f1)" "$(basename "${ckpts[0]}")" "${actual:0:12}"
-    done ;;
+    done
+    heads=checkpoints/round3/reader_heads.pt
+    if [[ -f "$heads" ]]; then
+      [[ -f checkpoints/round3/reader_heads.json ]] || fail "$heads has no reader_heads.json next to it"
+      expected="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["sha256"])' checkpoints/round3/reader_heads.json)"         || fail "checkpoints/round3/reader_heads.json has no sha256"
+      actual="$(sha256sum "$heads" | cut -d' ' -f1)"
+      [[ "$actual" == "$expected" ]] || fail "$heads: sha256 $actual does not match reader_heads.json ($expected). Copy both files again."
+      printf '  %-12s %-14s %s  %s  sha256 %s OK\n' readers "Round 1 heads" "$(du -h "$heads" | cut -f1)" reader_heads.pt "${actual:0:12}"
+    else
+      echo "  reader_heads.pt not installed: the report's 'By source' will say 'Standalone readers not installed'"
+      echo "  (infra/aws/copy-checkpoints.md, 'Standalone readers')"
+    fi ;;
   readers)
     missing="$(python3 - <<'EOF'
 import re, pathlib

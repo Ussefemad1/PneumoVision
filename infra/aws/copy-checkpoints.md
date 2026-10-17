@@ -69,6 +69,58 @@ ssh -i $Key ubuntu@$Ip "cd ~/PneumoVision && sha256sum checkpoints/round3/*/*.pt
 
 `deploy.sh` repeats this check against `run.json` on every deploy.
 
+## Standalone readers for "By source" (reader_heads.pt)
+
+The report's "By source" panel shows each modality's **Round 1 standalone
+reader** score. The fusion models already contain those readers' encoders, so
+the server only needs each reader's small classifier head: two files, a few
+MB, made once on your laptop. You do **not** copy the seven ~0.5 GB Round 1
+checkpoints to the server. Without these two files the site still works and
+"By source" says "Standalone readers not installed".
+
+### 1. The seven Round 1 files, on your laptop
+
+They are the files `INFERENCE_MODE=readers` uses (services/inference/READERS.md),
+under the repo's `checkpoints/` folder with these names. The Round 3 runs
+descend from the manifest rows on the right (the parents of their Round 2b
+parents); copy each Drive file to its local name if you don't have it yet.
+
+| Local path (under `checkpoints/`)                                                                                                               | Manifest row | Drive file (`PneumoVision_shared/checkpoints/…` or Farida's `MyDrive/pneumovision/r1/…`)                                                                            | sha256 (manifest) |
+| ----------------------------------------------------------------------------------------------------------------------------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- |
+| `phenotyping/r1/phenotyping/unimodal_ehr/best_checkpoint_0.001_phenotyping_unimodal_ehr_EHR_paired.pth.tar`                                     | r1-ehr-001   | `ehr-phenotyping/best_checkpoint_0.001_phenotyping_unimodal_ehr_EHR_paired.pth.tar`                                                                                 | `1dc8b962f3e7…`   |
+| `phenotyping/r1/phenotyping/unimodal_cxr/best_checkpoint_3e-05_phenotyping_unimodal_cxr_EHR-CXR_paired.pth.tar`                                 | r1-cxr-001   | `pheno-cxr/phenotyping/unimodal_cxr/best_checkpoint_3e-05_phenotyping_unimodal_cxr_EHR-CXR_paired.pth.tar`                                                          | `065ecd77330b…`   |
+| `phenotyping/r1/phenotyping/unimodal_rr/best_checkpoint_0.00012225031390095305_phenotyping_unimodal_rr_EHR-RR_paired.pth.tar`                   | r1-rr-001    | `MyDrive/pneumovision/r1/phenotyping/best_checkpoint_phenotyping_unimodal_rr.pth.tar`                                                                               | `ad4037e57564…`   |
+| `phenotyping/r1/phenotyping/unimodal_dn/best_checkpoint_0.00012225031390095305_phenotyping_unimodal_dn_EHR-DN_paired.pth.tar`                   | r1-dn-001    | `MyDrive/pneumovision/r1/phenotyping/best_checkpoint_phenotyping_unimodal_dn.pth.tar`                                                                               | `9bd950e3cb71…`   |
+| `mortality/r1/in-hospital-mortality/unimodal_ehr/best_checkpoint_0.001_in-hospital-mortality_unimodal_ehr_EHR_paired.pth.tar`                   | r1-ehr-002   | `mortality-ehr/best_checkpoint_0.001_in-hospital-mortality_unimodal_ehr_EHR_paired.pth.tar`                                                                         | `1e9cb87cc1f2…`   |
+| `mortality/r1/in-hospital-mortality/unimodal_cxr/best_checkpoint_3e-05_in-hospital-mortality_unimodal_cxr_EHR-CXR_paired.pth.tar`               | r1-cxr-002   | `mortality-cxr/BASELINE_mortality_vitS_lr3e-05_ep9.pth.tar`                                                                                                         | `4b272fcba450…`   |
+| `mortality/r1/in-hospital-mortality/unimodal_rr/best_checkpoint_0.00012225031390095305_in-hospital-mortality_unimodal_rr_EHR-RR_paired.pth.tar` | r1-rr-002    | `mortality-notes(RR)/mortality/r1/in-hospital-mortality/unimodal_rr/best_checkpoint_0.00012225031390095305_in-hospital-mortality_unimodal_rr_EHR-RR_paired.pth.tar` | `1092a832942d…`   |
+
+### 2. Extract the heads (laptop, repo `.venv`, CPU, about a minute)
+
+```powershell
+cd $HOME\PneumoVision
+.\.venv\Scripts\python.exe -m tools.pv.extract_reader_heads --checkpoint-dir checkpoints --out checkpoints\round3
+```
+
+It lists the seven files (`ok` / `MISSING`), writes
+`checkpoints\round3\reader_heads.pt` and `reader_heads.json`, and prints each
+source's sha256 next to its manifest row (`= manifest r1-…`). A `WARNING` line
+means the local file is not the one the Round 3 run descends from: the service
+then finds that the encoders differ and reports that reader as unavailable
+instead of guessing.
+
+### 3. Copy them to the server
+
+```powershell
+scp -i $Key "$HOME\PneumoVision\checkpoints\round3\reader_heads.pt" "$HOME\PneumoVision\checkpoints\round3\reader_heads.json" "ubuntu@${Ip}:~/PneumoVision/checkpoints/round3/"
+ssh -i $Key ubuntu@$Ip "cd ~/PneumoVision && git pull --ff-only && infra/aws/deploy.sh --no-pull"
+```
+
+`deploy.sh` checks `reader_heads.pt` against the sha256 in `reader_heads.json`;
+at start-up the service checks it again, then checks that every fusion
+encoder equals the Round 1 reader's bit for bit. `/v1/model-info` says, per
+task and modality, how each "By source" score is computed.
+
 ## Readers mode (optional)
 
 `INFERENCE_MODE=readers` serves the Round 1 + 2b single-modality readers

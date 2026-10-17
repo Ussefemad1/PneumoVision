@@ -237,6 +237,30 @@ class Sources(BaseModel):
     dn: ModalitySource | None = None
 
 
+class LogitProb(BaseModel):
+    """A fusion-internal output: its raw logit and its sigmoid."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    logit: float
+    probability: Prob
+
+
+class FusionInternals(BaseModel):
+    """Inside CMSMAFusion, for "Model details" only. None of these is a
+    standalone probability: the per-modality votes and the missingness head are
+    trained only through the weighted late-fusion sum (unconstrained scale, so
+    they saturate), the high/low joint heads only with their own losses, and
+    the missingness head sees only which inputs are present."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    votes: dict[str, LogitProb]
+    high: LogitProb
+    low: LogitProb
+    missingness: LogitProb
+
+
 class FusionModelInfo(BaseModel):
     """Which trained MedPatch fusion model produced the result (fusion mode)."""
 
@@ -256,6 +280,9 @@ class FusionModelInfo(BaseModel):
     calibrated: bool = False
     # Plain-language caveats for this request (padding, ignored notes, ...).
     notes: list[str] = Field(default_factory=list)
+    # The Round 1 standalone readers behind "By source" (reader_heads.pt).
+    standalone: Literal["installed", "partial", "not-installed"] = "not-installed"
+    internals: FusionInternals | None = None
 
 
 class PredictionResult(BaseModel):
@@ -294,6 +321,9 @@ class FusionModelSummary(BaseModel):
     bert_model_name: str = Field(alias="bertModelName")
     theta: Prob
     modalities: list[str]
+    standalone: str = "not-installed"
+    # Per modality: how its standalone score is computed, or why it is not.
+    standalone_detail: dict[str, str] = Field(default_factory=dict, alias="standaloneDetail")
 
 
 class ModelInfo(BaseModel):

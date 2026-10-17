@@ -26,8 +26,26 @@ site excludes them anyway.
 ## What to expect (fusion mode, `INFERENCE_MODE=fusion`, the deployed default)
 
 The site serves the trained Round 3 MedPatch fusion (`r3-fusion-001` for
-mortality, `r3-fusion-002` for pneumonia). The headline is the `late` head as
-an **uncalibrated** probability; the other heads are under "Model details".
+mortality, `r3-fusion-002` for pneumonia). How to read the report's panels:
+
+- **Fused decision** (right): the `late` head, chosen on validation, as an
+  **uncalibrated** probability, with the run id.
+- **By source** (left): each modality's **Round 1 standalone reader**, its own
+  prediction from that input alone, labelled "Standalone reader (Round 1) ·
+  uncalibrated". These are the same numbers readers mode gives, so they match
+  the readers-mode table below exactly. If the server has no
+  `reader_heads.pt`, the panel says "Standalone readers not installed".
+- **Contribution**: the fusion's own late-fusion weights (α).
+- **Confidence**: the "Above threshold" shares are **simulated** (badge). The
+  fusion's joint high/low heads and its missingness head are internal outputs,
+  not probabilities, so they are only in **Model details**.
+- **Model details** (collapsible): every head; the run, sha256, BERT and θ;
+  and "Inside the MedPatch fusion (late-fusion votes — not probabilities)",
+  where each modality's internal vote, the joint heads and the missingness
+  head are shown as raw logit and sigmoid. The votes are trained only through
+  the late fusion's weighted sum, so a sigmoid near 0 % or 100 % is normal
+  there. The missingness head sees only which inputs are present, not what
+  they say.
 
 **Scores not measured yet.** The fusion scores for these examples have not been
 measured here: the checkpoints are not in this repo, and the development

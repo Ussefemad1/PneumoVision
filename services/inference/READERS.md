@@ -149,10 +149,38 @@ per task, from `FUSION_DIR/{mortality,phenotyping}/` (checkpoint + `run.json`,
   three and `less_combined` = mean of high and late (as `MSMA_Trainer`). The
   headline is the checkpoint's `best_head` (`late`), as a **raw sigmoid —
   uncalibrated** (Round 2b calibrated the confidence heads, not the fusion).
-  The other heads, run id, sha256, BERT and θ are under "Model details".
-  Unimodal scores, the joint high/low heads, the missingness head and the late
-  fusion α are the model's own. The token-confidence _maps_ drawn on the report
-  stay simulated and are labelled so.
+  The other heads, run id, sha256, BERT and θ are under "Model details". The
+  late-fusion α ("Contribution") are the model's own. The token-confidence
+  _maps_ drawn on the report stay simulated and are labelled so.
+- **"By source" = the Round 1 standalone readers.** CMSMAFusion's own
+  `{ehr,cxr,rr,dn}_classifier` outputs are late-fusion _votes_: `MSMA_Trainer`
+  puts loss only on `high`, `low` and `late`, so the votes are trained only
+  through the weighted late sum, their scale is unconstrained and they
+  saturate (0 % / 100 %). They are **not** standalone probabilities. "By source"
+  instead shows each Round 1 reader's own prediction, computed as readers mode
+  computes it:
+  - CXR, RR, DN: the reader's own classifier head (from `reader_heads.pt`,
+    `tools/pv/extract_reader_heads.py`) applied to the fusion's pooled feature,
+    i.e. the input of the fusion's `{m}_classifier` (CLS token for the ViT,
+    mean of the projected BERT tokens for the notes). That is exactly the
+    reader's feature because the encoders are the reader's (F2).
+  - EHR: the shared LSTM re-run on the reader's own input (48 h, and the
+    normalizer the reader was trained with: `ihm_…` for mortality, while the
+    fusion used the phenotyping default), then the reader's head.
+  - At start-up `reader_heads.pt` must match the sha256 in
+    `reader_heads.json` (else `/v1/health` is degraded), and every fusion
+    encoder tensor must equal the Round 1 reader's bit for bit (digests
+    recorded by the extract tool). A reader whose encoder differs runs on its
+    own full path if its Round 1 checkpoint is under `CHECKPOINT_DIR`, else it
+    is reported unavailable (`/v1/model-info` → `standaloneDetail`). Without
+    `reader_heads.pt` fusion still serves; "By source" says "Standalone
+    readers not installed".
+  - Parity: `tests/test_fusion.py` checks these values equal readers mode's
+    within 1e-5 on fake runs.
+- **Model details → "Inside the MedPatch fusion".** The per-modality votes,
+  the joint high/low heads and the missingness head, each as raw logit and
+  sigmoid, labelled "not probabilities". The missingness head sees only which
+  inputs are present.
 - **Speed.** CMSMAFusion runs each frozen reader twice per forward (its
   `*_fixed` copy is the same module); the service answers the second, identical
   call from the first, halving CPU time without changing a number.

@@ -110,7 +110,11 @@ def _load_models(app: FastAPI, settings: Settings) -> None:
         from .fusion import load_fusion  # noqa: PLC0415
 
         app.state.fusion = load_fusion(
-            settings.fusion_dir, settings.medpatch_root, app.state.device, settings.default_theta
+            settings.fusion_dir,
+            settings.medpatch_root,
+            app.state.device,
+            settings.default_theta,
+            checkpoint_dir=settings.checkpoint_dir,
         )
         app.state.text_model = app.state.fusion.text_model
         loaded = app.state.fusion.version
@@ -224,6 +228,8 @@ async def model_info(request: Request, settings: SettingsDep) -> ModelInfo:
                     bert_model_name=m.bert_model_name,
                     theta=m.theta,
                     modalities=m.modalities,
+                    standalone=m.standalone_state,
+                    standalone_detail=m.standalone_detail,
                 )
                 for task, m in fusion.by_task.items()
             }

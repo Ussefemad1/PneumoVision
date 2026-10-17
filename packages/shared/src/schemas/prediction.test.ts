@@ -26,7 +26,11 @@ describe('predictionResult.fusionModel', () => {
       calibrated: false,
       notes: ['uncalibrated'],
     };
-    expect(predictionResult.parse({ ...base, fusionModel }).fusionModel).toEqual(fusionModel);
+    expect(predictionResult.parse({ ...base, fusionModel }).fusionModel).toEqual({
+      ...fusionModel,
+      standalone: null,
+      internals: null,
+    });
   });
 
   it('is null for mock and readers results', () => {

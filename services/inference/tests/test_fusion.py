@@ -35,7 +35,16 @@ REAL_FUSION_DIR = Path(os.environ.get("CHECKPOINT_DIR", REPO / "checkpoints")) /
 have_ml = all(importlib.util.find_spec(m) for m in ("torch", "transformers", "timm"))
 pytestmark = pytest.mark.skipif(not have_ml, reason="needs torch, transformers and timm")
 
-from scripts.make_fake_runs import ARGV, BERT, FOLDER, RUN_ID, build, write_run  # noqa: E402
+from scripts.make_fake_runs import (  # noqa: E402
+    ARGV,
+    BERT,
+    FOLDER,
+    RUN_ID,
+    build,
+    share_bert,
+    write_fake_readers,
+    write_run,
+)
 
 WORDS = "synthetic warm up report summary right lower lobe consolidation clear lungs pneumonia treated with antibiotics".split()
 
@@ -80,12 +89,18 @@ def fake_runs(tmp_path_factory):
     mp = pytest.MonkeyPatch()
     _install_offline_stubs(mp, vocab)
 
-    references = {}
-    for task in ("mortality", "pneumonia"):
-        args, model = build(task)
+    from app import reader_heads
+
+    references = {task: build(task) for task in ("mortality", "pneumonia")}
+    share_bert({task: model for task, (_, model) in references.items()})
+    for task, (args, model) in references.items():
         write_run(task, args, model, root)
-        references[task] = (args, model)
-    yield root, references
+    # Fake Round 1 readers sharing each run's encoders (as F2 makes the real
+    # ones), and their heads extracted as tools/pv/extract_reader_heads.py does.
+    r1 = tmp_path_factory.mktemp("r1")
+    write_fake_readers({task: model for task, (_, model) in references.items()}, r1)
+    reader_heads.extract(r1, root)
+    yield root, references, r1
     mp.undo()
 
 
@@ -93,8 +108,8 @@ def fake_runs(tmp_path_factory):
 def loaded(fake_runs):
     from app.fusion import load_fusion
 
-    root, _ = fake_runs
-    return load_fusion(root, MEDPATCH, "cpu", 0.75)
+    root, _, r1 = fake_runs
+    return load_fusion(root, MEDPATCH, "cpu", 0.75, checkpoint_dir=r1)
 
 
 def _png(value: int = 128, size: tuple[int, int] = (600, 700)) -> bytes:
@@ -162,7 +177,7 @@ def test_every_head_matches_the_medpatch_forward(fake_runs, loaded, task, with_c
 
     from app.readers import cxr_image, ehr_rows
 
-    _, references = fake_runs
+    _, references, _ = fake_runs
     args, model = references[task]
     req = _request(task)
     image = _png() if with_cxr else None
@@ -236,7 +251,7 @@ def test_pneumonia_reads_the_whole_stay_it_is_sent(loaded):
 
 
 def _copy_run(fake_runs, tmp_path, task: str, edit) -> Path:
-    root, _ = fake_runs
+    root, _, _ = fake_runs
     folder = tmp_path / FOLDER[task]
     shutil.copytree(root / FOLDER[task], folder)
     run = json.loads((folder / "run.json").read_text(encoding="utf-8"))
@@ -305,7 +320,7 @@ def fusion_client(fake_runs):
     from app.config import get_settings
     from app.main import app
 
-    root, _ = fake_runs
+    root, _, _ = fake_runs
     keys = ("INFERENCE_MODE", "FUSION_DIR", "MEDPATCH_ROOT", "MOCK_MODE")
     saved = {k: os.environ.get(k) for k in keys}
     os.environ.update(INFERENCE_MODE="fusion", FUSION_DIR=str(root), MEDPATCH_ROOT=str(MEDPATCH), MOCK_MODE="false")
@@ -380,6 +395,160 @@ def test_service_refuses_discharge_notes_for_mortality(fusion_client):
     assert res.status_code == 400
 
 
+# ── "By source": the Round 1 standalone readers ──────────────────────────────
+
+
+def _full_request(task: str):
+    return _request(task, ehr=True, rr=True, dn=True)
+
+
+@pytest.fixture(scope="module")
+def readers_mode(fake_runs):
+    """INFERENCE_MODE=readers' own path over the same fake Round 1 readers."""
+    from app.readers import load_readers
+
+    _, _, r1 = fake_runs
+    return load_readers(MEDPATCH, r1, "cpu", confidence=False)
+
+
+@pytest.mark.parametrize("task", ["mortality", "pneumonia"])
+@pytest.mark.parametrize("with_cxr", [True, False])
+def test_by_source_equals_readers_mode(loaded, readers_mode, task, with_cxr):
+    req = _full_request(task)
+    image = _png() if with_cxr else None
+    fusion = loaded.score(req, image)
+    readers = readers_mode.score(req, image)
+    expected = {m: s.probability for m, s in readers.items()}
+    assert set(fusion.standalone) == set(expected)
+    assert ("cxr" in expected) is with_cxr
+    assert "dn" not in fusion.standalone or task == "pneumonia"
+    for m, p in expected.items():
+        assert abs(fusion.standalone[m] - p) <= 1e-5, m
+
+
+def test_standalone_heads_use_the_fusion_encoders(loaded):
+    for task, fm in loaded.by_task.items():
+        assert fm.standalone_state == "installed"
+        assert set(fm.standalone) == {m.lower() for m in fm.modalities}
+        assert not fm.fallback_modalities
+        assert all("bit-identical" in d for d in fm.standalone_detail.values()), task
+
+
+def test_by_source_is_not_the_fusion_votes(loaded):
+    """The fusion's per-modality votes are a different quantity (trained only
+    through the late sum); By source must not be their sigmoid."""
+    import math
+
+    score = loaded.score(_full_request("pneumonia"), _png())
+    for m, logit in score.votes.items():
+        vote = 1 / (1 + math.exp(-logit)) if logit > -50 else 0.0
+        assert abs(vote - score.standalone[m]) > 1e-6, m
+
+
+def test_result_labels_standalone_readers_and_internals(loaded):
+    from app.fusion import build_fusion_result
+
+    fm = loaded.by_task["pneumonia"]
+    req = _full_request("pneumonia")
+    score = loaded.score(req, None)
+    result = build_fusion_result(req, None, fm, score)
+    assert result.unimodal.ehr == pytest.approx(score.standalone["ehr"])
+    assert result.unimodal.cxr is None
+    assert "standalone Round 1 reader" in (result.sources.rr.model or "")
+    info = result.fusion_model
+    assert info.standalone == "installed"
+    assert set(info.internals.votes) == {"ehr", "rr", "dn"}
+    assert info.internals.high.logit == pytest.approx(score.head_logits["high"])
+    assert 0.0 <= info.internals.missingness.probability <= 1.0
+
+
+def _fusion_copy(fake_runs, tmp_path, heads: bool) -> Path:
+    root = fake_runs[0]
+    out = tmp_path / "round3"
+    for folder in ("mortality", "phenotyping"):
+        shutil.copytree(root / folder, out / folder)
+    if heads:
+        for name in ("reader_heads.pt", "reader_heads.json"):
+            shutil.copy(root / name, out / name)
+    return out
+
+
+def test_without_reader_heads_fusion_still_serves(fake_runs, tmp_path):
+    from app.fusion import build_fusion_result, load_fusion
+
+    folder = _fusion_copy(fake_runs, tmp_path, heads=False)
+    models = load_fusion(folder, MEDPATCH, "cpu", 0.75)
+    fm = models.by_task["pneumonia"]
+    assert fm.standalone_state == "not-installed"
+    req = _full_request("pneumonia")
+    score = models.score(req, None)
+    assert score.standalone == {}
+    result = build_fusion_result(req, None, fm, score)
+    assert (result.unimodal.ehr, result.unimodal.rr, result.unimodal.dn) == (None, None, None)
+    assert result.fusion_model.standalone == "not-installed"
+    assert any("Standalone readers not installed" in n for n in result.fusion_model.notes)
+
+
+def test_reader_heads_whose_sha256_differs_are_refused(fake_runs, tmp_path):
+    from app.fusion import FusionLoadError, load_fusion
+
+    folder = _fusion_copy(fake_runs, tmp_path, heads=True)
+    manifest = json.loads((folder / "reader_heads.json").read_text())
+    manifest["sha256"] = "0" * 64
+    (folder / "reader_heads.json").write_text(json.dumps(manifest))
+    with pytest.raises(FusionLoadError, match="reader_heads.pt"):
+        load_fusion(folder, MEDPATCH, "cpu", 0.75)
+
+
+def test_an_encoder_mismatch_falls_back_to_the_readers_own_path(fake_runs, tmp_path):
+    """A Round 1 reader whose encoder differs from the fusion's is never
+    approximated by its head: it runs its own full path, or is unavailable."""
+    import torch
+
+    from app import reader_heads
+    from app.fusion import load_fusion
+    from app.readers import READERS, load_readers
+
+    _, _, r1 = fake_runs
+    r1_copy = tmp_path / "r1"
+    shutil.copytree(r1, r1_copy)
+    spec = next(s for s in READERS if s.key == "cxr-mortality")
+    path = r1_copy / spec.checkpoint
+    ckpt = torch.load(path, map_location="cpu", weights_only=False)
+    key = next(k for k in ckpt["state_dict"] if k.startswith("cxr_model.") and k.endswith("weight"))
+    ckpt["state_dict"][key] = ckpt["state_dict"][key] + 1e-3
+    for alias in [k for k in ckpt["state_dict"] if k.endswith(key[len("cxr_model."):]) and k != key]:
+        ckpt["state_dict"][alias] = ckpt["state_dict"][key]
+    torch.save(ckpt, path)
+
+    folder = _fusion_copy(fake_runs, tmp_path, heads=False)
+    reader_heads.extract(r1_copy, folder)
+    models = load_fusion(folder, MEDPATCH, "cpu", 0.75, checkpoint_dir=r1_copy)
+    fm = models.by_task["mortality"]
+    assert fm.fallback_modalities == {"cxr"}
+    assert "own Round 1 reader path" in fm.standalone_detail["cxr"]
+    req, image = _full_request("mortality"), _png()
+    own = load_readers(MEDPATCH, r1_copy, "cpu", keys={"cxr-mortality"}, confidence=False)
+    assert models.score(req, image).standalone["cxr"] == pytest.approx(
+        own.score(req, image)["cxr"].probability, abs=1e-6
+    )
+
+    # Without the reader's checkpoint on the server it is unavailable, not guessed.
+    path.unlink()
+    models = load_fusion(folder, MEDPATCH, "cpu", 0.75, checkpoint_dir=r1_copy)
+    fm = models.by_task["mortality"]
+    assert fm.standalone_state == "partial"
+    assert fm.standalone_detail["cxr"].startswith("unavailable")
+    assert "cxr" not in models.score(req, image).standalone
+
+
+def test_service_model_info_reports_the_standalone_readers(fusion_client):
+    info = fusion_client.get("/v1/model-info").json()
+    for task in ("mortality", "pneumonia"):
+        assert info["fusion"][task]["standalone"] == "installed"
+        assert all("bit-identical" in d for d in info["fusion"][task]["standaloneDetail"].values())
+
+
 # ── the real Round 3 checkpoints, when present ───────────────────────────────
 
 have_real = all((REAL_FUSION_DIR / f / "run.json").is_file() for f in ("mortality", "phenotyping"))
@@ -405,3 +574,68 @@ def test_the_real_round3_checkpoints_load_and_score():
     long_note = copy.deepcopy(_request("pneumonia"))
     long_note.notes[-1].text = " ".join(WORDS * 400)  # ~6,000 tokens: 12 chunks
     models.score(long_note, _png())
+
+
+# ── the four synthetic demo patients, through the real readers (when present) ─
+
+DEMO = REPO / "docs" / "demo-examples"
+#: The readers-mode table in docs/demo-examples/README.md (percent, 1 decimal).
+DEMO_EXPECTED = {
+    ("pneumonia", "pneumonia_sick"): {"ehr": 30.7, "rr": 72.0, "dn": 99.9},
+    ("pneumonia", "pneumonia_control"): {"ehr": 7.0, "rr": 0.5, "dn": 0.2},
+    ("mortality", "mortality_high_risk"): {"ehr": 89.9, "rr": 68.2},
+    ("mortality", "mortality_low_risk"): {"ehr": 4.9, "rr": 3.2},
+}
+DEMO_CXR = {  # (task, image) -> standalone CXR reader, percent
+    ("pneumonia", "cxr_pneumonia_covid_ap.jpg"): 42.7,
+    ("mortality", "cxr_pneumonia_covid_ap.jpg"): 23.1,
+    ("pneumonia", "cxr_pneumonia_lobar.jpg"): 16.5,
+    ("mortality", "cxr_pneumonia_lobar.jpg"): 2.9,
+}
+have_real_heads = have_real and (REAL_FUSION_DIR / "reader_heads.pt").is_file()
+
+
+def demo_request(task: str, name: str):
+    """A demo patient as the Analyze page sends it: CSV row ``hour = h`` (-47..0)
+    lands in grid row 47 + h; empty cells are null; numbers stay numbers."""
+    import csv
+
+    from app.schemas import EhrInput, NoteInput, PredictRequest
+
+    with open(DEMO / f"{name}_vitals.csv", newline="", encoding="utf-8") as f:
+        rows = list(csv.reader(f))
+    header, body = rows[0], rows[1:]
+    variables = header[1:]
+    grid: list[list[float | str | None]] = [[None] * len(variables) for _ in range(48)]
+    for row in body:
+        hour = int(float(row[0]))
+        for i, cell in enumerate(row[1:]):
+            cell = cell.strip()
+            if not cell:
+                continue
+            try:
+                grid[47 + hour][i] = float(cell)
+            except ValueError:
+                grid[47 + hour][i] = cell
+    notes = [NoteInput(id="r", type="radiology", text=(DEMO / f"{name}_radiology.txt").read_text(encoding="utf-8"))]
+    if task == "pneumonia":
+        notes.append(NoteInput(id="d", type="discharge", text=(DEMO / f"{name}_discharge.txt").read_text(encoding="utf-8")))
+    return PredictRequest(task=task, seed="demo", ehr=EhrInput(variables=variables, values=grid), notes=notes)
+
+
+@pytest.mark.skipif(not have_real_heads, reason=f"needs the Round 3 runs and reader_heads.pt under {REAL_FUSION_DIR}")
+def test_demo_patients_match_the_readers_mode_table():
+    from app.fusion import load_fusion
+
+    models = load_fusion(REAL_FUSION_DIR, MEDPATCH, "cpu", 0.75)
+    for (task, name), expected in DEMO_EXPECTED.items():
+        score = models.score(demo_request(task, name), None)
+        got = {m: round(100 * p, 1) for m, p in score.standalone.items()}
+        print(f"\n{name}: by source {got}; fusion late {100 * score.probability:.1f}%")
+        for m, value in expected.items():
+            assert abs(got[m] - value) <= 0.1, (name, m, got[m], value)
+    for (task, image), value in DEMO_CXR.items():
+        req = demo_request(task, "pneumonia_sick" if task == "pneumonia" else "mortality_high_risk")
+        got = round(100 * models.score(req, (DEMO / image).read_bytes()).standalone["cxr"], 1)
+        print(f"{image} ({task}): CXR reader {got}%")
+        assert abs(got - value) <= 0.1, (image, task, got, value)

@@ -38,6 +38,8 @@ def tree(root: Path, extra: list[str] = ()) -> Path:
         "checkpoints/.gitkeep",
         "checkpoints/round3/mortality/run.json",
         "checkpoints/round3/mortality/best_checkpoint_0.0001_in-hospital-mortality_c-msma_EHR-CXR-RR_partial.pth.tar",
+        "checkpoints/round3/reader_heads.pt",
+        "checkpoints/round3/reader_heads.json",
         "node_modules/some-package/fixture.csv",  # dependency trees are skipped
         *[f"docs/demo-examples/{name}" for name in DEMO_CSVS],
         *extra,
@@ -79,6 +81,8 @@ def test_a_clean_synthetic_checkout_passes(tmp_path):
         "checkpoints/round3/phenotyping/r3_results.csv",
         "checkpoints/round3/phenotyping/train.log",
         "data/anything.txt",
+        "checkpoints/round3/mortality/reader_heads.pt",
+        "checkpoints/round3/stays.json",
     ],
 )
 def test_off_limits_files_are_refused(tmp_path, bad):

@@ -31,7 +31,7 @@ const prediction: Prediction = {
   createdAt: '2026-10-17T10:00:05.000Z',
   result: {
     probability: 0.4123,
-    unimodal: { ehr: 0.3, cxr: null, rr: 0.5, dn: 0.6 },
+    unimodal: { ehr: 0.317, cxr: null, rr: 0.5, dn: 0.6 },
     joint: { high: 0.45, low: 0.35 },
     missingness: { vector: { ehr: true, cxr: false, rr: true, dn: true }, prediction: 0.2 },
     alphas: { high: 0.3, low: 0.2, miss: 0.1, ehr: 0.15, cxr: null, rr: 0.15, dn: 0.1 },
@@ -70,13 +70,35 @@ const prediction: Prediction = {
       modalities: ['EHR', 'CXR', 'RR', 'DN'],
       calibrated: false,
       notes: ['Probability is the raw sigmoid of the late head: an uncalibrated probability.'],
+      standalone: 'installed',
+      internals: {
+        votes: {
+          ehr: { logit: 14.2, probability: 1 },
+          cxr: null,
+          rr: { logit: 9.1, probability: 0.9999 },
+          dn: { logit: 11.0, probability: 1 },
+        },
+        high: { logit: -0.2, probability: 0.45 },
+        low: { logit: -0.62, probability: 0.35 },
+        missingness: { logit: -31.5, probability: 0 },
+      },
     },
   },
 };
 
-function renderReport() {
+type FusionModelOverrides = Partial<NonNullable<NonNullable<Prediction['result']>['fusionModel']>>;
+
+function withFusionModel(overrides: FusionModelOverrides): Prediction {
+  const result = prediction.result!;
+  return {
+    ...prediction,
+    result: { ...result, fusionModel: { ...result.fusionModel!, ...overrides } },
+  };
+}
+
+function renderReport(data: Prediction = prediction) {
   getData.mockImplementation((url: string) =>
-    url.startsWith('/predictions/') ? Promise.resolve(prediction) : new Promise(() => {}),
+    url.startsWith('/predictions/') ? Promise.resolve(data) : new Promise(() => {}),
   );
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -112,5 +134,40 @@ describe('PredictionReportPage in fusion mode', () => {
     renderReport();
     await screen.findByText('Model details');
     expect(screen.getAllByText('Simulated').length).toBeGreaterThan(0);
+  });
+
+  it('shows the standalone Round 1 readers under "By source", labelled uncalibrated', async () => {
+    renderReport();
+    await screen.findByText('Model details');
+    expect(screen.getAllByText(/Standalone reader \(Round 1\)/).length).toBe(3);
+    expect(screen.getAllByText('· uncalibrated').length).toBe(3);
+    expect(screen.getByText('31.7%')).toBeInTheDocument(); // EHR standalone, not the 100% vote
+  });
+
+  it('moves the fusion votes, joint and missingness heads into Model details', async () => {
+    renderReport();
+    fireEvent.click(await screen.findByText('Model details'));
+    expect(
+      screen.getByText('Inside the MedPatch fusion (late-fusion votes — not probabilities)'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('EHR vote')).toBeInTheDocument();
+    expect(screen.getByText('14.20')).toBeInTheDocument();
+    expect(screen.getByText('Missingness head')).toBeInTheDocument();
+    expect(screen.getByText(/sees only which\s+inputs are present/)).toBeInTheDocument();
+    expect(screen.queryByText('High confidence')).toBeNull();
+    expect(screen.queryByText('Missingness branch')).toBeNull();
+  });
+
+  it('says so when the standalone readers are not installed', async () => {
+    renderReport(withFusionModel({ standalone: 'not-installed' }));
+    await screen.findByText('Model details');
+    expect(screen.getAllByText('Standalone readers not installed').length).toBe(3);
+  });
+
+  it("never shows an older result's fusion votes as per-source scores", async () => {
+    renderReport(withFusionModel({ standalone: null, internals: null }));
+    await screen.findByText('Model details');
+    expect(screen.getAllByText(/Older result: no standalone score/).length).toBe(3);
+    expect(screen.queryByText('31.7%')).toBeNull();
   });
 });

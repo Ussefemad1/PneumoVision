@@ -98,19 +98,22 @@ def _thresholds_in_argv(argv: list[str]) -> dict[str, float]:
     return found
 
 
-def normalizer_file(args: Any, medpatch_root: Path) -> Path:
+def normalizer_file(args: Any, medpatch_root: Path, extra_dirs: tuple[Path, ...] = ()) -> Path:
     """The normalizer the run trained with, resolved as fusion_main.py does:
     ``--normalizer_state`` (a path on the training machine -- the same file is
     bundled under medpatch/normalizers), else the phenotyping default for the
-    timestep, whatever the task (CLAUDE.md, "Model status")."""
+    timestep, whatever the task (CLAUDE.md, "Model status"). ``extra_dirs`` are
+    searched after the bundled folder (tools/pv/validate_serving.py on a
+    virtual dataset, whose normalizer lives next to its data)."""
     bundled = medpatch_root / "normalizers"
     if getattr(args, "normalizer_state", None):
-        path = bundled / Path(str(args.normalizer_state).replace("\\", "/")).name
+        name = Path(str(args.normalizer_state).replace("\\", "/")).name
     else:
-        path = bundled / f"ph_ts{args.timestep}.input_str_previous.start_time_zero.normalizer"
-    if not path.is_file():
-        raise FusionLoadError(f"normalizer {path.name} is not bundled under {bundled}")
-    return path
+        name = f"ph_ts{args.timestep}.input_str_previous.start_time_zero.normalizer"
+    for folder in (bundled, *extra_dirs):
+        if (folder / name).is_file():
+            return folder / name
+    raise FusionLoadError(f"normalizer {name} is not bundled under {bundled}")
 
 
 @dataclass
@@ -120,11 +123,32 @@ class FusionScore:
     probability: float
     head: str
     heads: dict[str, float]
-    unimodal: dict[str, float]
+    #: Raw logits of the five heads.
+    head_logits: dict[str, float]
+    #: CMSMAFusion's own per-modality late-fusion votes (logits), present
+    #: modalities only. Trained only through the weighted late sum, so their
+    #: scale is unconstrained: NOT standalone probabilities.
+    votes: dict[str, float]
+    #: The Round 1 standalone readers' own probabilities (reader_heads.pt),
+    #: for the modalities a reader is available for.
+    standalone: dict[str, float]
     present: dict[str, bool]
-    missingness_prediction: float
+    missingness_logit: float
     alphas: dict[str, float]
     notes: list[str] = field(default_factory=list)
+
+
+@dataclass
+class StandaloneHead:
+    """One Round 1 reader's classifier head, applied to the fusion's own
+    (bit-identical) encoder features."""
+
+    key: str
+    modality: str
+    label: str
+    test_auroc: float | None
+    classifier: Any
+    normalizer: Any | None = None
 
 
 @dataclass
@@ -143,6 +167,16 @@ class FusionModel:
     discretizer: Any
     cxr_transform: Any
     device: str
+    #: Round 1 standalone readers (reader_heads.pt): "installed", "partial"
+    #: (some modality unavailable) or "not-installed".
+    standalone_state: str = "not-installed"
+    standalone: dict[str, StandaloneHead] = field(default_factory=dict)
+    #: Per modality: how its standalone score is computed, or why it is not.
+    standalone_detail: dict[str, str] = field(default_factory=dict)
+    #: Readers run on their own full path (their encoder differs from the
+    #: fusion's): a readers.Readers, and the modalities it answers for.
+    fallback: Any | None = None
+    fallback_modalities: set[str] = field(default_factory=set)
     _captured: dict[str, Any] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -161,8 +195,19 @@ class FusionModel:
 
             return hook
 
+        def keep_input(name: str):
+            # The classifier's input is the modality's pooled feature exactly
+            # as its Round 1 reader computes it (CLS token for the ViT, mean
+            # of the projected BERT tokens for RR / DN).
+            def hook(_module: Any, inputs: Any) -> None:
+                self._captured[f"{name}_in"] = inputs[0].detach()
+
+            return hook
+
         for m in self.modalities:
-            getattr(self.fusion, f"{m.lower()}_classifier").register_forward_hook(keep(m))
+            classifier = getattr(self.fusion, f"{m.lower()}_classifier")
+            classifier.register_forward_hook(keep(m))
+            classifier.register_forward_pre_hook(keep_input(m))
         self.fusion.missingness_classifier.register_forward_hook(keep("missingness"))
         self._share_frozen_reader_passes()
 
@@ -239,6 +284,20 @@ class FusionModel:
             return torch.zeros(1, 3, 384, 384, device=self.device)
         return self.cxr_transform(cxr_image(cxr_bytes))[None].to(self.device)
 
+    def raw_forward(self, *args: Any) -> Any:
+        """``model(x, seq_lengths, img, pairs, rr, dn)`` on an already-collated
+        batch, as MSMA_Trainer runs it (tools/pv/validate_serving.py). Holds
+        the lock and clears the frozen-reader memo, whose keys are object ids."""
+        import torch  # noqa: PLC0415
+
+        with self._lock, torch.inference_mode():
+            self._memo.clear()
+            try:
+                return self.model(*args)
+            finally:
+                self._memo.clear()
+                self._captured.clear()
+
     # ── scoring ─────────────────────────────────────────────────────────────
 
     def score(self, req: PredictRequest, cxr_bytes: bytes | None = None) -> FusionScore:
@@ -273,6 +332,8 @@ class FusionModel:
             missing = self.fusion.detect_missingness_batch(1, cxr=img, dn=dn, rr=rr)[0]
             weights = self.fusion.last_late_weights[0, :, self.output_index].float().cpu()
             captured = dict(self._captured)
+            standalone = self._standalone_scores(req, cxr_bytes, captured)
+            self._memo.clear()
 
         k = self.output_index
         logits = {
@@ -285,11 +346,16 @@ class FusionModel:
         heads = {h: float(torch.sigmoid(v)) for h, v in logits.items()}
 
         present = {m.lower(): bool(missing[i]) for i, m in enumerate(self.modalities)}
-        unimodal = {
-            m.lower(): float(torch.sigmoid(captured[m].reshape(-1)[k]))
+        votes = {
+            m.lower(): float(captured[m].reshape(-1)[k])
             for m in self.modalities
             if present[m.lower()]
         }
+        if self.standalone_state == "not-installed":
+            notes.append(
+                "Standalone readers not installed (reader_heads.pt): 'By source' shows no "
+                "per-modality score."
+            )
         absent = [m for m in self.modalities if not present[m.lower()]]
         if absent:
             notes.append(
@@ -306,12 +372,62 @@ class FusionModel:
             probability=heads[self.head],
             head=self.head,
             heads=heads,
-            unimodal=unimodal,
+            head_logits={h: float(v) for h, v in logits.items()},
+            votes=votes,
+            standalone=standalone,
             present=present,
-            missingness_prediction=float(torch.sigmoid(captured["missingness"].reshape(-1)[k])),
+            missingness_logit=float(captured["missingness"].reshape(-1)[k]),
             alphas=alphas,
             notes=notes,
         )
+
+    def _standalone_scores(
+        self, req: PredictRequest, cxr_bytes: bytes | None, captured: dict[str, Any]
+    ) -> dict[str, float]:
+        """The Round 1 readers' own probabilities, exactly as readers mode
+        computes them (readers.Readers.score): the same inputs, the reader's
+        own head, clamped to [0.001, 0.999]. Call under the lock."""
+        import numpy as np  # noqa: PLC0415
+        import torch  # noqa: PLC0415
+
+        from .readers import rr_text  # noqa: PLC0415
+
+        notes_in = req.notes or []
+        available = {
+            "ehr": req.ehr is not None,
+            "cxr": cxr_bytes is not None,
+            "rr": rr_text(notes_in) is not None,
+            "dn": self.task == "pneumonia" and dn_text(notes_in) is not None,
+        }
+        k = self.output_index
+        out: dict[str, float] = {}
+        for m, head in self.standalone.items():
+            if not available[m]:
+                continue
+            if m == "ehr":
+                # The reader's own input: the 48-h window and the normalizer it
+                # was trained with (the mortality reader used ihm_*, the fusion
+                # the phenotyping default), through the shared LSTM.
+                rows = ehr_rows(req.ehr, self.discretizer)  # type: ignore[arg-type]
+                if not rows:
+                    continue
+                data = self.discretizer.transform(np.array(rows), end=float(EHR_WINDOW_HOURS))[0]
+                data = head.normalizer.transform(data)
+                x = torch.tensor(data[None], dtype=torch.float32, device=self.device)
+                feats = self.fusion.ehr_model(x, [x.shape[1]])
+                feats = feats[0] if isinstance(feats, tuple) else feats
+            else:
+                feats = captured.get(f"{m.upper()}_in")
+                if feats is None:
+                    continue
+            logit = head.classifier(feats).reshape(-1)[k]
+            out[m] = min(0.999, max(0.001, float(torch.sigmoid(logit))))
+        if self.fallback is not None:
+            scores = self.fallback.score(req, cxr_bytes)
+            for m in self.fallback_modalities:
+                if m in scores:
+                    out[m] = scores[m].probability
+        return out
 
 
 class FusionModels:
@@ -346,7 +462,12 @@ def _read_run(folder: Path) -> tuple[dict[str, Any], Path]:
 
 
 def load_task(
-    task: Task, folder: Path, medpatch_root: Path, device: str, theta: float
+    task: Task,
+    folder: Path,
+    medpatch_root: Path,
+    device: str,
+    theta: float,
+    normalizer_dirs: tuple[Path, ...] = (),
 ) -> FusionModel:
     """Build, verify and strictly load one task's fusion model, or raise."""
     started = time.perf_counter()
@@ -442,7 +563,7 @@ def load_task(
     probe = [["0.5"] + [""] * (len(discretizer._header) - 1)]
     header = discretizer.transform(np.array(probe), end=1.0)[1].split(",")
     normalizer = Normalizer(fields=[i for i, name in enumerate(header) if "->" not in name])
-    normalizer.load_params(str(normalizer_file(args, medpatch_root)))
+    normalizer.load_params(str(normalizer_file(args, medpatch_root, normalizer_dirs)))
 
     fm = FusionModel(
         task=task,
@@ -468,15 +589,137 @@ def load_task(
     return fm
 
 
-def load_fusion(fusion_dir: Path, medpatch_root: Path, device: str, theta: float) -> FusionModels:
-    """Both tasks' models, warmed up, or raise FusionLoadError."""
+def load_fusion(
+    fusion_dir: Path,
+    medpatch_root: Path,
+    device: str,
+    theta: float,
+    checkpoint_dir: Path | None = None,
+    normalizer_dirs: tuple[Path, ...] = (),
+) -> FusionModels:
+    """Both tasks' models with their standalone readers, warmed up, or raise
+    FusionLoadError."""
     models = {
-        task: load_task(task, fusion_dir / folder, medpatch_root, device, theta)
+        task: load_task(task, fusion_dir / folder, medpatch_root, device, theta, normalizer_dirs)
         for task, (folder, _, _) in TASKS.items()
     }
+    attach_standalone(models, fusion_dir, medpatch_root, device, checkpoint_dir)
     fused = FusionModels(models)
     warm_up(fused)
     return fused
+
+
+def attach_standalone(
+    models: dict[Task, FusionModel],
+    fusion_dir: Path,
+    medpatch_root: Path,
+    device: str,
+    checkpoint_dir: Path | None,
+) -> None:
+    """Give each task model its Round 1 standalone readers (reader_heads.pt).
+
+    Absent file: fusion still serves, "By source" says the readers are not
+    installed. A file whose sha256 differs from reader_heads.json: refuse
+    (FusionLoadError, so /v1/health is degraded). For each modality the
+    fusion's encoder tensors must equal the Round 1 reader's bit for bit; if
+    not, that reader runs on its own full path when its Round 1 checkpoint is
+    under CHECKPOINT_DIR, else its standalone score is unavailable (and
+    /v1/model-info says why).
+    """
+    from . import reader_heads  # noqa: PLC0415
+
+    try:
+        payload = reader_heads.load(fusion_dir)
+    except reader_heads.ReaderHeadsError as exc:
+        raise FusionLoadError(str(exc)) from exc
+    if payload is None:
+        for fm in models.values():
+            fm.standalone_state = "not-installed"
+            fm.standalone_detail = {m.lower(): "not installed" for m in fm.modalities}
+        return
+
+    from arguments import args_parser  # type: ignore[import-not-found]  # noqa: PLC0415
+    from ehr_utils.preprocessing import Normalizer  # type: ignore[import-not-found]  # noqa: PLC0415
+    from models.classifier import Classifier  # type: ignore[import-not-found]  # noqa: PLC0415
+
+    from .readers import _COMMON_ARGS, READERS  # noqa: PLC0415
+
+    entries = payload["readers"]
+    need_fallback: dict[Task, set[str]] = {}
+    for task, fm in models.items():
+        own = fm.model.state_dict()
+        digest_cache: dict[str, str] = {}
+        for modality in (m.lower() for m in fm.modalities):
+            key = f"{modality}-{task}"
+            entry = entries.get(key)
+            if entry is None:
+                fm.standalone_detail[modality] = f"unavailable: {key} is not in reader_heads.pt"
+                continue
+            if reader_heads.encoder_digests(own, modality, digest_cache) != entry["encoder_digests"]:
+                need_fallback.setdefault(task, set()).add(modality)
+                continue
+            args = args_parser().parse_args([*entry["args"], *_COMMON_ARGS])
+            dims = {
+                "ehr": lambda: fm.fusion.ehr_model.feats_dim,
+                "cxr": lambda: fm.fusion.cxr_model.feats_dim,
+                "rr": lambda: fm.fusion.text_model.feats_dim_rr,
+                "dn": lambda: fm.fusion.text_model.feats_dim_dn,
+            }
+            classifier = Classifier(dims[modality](), args)
+            classifier.load_state_dict(entry["head"], strict=True)
+            normalizer = None
+            if modality == "ehr":
+                normalizer = Normalizer(fields=fm.normalizer._fields)
+                normalizer.load_params(str(medpatch_root / "normalizers" / entry["normalizer"]))
+            fm.standalone[modality] = StandaloneHead(
+                key=key,
+                modality=modality,
+                label=entry["label"],
+                test_auroc=entry["test_auroc"],
+                classifier=classifier.to(device).eval(),
+                normalizer=normalizer,
+            )
+            fm.standalone_detail[modality] = (
+                f"Round 1 head ({entry['source'].split('/')[-1]}) on the fusion's encoder, "
+                "bit-identical to the reader's"
+            )
+
+    if need_fallback:
+        from .readers import load_readers  # noqa: PLC0415
+
+        specs = {s.key: s for s in READERS}
+        runnable = {
+            f"{m}-{task}"
+            for task, mods in need_fallback.items()
+            for m in mods
+            if checkpoint_dir is not None and (checkpoint_dir / specs[f"{m}-{task}"].checkpoint).is_file()
+        }
+        fallback = (
+            load_readers(medpatch_root, checkpoint_dir, device, keys=runnable, confidence=False)
+            if runnable and checkpoint_dir is not None
+            else None
+        )
+        for task, mods in need_fallback.items():
+            fm = models[task]
+            for m in mods:
+                if f"{m}-{task}" in runnable:
+                    fm.fallback = fallback
+                    fm.fallback_modalities.add(m)
+                    fm.standalone_detail[m] = (
+                        "own Round 1 reader path: the fusion's encoder differs from the reader's"
+                    )
+                else:
+                    fm.standalone_detail[m] = (
+                        "unavailable: the fusion's encoder differs from the Round 1 reader's and "
+                        "the reader's checkpoint is not on this server"
+                    )
+    for fm in models.values():
+        total = len(fm.modalities)
+        ready = len(fm.standalone) + len(fm.fallback_modalities)
+        fm.standalone_state = "installed" if ready == total else "partial"
+        logger.info(
+            "%s: standalone readers %s (%s)", fm.run_id, fm.standalone_state, fm.standalone_detail
+        )
 
 
 def warm_up(models: FusionModels) -> None:
@@ -511,10 +754,14 @@ def build_fusion_result(req: PredictRequest, cxr: Any, fm: FusionModel, score: F
     confidences on the report) stay simulated and are labelled so (decision 8,
     docs/REAL_INFERENCE_PLAN.md)."""
     from .mock import _build_confidence, _seeded_rng, build_received  # noqa: PLC0415
+    import math  # noqa: PLC0415
+
     from .schemas import (  # noqa: PLC0415
         Alphas,
+        FusionInternals,
         FusionModelInfo,
         JointScores,
+        LogitProb,
         Missingness,
         ModalitySource,
         PredictionResult,
@@ -529,19 +776,31 @@ def build_fusion_result(req: PredictRequest, cxr: Any, fm: FusionModel, score: F
     def clamp(p: float) -> float:
         return min(1.0, max(0.0, p))
 
+    def lp(logit: float) -> LogitProb:
+        # Saturated votes reach |logit| in the hundreds: a stable sigmoid.
+        z = math.exp(-abs(logit))
+        p = 1.0 / (1.0 + z) if logit >= 0 else z / (1.0 + z)
+        return LogitProb(logit=logit, probability=clamp(p))
+
     def source(m: str) -> ModalitySource | None:
-        if not present[m]:
+        # "By source" is the Round 1 standalone reader's own score.
+        head = fm.standalone.get(m)
+        if m not in score.standalone:
             return None
-        return ModalitySource(kind="trained", model=f"{_LABELS[m]}, inside {fm.run_id}")
+        label = head.label if head is not None else _LABELS[m]
+        auroc = head.test_auroc if head is not None else None
+        return ModalitySource(
+            kind="trained", model=f"{label}: standalone Round 1 reader", test_auroc=auroc
+        )
 
     alphas = {c: a for c, a in score.alphas.items() if c in ("miss", "low", "high") or present.get(c)}
     total = sum(alphas.values()) or 1.0
     alphas = {c: a / total for c, a in alphas.items()}
     return PredictionResult(
         probability=clamp(score.probability),
-        unimodal=UnimodalScores(**{m: clamp(p) for m, p in score.unimodal.items()}),
+        unimodal=UnimodalScores(**{m: clamp(p) for m, p in score.standalone.items()}),
         joint=JointScores(high=clamp(score.heads["high"]), low=clamp(score.heads["low"])),
-        missingness=Missingness(vector=present, prediction=clamp(score.missingness_prediction)),
+        missingness=Missingness(vector=present, prediction=lp(score.missingness_logit).probability),
         alphas=Alphas(
             high=alphas["high"],
             low=alphas["low"],
@@ -560,6 +819,13 @@ def build_fusion_result(req: PredictRequest, cxr: Any, fm: FusionModel, score: F
             theta=fm.theta,
             modalities=fm.modalities,
             calibrated=False,
+            standalone=fm.standalone_state,  # type: ignore[arg-type]
+            internals=FusionInternals(
+                votes={m: lp(v) for m, v in score.votes.items()},
+                high=lp(score.head_logits["high"]),
+                low=lp(score.head_logits["low"]),
+                missingness=lp(score.missingness_logit),
+            ),
             notes=[
                 f"Probability is the raw sigmoid of the {score.head} head (chosen on "
                 "validation): an uncalibrated probability.",
