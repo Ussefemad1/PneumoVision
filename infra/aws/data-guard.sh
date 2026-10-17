@@ -14,7 +14,8 @@
 #   - other tabular or medical-image dumps (*.parquet, *.feather, *.dcm,
 #     *.nii*, *.csv.gz, *.pkl.gz, *.h5);
 #   - the two demo PNGs of unknown provenance (docs/demo-examples/*.png);
-#   - in checkpoints/: anything but *.pth.tar weights and their run.json
+#   - in checkpoints/: anything but *.pth.tar weights, their run.json, and
+#     checkpoints/round3/reader_heads.{pt,json}
 #     (the shared Drive folders also hold r3_*.csv tables and *.log files,
 #     which must not be copied here).
 # It prints file names only, never contents.
@@ -70,6 +71,8 @@ for f in "${FILES[@]}"; do
   if [[ "$f" == checkpoints/* ]]; then
     case "$f" in
       checkpoints/.gitkeep|*/run.json|*.pth.tar) ;;
+      # The Round 1 standalone readers' heads (tools/pv/extract_reader_heads.py).
+      checkpoints/round3/reader_heads.pt|checkpoints/round3/reader_heads.json) ;;
       *) add "$f  (checkpoints/ holds only *.pth.tar and run.json)" ;;
     esac
   fi

@@ -1,6 +1,6 @@
 """Write SYNTHETIC, randomly initialised Round 3 runs for exercising the stack.
 
-    python scripts/make_fake_runs.py <out-dir>        # e.g. checkpoints/round3
+    python scripts/make_fake_runs.py <out-dir> [<readers-dir>]   # e.g. checkpoints/round3
 
 Builds one CMSMAFusion per task with the real architecture (BioBERT, ViT-small,
 LSTM; from the pretrained caches) and random fusion weights, saves it as
@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 BERT = "dmis-lab/biobert-v1.1"
 
@@ -93,8 +94,50 @@ def write_run(task: str, args, model, out: Path) -> Path:
     return ckpt
 
 
+def share_bert(models: dict[str, Any]) -> None:
+    """Give both fake runs the same frozen BERT, as the real runs have (one
+    BioBERT; readers mode refuses text readers whose BERTs differ)."""
+    import torch
+
+    source = models["mortality"].text_model.bert.state_dict()
+    with torch.no_grad():
+        models["pneumonia"].text_model.bert.load_state_dict(source)
+
+
+def write_fake_readers(models: dict[str, Any], out: Path, seed: int = 3) -> Path:
+    """Fake Round 1 reader checkpoints in the readers layout under ``out``:
+    each reuses its fake run's encoder (as the real Round 3 runs reuse the
+    Round 1 readers' encoders, F2) with a random classifier head of its own."""
+    import torch
+    from arguments import args_parser  # type: ignore[import-not-found]
+    from models.fusion import Fusion  # type: ignore[import-not-found]
+
+    from app.readers import _COMMON_ARGS, READERS
+
+    torch.manual_seed(seed)
+    for spec in READERS:
+        run = models[spec.task]
+        args = args_parser().parse_args([*spec.args, *_COMMON_ARGS])
+        encoders = {
+            "ehr": (run.ehr_model, None, None),
+            "cxr": (None, run.cxr_model, None),
+            "rr": (None, None, run.text_model),
+            "dn": (None, None, run.text_model),
+        }[spec.modality]
+        reader = Fusion(args, *encoders).eval()
+        with torch.no_grad():
+            for p in getattr(reader.fusion_model, f"{spec.modality}_classifier").parameters():
+                p.normal_(0.0, 0.5)
+        other = {"rr": "fc_dn", "dn": "fc_rr"}.get(spec.modality)
+        state = {k: v for k, v in reader.state_dict().items() if not (other and f".{other}." in k)}
+        path = out / spec.checkpoint
+        path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save({"epoch": 1, "state_dict": state}, path)
+    return out
+
+
 def main() -> int:
-    if len(sys.argv) != 2:
+    if len(sys.argv) not in (2, 3):
         print(__doc__, file=sys.stderr)
         return 2
     here = Path(__file__).resolve().parents[1]
@@ -105,11 +148,20 @@ def main() -> int:
     medpatch = Path(env_root) if env_root else here.parent.parent / "medpatch"
     sys.path.insert(0, str(medpatch))
     out = Path(sys.argv[1])
-    for task in ("mortality", "pneumonia"):
-        args, model = build(task)
+    built = {task: build(task) for task in ("mortality", "pneumonia")}
+    models = {task: model for task, (_, model) in built.items()}
+    share_bert(models)
+    for task, (args, model) in built.items():
         ckpt = write_run(task, args, model, out)
         print(f"{task}: {ckpt} ({ckpt.stat().st_size / 2**20:.0f} MiB, random weights)")
-        del model
+    if len(sys.argv) == 3:
+        # Optional: fake Round 1 readers in <readers-dir>, and their heads
+        # extracted into <out-dir>/reader_heads.pt, as tools/pv/extract_reader_heads.py does.
+        from app import reader_heads
+
+        readers_dir = write_fake_readers(models, Path(sys.argv[2]))
+        manifest = reader_heads.extract(readers_dir, out)
+        print(f"reader heads: {out / reader_heads.HEADS_FILE} (sha256 {manifest['sha256'][:12]})")
     return 0
 
 

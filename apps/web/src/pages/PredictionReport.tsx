@@ -1,5 +1,7 @@
 import type {
+  FusionInternals,
   FusionModelInfo,
+  LogitProb,
   Modality,
   ModalitySource,
   Prediction,
@@ -86,6 +88,9 @@ export function PredictionReportPage() {
   // Fusion mode: the trained MedPatch model (Round 3). Its token-confidence
   // maps on this page are still simulated (decision 8, REAL_INFERENCE_PLAN).
   const fusionModel = result.fusionModel;
+  // Fusion results stored before the standalone readers carried the fusion's
+  // internal votes in `unimodal`: never show those as per-source scores.
+  const legacyFusion = fusionModel !== null && fusionModel.standalone === null;
 
   return (
     <div className="space-y-4">
@@ -146,11 +151,23 @@ export function PredictionReportPage() {
                 >
                   <div className="min-w-0 flex-1">
                     <div className="text-sm font-medium text-ink">{MODALITY_LABELS[key]}</div>
-                    {present && sources?.[key] && (
+                    {present && sources?.[key] && !legacyFusion && (
                       <SourceChip source={sources[key]} inFusion={fusionModel !== null} />
                     )}
                   </div>
-                  {present && typeof value === 'number' ? (
+                  {present && fusionModel && legacyFusion ? (
+                    <span className="max-w-[11rem] text-right text-xs text-ink-muted">
+                      Older result: no standalone score (re-run to see it)
+                    </span>
+                  ) : present && fusionModel?.standalone === 'not-installed' ? (
+                    <span className="max-w-[11rem] text-right text-xs text-ink-muted">
+                      Standalone readers not installed
+                    </span>
+                  ) : present && fusionModel && typeof value !== 'number' ? (
+                    <span className="max-w-[11rem] text-right text-xs text-ink-muted">
+                      Standalone reader unavailable
+                    </span>
+                  ) : present && typeof value === 'number' ? (
                     <div className="text-right">
                       <div className="tnum text-sm font-semibold text-ink">{percent(value)}</div>
                       <div
@@ -177,24 +194,32 @@ export function PredictionReportPage() {
               <SimulatedChip />
             </div>
           )}
-          <div className="grid grid-cols-2 gap-3">
-            <div className="rounded-lg border border-hairline p-3">
-              <div className="text-[11px] uppercase tracking-wide text-ink-muted">
-                High confidence
+          {fusionModel ? (
+            <p className="rounded-lg bg-surface-2 p-3 text-xs text-ink-secondary">
+              The fusion&apos;s joint high/low-confidence heads and its missingness head are
+              internal outputs, not probabilities: they are under “Model details” with an
+              explanation.
+            </p>
+          ) : (
+            <div className="grid grid-cols-2 gap-3">
+              <div className="rounded-lg border border-hairline p-3">
+                <div className="text-[11px] uppercase tracking-wide text-ink-muted">
+                  High confidence
+                </div>
+                <div className="tnum mt-1 text-xl font-semibold text-ink">
+                  {percent(result.joint.high)}
+                </div>
               </div>
-              <div className="tnum mt-1 text-xl font-semibold text-ink">
-                {percent(result.joint.high)}
+              <div className="rounded-lg border border-dashed border-hairline p-3">
+                <div className="text-[11px] uppercase tracking-wide text-ink-muted">
+                  Low confidence
+                </div>
+                <div className="tnum mt-1 text-xl font-semibold text-ink-secondary">
+                  {percent(result.joint.low)}
+                </div>
               </div>
             </div>
-            <div className="rounded-lg border border-dashed border-hairline p-3">
-              <div className="text-[11px] uppercase tracking-wide text-ink-muted">
-                Low confidence
-              </div>
-              <div className="tnum mt-1 text-xl font-semibold text-ink-secondary">
-                {percent(result.joint.low)}
-              </div>
-            </div>
-          </div>
+          )}
 
           <div className="mt-4">
             <div className="mb-2 flex items-center justify-between text-[11px] uppercase tracking-wide text-ink-muted">
@@ -234,15 +259,17 @@ export function PredictionReportPage() {
             </ul>
           </div>
 
-          <div className="mt-4 rounded-lg bg-surface-2 p-3">
-            <div className="flex items-center justify-between text-[11px] uppercase tracking-wide text-ink-muted">
-              Missingness branch
-              {realConfidence && fusionSimulated && <SimulatedChip />}
+          {!fusionModel && (
+            <div className="mt-4 rounded-lg bg-surface-2 p-3">
+              <div className="flex items-center justify-between text-[11px] uppercase tracking-wide text-ink-muted">
+                Missingness branch
+                {realConfidence && fusionSimulated && <SimulatedChip />}
+              </div>
+              <div className="tnum mt-0.5 text-sm font-medium text-ink">
+                {percent(result.missingness.prediction)}
+              </div>
             </div>
-            <div className="tnum mt-0.5 text-sm font-medium text-ink">
-              {percent(result.missingness.prediction)}
-            </div>
-          </div>
+          )}
         </Card>
 
         {/* F6 + fused decision */}
@@ -308,8 +335,11 @@ function SourceChip({ source, inFusion }: { source: ModalitySource; inFusion: bo
         title={source.model ?? undefined}
         className="mt-1 inline-flex items-center gap-1 rounded-full bg-[var(--series-mortality)]/12 px-2 py-0.5 text-[10px] font-semibold text-[var(--series-mortality)]"
       >
-        <span aria-hidden="true">✓</span> Trained
-        <span className="font-normal">· reader inside the fusion</span>
+        <span aria-hidden="true">✓</span> Standalone reader (Round 1)
+        <span className="font-normal">· uncalibrated</span>
+        {source.testAuroc !== null && (
+          <span className="tnum font-normal">· AUROC {source.testAuroc.toFixed(3)}</span>
+        )}
       </span>
     );
   }
@@ -397,6 +427,7 @@ function FusionDetails({ model }: { model: FusionModelInfo }) {
           ))}
         </tbody>
       </table>
+      {model.internals && <FusionInternalsTable internals={model.internals} />}
       {model.notes.length > 0 && (
         <ul className="mt-2 list-disc space-y-1 pl-4">
           {model.notes.map((note) => (
@@ -405,6 +436,64 @@ function FusionDetails({ model }: { model: FusionModelInfo }) {
         </ul>
       )}
     </details>
+  );
+}
+
+const VOTE_LABELS: Record<string, string> = {
+  ehr: 'EHR vote',
+  cxr: 'Chest X-ray vote',
+  rr: 'Radiology-report vote',
+  dn: 'Discharge-note vote',
+};
+
+/** CMSMAFusion's internal outputs, as raw logits and sigmoid, explicitly not probabilities. */
+function FusionInternalsTable({ internals }: { internals: FusionInternals }) {
+  const rows: [string, LogitProb][] = [
+    ...Object.entries(internals.votes)
+      .filter((entry): entry is [string, LogitProb] => entry[1] !== null)
+      .map(([m, v]): [string, LogitProb] => [VOTE_LABELS[m] ?? m, v]),
+    ['Joint head, high-confidence tokens', internals.high],
+    ['Joint head, low-confidence tokens', internals.low],
+    ['Missingness head', internals.missingness],
+  ];
+  return (
+    <section className="mt-3">
+      <h3 className="text-[11px] font-semibold uppercase tracking-wide text-ink">
+        Inside the MedPatch fusion (late-fusion votes — not probabilities)
+      </h3>
+      <p className="mt-1">
+        These feed the late fusion and are trained only through its weighted sum, so their scale is
+        unconstrained (a sigmoid near 0 % or 100 % is normal). The missingness head sees only which
+        inputs are present, not what they say.
+      </p>
+      <table className="mt-1 w-full">
+        <caption className="sr-only">Fusion-internal outputs: logit and sigmoid</caption>
+        <thead>
+          <tr className="text-ink-muted">
+            <th scope="col" className="py-0.5 text-left font-normal">
+              Output
+            </th>
+            <th scope="col" className="py-0.5 text-right font-normal">
+              Logit
+            </th>
+            <th scope="col" className="py-0.5 text-right font-normal">
+              Sigmoid
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(([label, v]) => (
+            <tr key={label}>
+              <th scope="row" className="py-0.5 text-left font-normal">
+                {label}
+              </th>
+              <td className="tnum py-0.5 text-right">{v.logit.toFixed(2)}</td>
+              <td className="tnum py-0.5 text-right">{percent(v.probability)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
   );
 }
 

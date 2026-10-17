@@ -114,6 +114,15 @@ A dict with `epoch`, `state_dict`, `best_auroc`, `optimizer`, plus `weights`
   an uncalibrated probability. `readers` (Round 1 + 2b readers, plain average)
   and `mock` still work. See `docs/REAL_INFERENCE_PLAN.md` and
   [`services/inference/READERS.md`](services/inference/READERS.md).
+- **Never show CMSMAFusion's `{m}_classifier` outputs as per-modality
+  probabilities.** They are late-fusion votes, trained only through the
+  weighted late sum (loss is on `high`, `low`, `late` only), so they saturate.
+  In fusion mode "By source" shows the **Round 1 standalone readers** instead:
+  their heads (`checkpoints/round3/reader_heads.pt`, made once with
+  `python -m tools.pv.extract_reader_heads`) applied to the fusion's
+  bit-identical encoder features. The votes, the joint heads and the
+  missingness head appear only in "Model details", as logits, labelled "not
+  probabilities".
 - **Deployment is AWS EC2** (`infra/aws/`, fusion mode on CPU). Railway is no
   longer used (`infra/railway/` is kept for history only).
 - **Trained weights live on the team Drive, not in this repo.** Rounds 1, 2,

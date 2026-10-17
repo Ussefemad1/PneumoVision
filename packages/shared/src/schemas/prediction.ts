@@ -212,6 +212,25 @@ export const excludedInput = z.object({
 });
 export type ExcludedInput = z.infer<typeof excludedInput>;
 
+/** A fusion-internal output: its raw logit and its sigmoid. */
+export const logitProb = z.object({ logit: z.number(), probability });
+export type LogitProb = z.infer<typeof logitProb>;
+
+/**
+ * Inside CMSMAFusion, for "Model details" only. None of these is a standalone
+ * probability: the per-modality votes are trained only through the weighted
+ * late-fusion sum (unconstrained scale, they saturate), and the missingness
+ * head sees only which inputs are present.
+ */
+export const fusionInternals = z.object({
+  // Absent modalities are null once stored.
+  votes: z.record(z.string(), logitProb.nullable()),
+  high: logitProb,
+  low: logitProb,
+  missingness: logitProb,
+});
+export type FusionInternals = z.infer<typeof fusionInternals>;
+
 /** Which trained MedPatch fusion model produced a result (fusion mode). */
 export const fusionModelInfo = z.object({
   runId: z.string(),
@@ -228,6 +247,15 @@ export const fusionModelInfo = z.object({
   calibrated: z.boolean(),
   /** Plain-language caveats for this request. */
   notes: z.array(z.string()),
+  /**
+   * The Round 1 standalone readers behind "By source". Null on results stored
+   * before they existed (those showed the fusion's internal votes there).
+   */
+  standalone: z
+    .enum(['installed', 'partial', 'not-installed'])
+    .nullish()
+    .transform((v) => v ?? null),
+  internals: fusionInternals.nullish().transform((v) => v ?? null),
 });
 export type FusionModelInfo = z.infer<typeof fusionModelInfo>;
 
