@@ -69,6 +69,12 @@ services:
         INSTALL_ML: 'true'
     environment:
       MOCK_MODE: ${MOCK_MODE:-false}
+      # MOCK_MODE=false alone made Settings.mode raise at start-up: it needs
+      # INFERENCE_MODE to say which real mode runs (readers, or fusion for the
+      # Round 3 MedPatch models).
+      INFERENCE_MODE: ${INFERENCE_MODE:-readers}
+      TORCH_DEVICE: ${TORCH_DEVICE:-cpu}
+      TORCH_NUM_THREADS: ${TORCH_NUM_THREADS:-2}
       LOG_LEVEL: ${LOG_LEVEL:-warn}
     read_only: true
     tmpfs:
