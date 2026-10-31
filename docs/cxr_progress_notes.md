@@ -277,6 +277,7 @@ one to get wrong silently.
 
 ---
 
+<<<<<<< HEAD
 ## Checkpoint durability for multi-account training (2026-09-27)
 
 Training runs across **three free Colab accounts** (~30 h/week each, ~90 h/week
@@ -331,6 +332,63 @@ Happy path is unchanged: with both files intact it still uses `last`.
 Deliberately **not** done: staging to local disk before copying to Drive. It
 would shrink the window further, but the fallback already converts this from
 "the next person is stuck" into "the next person continues, loudly warned".
+=======
+## Image selection is ambiguous when a study has two frontal films
+
+Found when the first real training run crashed during validation:
+
+    KeyError: '96a7eec6-1d80e8ae-8ebcac87-dfecac3e-780f61f4'
+    cxr_dataset.py:46  img = Image.open(self.filenames_to_path[index])
+
+**MIMIC-CXR timestamps a *study*, not an individual image.** A single trip to
+the x-ray room can produce several images sharing one `StudyDateTime` —
+**125,160 of 227,835 studies contain more than one image** (up to 11). So
+whenever the selected study holds two AP films, "keep the latest CXR per stay"
+has two equally-valid answers.
+
+The crashing pair were both AP, both `study_id 52210875`, both stamped
+`2187-03-12 09:07:07`. The next image fell 33 minutes outside the 48-hour
+window, so the tie was genuinely the latest.
+
+`DataFusion.py:441` selects with:
+
+    selected = group[1].sort_values('StudyDateTime').tail(1)
+
+No secondary sort key, so the winner among tied rows comes from pandas' default
+(non-stable) sort. That is **deterministic for a given pandas/numpy version**,
+not random between runs — but a different version, or a list regenerated on
+another machine, can pick the other twin.
+
+`scripts/build_cxr_download_list.py` broke the tie the other way, so the
+download list and the pipeline disagreed on ~10% of stays:
+
+| Task | Stays with an image | Latest tied | Image not on disk |
+|---|---|---|---|
+| in-hospital-mortality | 6,677 | 706 | 660 |
+| pneumonia-48h | 6,677 | 706 | 660 |
+| phenotyping | 11,230 | 1,092 | 1,088 |
+| **union** | | | **1,586** |
+
+Counts matched (6,677 either way) while membership did not, which is why this
+surfaced only at runtime.
+
+**Resolution: download all tie candidates (1,586 extra, ~3 GB)** rather than
+changing the selection. Two options were rejected:
+
+- *Match the pipeline's tie-break in our list* — depends on pandas version.
+- *Add a deterministic secondary sort to the code* — deviates from the paper's
+  implementation, and buys no accuracy since the tied images are the same study
+  at the same moment.
+
+Note these are **not spare files**: for ~660 mortality stays the pipeline picks
+the newly-downloaded twin, which becomes the real training input while the
+originally-downloaded one goes unused. One image per stay still holds.
+
+**For the thesis:** MIMIC-CXR timestamps a study rather than an image, so
+"latest image per stay" is ambiguous whenever a study contains two frontal
+films — a genuine source of non-reproducibility in the original pipeline, and
+common rather than rare.
+>>>>>>> ad71c31 (Record Phase 1 results and open items for the CXR track)
 
 ---
 
