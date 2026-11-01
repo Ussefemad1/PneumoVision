@@ -140,23 +140,35 @@ export function AnalyzePage() {
   const statusText =
     phase === 'uploading' && progress !== null ? `${Math.round(progress * 100)}%` : '';
 
+  const dataAdded = hasCxr || hasEhr || sendable.length > 0;
+  const sourceRows: [string, boolean][] = [
+    ['Chest X-ray', hasCxr],
+    ['Clinical notes', sendable.length > 0],
+    ['Vitals', hasEhr],
+  ];
+  const steps = [
+    { id: 'step-task', n: 1, label: 'Choose task', done: true },
+    { id: 'step-data', n: 2, label: 'Add data', done: dataAdded },
+    { id: 'step-run', n: 3, label: 'Review & run', done: canSubmit },
+  ];
+  // Guarded: jsdom does not implement scrollIntoView.
+  const jumpTo = (id: string) =>
+    document.getElementById(id)?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+
   return (
-    <div className="mx-auto max-w-6xl space-y-4">
+    <div className="mx-auto flex w-full max-w-[1100px] flex-col gap-[22px]">
       <div>
-        <Link to="/analyze" className="text-xs text-ink-muted hover:text-ink hover:underline">
+        <Link to="/analyze" className="text-xs text-ink-secondary hover:text-ink hover:underline">
           ← Back to analyses
         </Link>
-        <h1 className="mt-2 text-2xl font-semibold text-ink">New analysis</h1>
+        <h1 className="mt-2 text-[28px] font-bold tracking-[-0.02em] text-ink">New analysis</h1>
       </div>
 
       {stayId && (
-        <div
-          role="status"
-          className="rounded-lg border border-hairline bg-surface-2 px-4 py-3 text-sm"
-        >
+        <div role="status" className="note-info px-4 py-3 text-sm">
           {stay.isLoading && 'Loading stay…'}
           {stay.isError && (
-            <span className="text-status-critical">{apiErrorMessage(stay.error)}</span>
+            <span className="text-status-ink-critical">{apiErrorMessage(stay.error)}</span>
           )}
           {stay.data && (
             <>
@@ -170,89 +182,174 @@ export function AnalyzePage() {
         </div>
       )}
 
-      <Card title="Task">
-        <div role="radiogroup" aria-label="Prediction task" className="grid gap-3 sm:grid-cols-2">
-          {TASKS.map((t) => (
-            <label
-              key={t.key}
+      <ol className="flex flex-wrap items-center gap-2">
+        {steps.map((step, i) => (
+          <li key={step.id} className="flex items-center gap-2">
+            {i > 0 && <span aria-hidden="true" className="h-0.5 w-8 rounded bg-hairline" />}
+            <button
+              onClick={() => jumpTo(step.id)}
               className={cn(
-                'cursor-pointer rounded-lg border p-4 transition',
-                task === t.key
-                  ? 'border-[var(--series-mortality)] bg-surface-3'
-                  : 'border-hairline hover:bg-surface-2',
+                'flex items-center gap-2.5 rounded-xl py-2 pl-2 pr-3.5 text-sm transition',
+                step.done ? 'bg-surface-1 shadow-card ring-1 ring-hairline' : 'hover:bg-surface-1',
               )}
             >
-              <span className="flex items-center gap-2">
-                <input
-                  type="radio"
-                  name="task"
-                  value={t.key}
-                  checked={task === t.key}
-                  onChange={() => setTask(t.key)}
-                  disabled={busy}
-                />
-                <span className="text-sm font-medium text-ink">{t.title}</span>
+              <span
+                aria-hidden="true"
+                className={cn(
+                  'grid h-8 w-8 place-items-center rounded-full text-[13px] font-bold',
+                  step.done
+                    ? 'bg-accent text-accent-on'
+                    : 'text-ink-secondary ring-[1.5px] ring-hairline',
+                )}
+              >
+                {step.n}
               </span>
-            </label>
-          ))}
-        </div>
-      </Card>
+              <span className={step.done ? 'font-semibold text-ink' : 'text-ink-secondary'}>
+                {step.label}
+              </span>
+            </button>
+          </li>
+        ))}
+      </ol>
 
-      <div className="grid gap-4 lg:grid-cols-[1fr_2fr]">
-        <Card title="Chest X-ray">
-          <CxrDrop file={cxr} onFile={setCxr} />
-        </Card>
-
-        <Card title="Clinical notes">
-          <NotesEditor task={task} notes={notes} onNotes={setNotes} />
-        </Card>
-      </div>
-
-      <Card title="Vitals">
-        <EhrPanel
-          tab={ehrTab}
-          onTab={setEhrTab}
-          rows={rows}
-          onRows={setRows}
-          csv={csv}
-          onCsv={setCsv}
-        />
-      </Card>
-
-      <Card>
-        <div className="flex flex-wrap items-center gap-3">
-          <Button variant="primary" disabled={!canSubmit} onClick={() => void submit()}>
-            {busy ? 'Analyzing…' : 'Run analysis'}
-          </Button>
-          <span role="status" className="text-xs text-ink-muted">
-            {statusText}
-          </span>
-          {phase === 'uploading' && progress !== null && (
-            <progress
-              value={progress}
-              max={1}
-              className="h-1.5 w-40"
-              aria-label="Upload progress"
-            />
-          )}
-        </div>
-        {problems.length > 0 && !busy && (
-          <ul className="mt-2 text-xs text-status-critical">
-            {problems.map((p) => (
-              <li key={p}>✕ {p}</li>
-            ))}
-          </ul>
-        )}
-        {error && (
-          <div
-            role="alert"
-            className="mt-3 rounded-md border border-status-critical/40 bg-status-critical/10 px-3 py-2 text-sm"
-          >
-            <span aria-hidden="true">✕ </span>
-            {error.message}
+      <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
+        <div className="flex min-w-0 flex-col gap-4">
+          <div id="step-task">
+            <Card title="Task">
+              <div
+                role="radiogroup"
+                aria-label="Prediction task"
+                className="grid gap-3 sm:grid-cols-2"
+              >
+                {TASKS.map((t) => (
+                  <label
+                    key={t.key}
+                    className={cn(
+                      'flex cursor-pointer items-center gap-3 rounded-[14px] p-5 transition',
+                      'has-[:focus-visible]:outline has-[:focus-visible]:outline-2',
+                      'has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-accent',
+                      task === t.key
+                        ? 'bg-softer ring-2 ring-accent'
+                        : 'ring-1 ring-hairline hover:bg-surface-3',
+                    )}
+                  >
+                    <input
+                      type="radio"
+                      name="task"
+                      value={t.key}
+                      checked={task === t.key}
+                      onChange={() => setTask(t.key)}
+                      disabled={busy}
+                      className="h-4 w-4 shrink-0"
+                    />
+                    <span className="text-sm font-semibold text-ink">{t.title}</span>
+                  </label>
+                ))}
+              </div>
+            </Card>
           </div>
-        )}
-      </Card>
+
+          <div id="step-data" className="flex flex-col gap-4">
+            <Card
+              title="Chest X-ray"
+              subtitle="A single frontal radiograph, JPEG or PNG."
+              actions={<SourceBadge present={hasCxr} />}
+            >
+              <CxrDrop file={cxr} onFile={setCxr} />
+            </Card>
+
+            <Card
+              title="Clinical notes"
+              subtitle="Radiology reports and discharge notes, as plain text."
+              actions={<SourceBadge present={sendable.length > 0} />}
+            >
+              <NotesEditor task={task} notes={notes} onNotes={setNotes} />
+            </Card>
+
+            <Card
+              title="Vitals"
+              subtitle="Up to 48 hourly rows of the 17 charted variables."
+              actions={<SourceBadge present={hasEhr} />}
+            >
+              <EhrPanel
+                tab={ehrTab}
+                onTab={setEhrTab}
+                rows={rows}
+                onRows={setRows}
+                csv={csv}
+                onCsv={setCsv}
+              />
+            </Card>
+          </div>
+        </div>
+
+        <div id="step-run" className="lg:sticky lg:top-6">
+          <Card title="Review & run">
+            <ul className="flex flex-col gap-2 text-sm">
+              {sourceRows.map(([label, present]) => (
+                <li
+                  key={label}
+                  className="flex items-center justify-between gap-3 rounded-xl bg-surface-3 px-3.5 py-2.5"
+                >
+                  <span className="text-ink-secondary">{label}</span>
+                  <SourceBadge present={present} />
+                </li>
+              ))}
+            </ul>
+
+            <Button
+              variant="primary"
+              className="mt-4 h-11 w-full"
+              disabled={!canSubmit}
+              onClick={() => void submit()}
+            >
+              {busy ? 'Analyzing…' : 'Run analysis'}
+            </Button>
+
+            <div className="mt-2 flex items-center gap-2">
+              <span role="status" className="tnum text-xs text-ink-secondary">
+                {statusText}
+              </span>
+              {phase === 'uploading' && progress !== null && (
+                <progress
+                  value={progress}
+                  max={1}
+                  className="h-1.5 flex-1"
+                  aria-label="Upload progress"
+                />
+              )}
+            </div>
+
+            {problems.length > 0 && !busy && (
+              <ul className="mt-2 flex flex-col gap-1 text-xs text-status-ink-critical">
+                {problems.map((p) => (
+                  <li key={p}>✕ {p}</li>
+                ))}
+              </ul>
+            )}
+
+            {error && (
+              <div role="alert" className="note-critical mt-3 px-3 py-2 text-sm">
+                <span aria-hidden="true">✕ </span>
+                {error.message}
+              </div>
+            )}
+          </Card>
+        </div>
+      </div>
     </div>
+  );
+}
+
+/** Added / Missing pill for one input source. */
+function SourceBadge({ present }: { present: boolean }) {
+  return present ? (
+    <span className="badge-on rounded-full px-2.5">
+      <span aria-hidden="true">✓</span>Added
+    </span>
+  ) : (
+    <span className="badge-off rounded-full px-2.5">
+      <span aria-hidden="true">–</span>Missing · optional
+    </span>
   );
 }
