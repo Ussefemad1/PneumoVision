@@ -21,8 +21,10 @@ import { useAuth } from './auth.jsx';
 
 const NAV: { to: string; label: string; icon: IconName; end?: boolean | undefined }[] = [
   { to: '/', label: 'Overview', icon: 'grid', end: true },
+  { to: '/patients', label: 'Patients', icon: 'users' },
   { to: '/analyze', label: 'Analyses', icon: 'history' },
   { to: '/alerts', label: 'Alerts', icon: 'bell' },
+  { to: '/models', label: 'Models', icon: 'chart' },
 ];
 
 /** Up to two initials, for the avatar. Falls back to a dash, never empty. */

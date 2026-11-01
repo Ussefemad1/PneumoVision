@@ -258,9 +258,13 @@ export function AlphaContributionChart({
         {rows.map((row) => (
           <li
             key={row.key}
-            className="grid grid-cols-[minmax(0,9.5rem)_1fr_auto] items-center gap-3"
+            // The track gets a floor so the bars cannot collapse to dots in a
+            // narrow column; the label gives way first, then truncates.
+            className="grid grid-cols-[minmax(3rem,8rem)_minmax(5.5rem,1fr)_auto] items-center gap-3"
           >
-            <span className="truncate text-xs text-ink-secondary">{row.label}</span>
+            <span title={row.label} className="truncate text-xs text-ink-secondary">
+              {row.label}
+            </span>
             <span className="h-2.5 w-full overflow-hidden rounded-full bg-surface-3">
               <span
                 className="block h-full rounded-full"

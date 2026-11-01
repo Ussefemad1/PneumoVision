@@ -13,7 +13,7 @@ import { Link, useParams } from 'react-router-dom';
 
 import { apiErrorMessage, getData } from '../lib/api.js';
 import { cn } from '../lib/cn.js';
-import { percent } from '../lib/format.js';
+import { durationMs, percent, shortDateTime } from '../lib/format.js';
 import { riskBand } from '../lib/risk.js';
 import { AlphaContributionChart } from '../components/charts.jsx';
 import { Disclaimer } from '../components/Disclaimer.jsx';
@@ -182,6 +182,26 @@ export function PredictionReportPage() {
             </div>
           ) : null}
         </div>
+
+        {/* Everything here is already on the prediction or the stay query. */}
+        <dl className="grid shrink-0 grid-cols-[auto_auto] gap-x-5 gap-y-2 text-[13px]">
+          {stay && (
+            <>
+              <dt className="text-ink-secondary">Patient</dt>
+              <dd className="font-medium text-ink">{stay.patient.pseudoId}</dd>
+            </>
+          )}
+          <dt className="text-ink-secondary">Cut-off</dt>
+          <dd className="tnum text-ink">{shortDateTime(data.cutoffTime)}</dd>
+          <dt className="text-ink-secondary">Model</dt>
+          <dd className="text-ink">{data.modelVersion}</dd>
+          {data.latencyMs !== null && (
+            <>
+              <dt className="text-ink-secondary">Latency</dt>
+              <dd className="tnum text-ink">{durationMs(data.latencyMs)}</dd>
+            </>
+          )}
+        </dl>
       </Card>
 
       {/* F5: reduced-input banner */}
@@ -198,7 +218,7 @@ export function PredictionReportPage() {
       )}
 
       {/* F11: evidence left → decision right */}
-      <div className="grid gap-4 xl:grid-cols-[1.1fr_1fr_0.9fr] xl:items-start">
+      <div className="grid gap-4 xl:grid-cols-3 xl:items-start">
         {/* F1 */}
         <Card title="By source">
           <ul className="space-y-2">

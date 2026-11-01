@@ -6,6 +6,8 @@ import { AlertsPage } from '../pages/Alerts.jsx';
 import { AnalysesPage } from '../pages/Analyses.jsx';
 import { AnalyzePage } from '../pages/Analyze.jsx';
 import { DashboardPage } from '../pages/Dashboard.jsx';
+import { ModelsPage } from '../pages/Models.jsx';
+import { PatientsPage } from '../pages/Patients.jsx';
 import { LoginPage } from '../pages/Login.jsx';
 import { PredictionReportPage } from '../pages/PredictionReport.jsx';
 import { ReplayPage } from '../pages/Replay.jsx';
@@ -38,6 +40,8 @@ export function App() {
                 <Route path="/analyses" element={<Navigate to="/analyze" replace />} />
                 <Route path="/stays/:stayId" element={<StayPage />} />
                 <Route path="/predictions/:predictionId" element={<PredictionReportPage />} />
+                <Route path="/patients" element={<PatientsPage />} />
+                <Route path="/models" element={<ModelsPage />} />
                 <Route path="/alerts" element={<AlertsPage />} />
                 <Route path="/replay" element={<ReplayPage />} />
               </Route>
