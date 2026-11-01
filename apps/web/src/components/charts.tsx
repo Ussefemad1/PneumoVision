@@ -105,7 +105,7 @@ export function RiskTrajectoryChart({
       </div>
 
       <ResponsiveContainer width="100%" height={height}>
-        <LineChart data={data} margin={{ top: 6, right: 10, bottom: 0, left: -18 }}>
+        <LineChart data={data} margin={{ top: 6, right: 10, bottom: 0, left: 0 }}>
           <CartesianGrid stroke="var(--grid)" strokeDasharray="3 3" vertical={false} />
           <XAxis
             dataKey="t"
@@ -122,7 +122,7 @@ export function RiskTrajectoryChart({
             tickFormatter={percentTerse}
             tick={AXIS_STYLE}
             stroke="var(--axis)"
-            width={52}
+            width={46}
           />
           {threshold !== undefined && (
             <ReferenceLine y={threshold} stroke="var(--axis)" strokeDasharray="4 3" />
@@ -131,18 +131,18 @@ export function RiskTrajectoryChart({
             const eventTime = new Date(event.at).getTime();
             if (!Number.isFinite(eventTime)) return null;
             return (
-            <ReferenceLine
-              key={`${event.at}-${i}`}
-              x={eventTime}
-              stroke="var(--grid)"
-              strokeWidth={1}
-              label={{
-                value: event.kind === 'cxr' ? '▣' : '▤',
-                position: 'top',
-                fontSize: 10,
-                fill: 'var(--text-muted)',
-              }}
-            />
+              <ReferenceLine
+                key={`${event.at}-${i}`}
+                x={eventTime}
+                stroke="var(--grid)"
+                strokeWidth={1}
+                label={{
+                  value: event.kind === 'cxr' ? '▣' : '▤',
+                  position: 'top',
+                  fontSize: 10,
+                  fill: 'var(--text-muted)',
+                }}
+              />
             );
           })}
           <Tooltip
@@ -258,9 +258,13 @@ export function AlphaContributionChart({
         {rows.map((row) => (
           <li
             key={row.key}
-            className="grid grid-cols-[minmax(0,9.5rem)_1fr_auto] items-center gap-3"
+            // The track gets a floor so the bars cannot collapse to dots in a
+            // narrow column; the label gives way first, then truncates.
+            className="grid grid-cols-[minmax(3rem,8rem)_minmax(5.5rem,1fr)_auto] items-center gap-3"
           >
-            <span className="truncate text-xs text-ink-secondary">{row.label}</span>
+            <span title={row.label} className="truncate text-xs text-ink-secondary">
+              {row.label}
+            </span>
             <span className="h-2.5 w-full overflow-hidden rounded-full bg-surface-3">
               <span
                 className="block h-full rounded-full"
@@ -376,9 +380,14 @@ export function EhrConfidenceBand({
               key={hour}
               className="relative flex-1 cursor-default rounded-sm"
               style={{
+                // Below θ is a lighter *fill*, not an outline: hollow bars read
+                // as "no data" when they actually mean "charted, low
+                // confidence". Height still carries the value, so the fill is
+                // a second channel rather than the only one.
                 height: `${Math.max(6, value * 100)}%`,
-                background: above ? sequentialBlue(value) : 'transparent',
-                border: above ? 'none' : `1px solid ${sequentialBlue(value)}`,
+                background: above
+                  ? sequentialBlue(value)
+                  : `color-mix(in srgb, ${sequentialBlue(value)} 45%, transparent)`,
               }}
               onMouseEnter={() => setHover(hour)}
               onMouseLeave={() => setHover(null)}

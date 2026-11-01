@@ -6,6 +6,8 @@ import { AlertsPage } from '../pages/Alerts.jsx';
 import { AnalysesPage } from '../pages/Analyses.jsx';
 import { AnalyzePage } from '../pages/Analyze.jsx';
 import { DashboardPage } from '../pages/Dashboard.jsx';
+import { ModelsPage } from '../pages/Models.jsx';
+import { PatientsPage } from '../pages/Patients.jsx';
 import { LoginPage } from '../pages/Login.jsx';
 import { PredictionReportPage } from '../pages/PredictionReport.jsx';
 import { ReplayPage } from '../pages/Replay.jsx';
@@ -38,6 +40,8 @@ export function App() {
                 <Route path="/analyses" element={<Navigate to="/analyze" replace />} />
                 <Route path="/stays/:stayId" element={<StayPage />} />
                 <Route path="/predictions/:predictionId" element={<PredictionReportPage />} />
+                <Route path="/patients" element={<PatientsPage />} />
+                <Route path="/models" element={<ModelsPage />} />
                 <Route path="/alerts" element={<AlertsPage />} />
                 <Route path="/replay" element={<ReplayPage />} />
               </Route>
@@ -69,9 +73,16 @@ export function RequireAuth() {
 
   if (isLoading) {
     return (
-      <div className="mx-auto max-w-[1400px] space-y-4 p-6">
-        <Skeleton className="h-14 w-full" />
-        <Skeleton className="h-64 w-full" />
+      // Mirrors Layout's shell so the content does not shift once it resolves.
+      <div className="flex min-h-screen flex-col min-[900px]:flex-row">
+        <div
+          aria-hidden="true"
+          className="h-16 bg-sidebar min-[900px]:h-screen min-[900px]:w-[248px] min-[900px]:flex-none"
+        />
+        <div className="flex w-full min-w-0 max-w-[1440px] flex-1 flex-col gap-[22px] px-4 py-6 min-[900px]:px-10 min-[900px]:py-7">
+          <Skeleton className="h-14 w-full" />
+          <Skeleton className="h-64 w-full" />
+        </div>
       </div>
     );
   }

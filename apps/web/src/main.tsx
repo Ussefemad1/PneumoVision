@@ -1,3 +1,7 @@
+// Self-hosted Inter (variable, 100-900). Bundled rather than fetched from
+// Google Fonts so type is correct with no network — the demo may be presented
+// offline. Registers the family as 'Inter Variable'.
+import '@fontsource-variable/inter';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 

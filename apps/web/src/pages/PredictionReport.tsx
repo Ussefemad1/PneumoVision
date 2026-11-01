@@ -13,13 +13,13 @@ import { Link, useParams } from 'react-router-dom';
 
 import { apiErrorMessage, getData } from '../lib/api.js';
 import { cn } from '../lib/cn.js';
-import { percent } from '../lib/format.js';
+import { durationMs, percent, shortDateTime } from '../lib/format.js';
 import { riskBand } from '../lib/risk.js';
 import { AlphaContributionChart } from '../components/charts.jsx';
 import { Disclaimer } from '../components/Disclaimer.jsx';
 import { ReceivedInputs } from '../features/analyze/ReceivedInputs.jsx';
 import { RiskGauge } from '../components/risk.jsx';
-import { Button, Card, ErrorState, Skeleton } from '../components/ui.jsx';
+import { Button, Card, Chip, ErrorState, Skeleton } from '../components/ui.jsx';
 
 const MODALITY_LABELS: Record<string, string> = {
   ehr: 'EHR (vitals)',
@@ -97,7 +97,7 @@ export function PredictionReportPage() {
       {/* Header */}
       <div className="flex flex-wrap items-start justify-between gap-3 print:block">
         <div>
-          <div className="flex items-center gap-2 text-sm text-ink-muted">
+          <div className="flex items-center gap-2 text-xs text-ink-secondary">
             {stay && (
               <Link
                 to={stay.status === 'adhoc' ? '/analyze' : `/stays/${data.stayId}`}
@@ -109,20 +109,105 @@ export function PredictionReportPage() {
             <span>/</span>
             <span className="capitalize">{data.task} prediction</span>
           </div>
-          <h1 className="mt-0.5 text-lg font-semibold text-ink">Prediction report</h1>
+          <h1 className="mt-1 text-[28px] font-bold tracking-[-0.02em] text-ink">
+            Prediction report
+          </h1>
         </div>
         <Button size="sm" onClick={() => window.print()} className="print:hidden">
           Print / save as PDF
         </Button>
       </div>
 
+      {/* The decision, up front. Deliberately no risk chip beside the gauge:
+          RiskBadge would render a second element whose exact text is the
+          probability, and PredictionReport.test.tsx does getByText on it. */}
+      <Card
+        className="border-2"
+        title={fusionKind === 'average' ? 'Combined score' : 'Fused decision'}
+        actions={
+          fusionKind === 'average' ? (
+            <AverageChip />
+          ) : fusionModel ? (
+            <FusionChip runId={fusionModel.runId} />
+          ) : (
+            simulatedTag
+          )
+        }
+        bodyClassName="flex flex-wrap items-center gap-8 p-6"
+      >
+        <RiskGauge
+          probability={result.probability}
+          label={data.task === 'mortality' ? '48-hour mortality' : 'Pneumonia phenotype'}
+          sublabel={
+            fusionKind === 'average'
+              ? 'Average'
+              : fusionKind === 'mock'
+                ? 'Simulated'
+                : fusionModel && !fusionModel.calibrated
+                  ? 'Uncalibrated probability'
+                  : 'Calibrated'
+          }
+        />
+        <div className="min-w-[260px] flex-1">
+          <div className="eyebrow">
+            {data.task === 'mortality' ? '48-hour mortality' : 'Pneumonia phenotype'}
+          </div>
+          <div className="mt-1 flex flex-wrap items-center gap-3">
+            <p className="text-[26px] font-bold tracking-[-0.02em] text-ink">
+              {riskBand(result.probability).label} risk
+            </p>
+            {/*
+             * Level only, never the percentage: PredictionReport.test.tsx does
+             * getByText on a probability string, which throws on a second
+             * match. RiskBadge would render exactly that.
+             */}
+            <Chip
+              className={cn(
+                riskBand(result.probability).chipClass,
+                'h-7 px-3 text-[13px] font-semibold',
+              )}
+            >
+              <span aria-hidden="true">{riskBand(result.probability).icon}</span>
+              {riskBand(result.probability).label}
+            </Chip>
+          </div>
+          {fusionKind === 'average' ? (
+            <p className="tnum mt-3 rounded-control bg-surface-3 px-3 py-2 text-xs text-ink">
+              ({averaged.map((key) => percent(result.unimodal[key])).join(' + ')}) ÷{' '}
+              {averaged.length} = {percent(result.probability)}
+            </p>
+          ) : fusionModel ? (
+            <div className="mt-3">
+              <FusionDetails model={fusionModel} />
+            </div>
+          ) : null}
+        </div>
+
+        {/* Everything here is already on the prediction or the stay query. */}
+        <dl className="grid shrink-0 grid-cols-[auto_auto] gap-x-5 gap-y-2 text-[13px]">
+          {stay && (
+            <>
+              <dt className="text-ink-secondary">Patient</dt>
+              <dd className="font-medium text-ink">{stay.patient.pseudoId}</dd>
+            </>
+          )}
+          <dt className="text-ink-secondary">Cut-off</dt>
+          <dd className="tnum text-ink">{shortDateTime(data.cutoffTime)}</dd>
+          <dt className="text-ink-secondary">Model</dt>
+          <dd className="text-ink">{data.modelVersion}</dd>
+          {data.latencyMs !== null && (
+            <>
+              <dt className="text-ink-secondary">Latency</dt>
+              <dd className="tnum text-ink">{durationMs(data.latencyMs)}</dd>
+            </>
+          )}
+        </dl>
+      </Card>
+
       {/* F5: reduced-input banner */}
       {missing.length > 0 && (
-        <div
-          role="note"
-          className="flex items-start gap-2 rounded-lg border border-status-warning/40 bg-status-warning/10 px-4 py-3 text-sm"
-        >
-          <span aria-hidden="true" className="text-[#8a5d00] dark:text-status-warning">
+        <div role="note" className="note-warning flex items-start gap-2 px-4 py-3 text-sm">
+          <span aria-hidden="true" className="text-status-ink-warning">
             ◆
           </span>
           <p>
@@ -133,7 +218,7 @@ export function PredictionReportPage() {
       )}
 
       {/* F11: evidence left → decision right */}
-      <div className="grid gap-4 xl:grid-cols-[1.1fr_1fr_0.9fr]">
+      <div className="grid gap-4 xl:grid-cols-3 xl:items-start">
         {/* F1 */}
         <Card title="By source">
           <ul className="space-y-2">
@@ -172,7 +257,7 @@ export function PredictionReportPage() {
                       <div className="tnum text-sm font-semibold text-ink">{percent(value)}</div>
                       <div
                         className="flex items-center justify-end gap-1 text-[11px]"
-                        style={{ color: itemBand.cssVar }}
+                        style={{ color: itemBand.inkVar }}
                       >
                         <span aria-hidden="true">{itemBand.icon}</span>
                         {itemBand.label}
@@ -272,52 +357,10 @@ export function PredictionReportPage() {
           )}
         </Card>
 
-        {/* F6 + fused decision */}
-        <div className="space-y-4">
-          <Card title="Contribution" actions={simulatedTag}>
-            <AlphaContributionChart alphas={result.alphas} />
-          </Card>
-
-          <Card
-            className="border-2"
-            title={fusionKind === 'average' ? 'Combined score' : 'Fused decision'}
-            actions={
-              fusionKind === 'average' ? (
-                <AverageChip />
-              ) : fusionModel ? (
-                <FusionChip runId={fusionModel.runId} />
-              ) : (
-                simulatedTag
-              )
-            }
-          >
-            <div className="flex flex-col items-center gap-3">
-              <RiskGauge
-                probability={result.probability}
-                label={data.task === 'mortality' ? '48-hour mortality' : 'Pneumonia phenotype'}
-                sublabel={
-                  fusionKind === 'average'
-                    ? 'Average'
-                    : fusionKind === 'mock'
-                      ? 'Simulated'
-                      : fusionModel && !fusionModel.calibrated
-                        ? 'Uncalibrated probability'
-                        : 'Calibrated'
-                }
-              />
-              {fusionKind === 'average' ? (
-                <div className="w-full text-center text-xs text-ink-secondary">
-                  <p className="tnum rounded-md bg-surface-2 px-2 py-1.5 text-ink">
-                    ({averaged.map((key) => percent(result.unimodal[key])).join(' + ')}) ÷{' '}
-                    {averaged.length} = {percent(result.probability)}
-                  </p>
-                </div>
-              ) : fusionModel ? (
-                <FusionDetails model={fusionModel} />
-              ) : null}
-            </div>
-          </Card>
-        </div>
+        {/* F6 */}
+        <Card title="Contribution" actions={simulatedTag}>
+          <AlphaContributionChart alphas={result.alphas} />
+        </Card>
       </div>
 
       <ReceivedInputs prediction={data} />
@@ -333,7 +376,7 @@ function SourceChip({ source, inFusion }: { source: ModalitySource; inFusion: bo
     return (
       <span
         title={source.model ?? undefined}
-        className="mt-1 inline-flex items-center gap-1 rounded-full bg-[var(--series-mortality)]/12 px-2 py-0.5 text-[10px] font-semibold text-[var(--series-mortality)]"
+        className="chip-accent mt-1 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold"
       >
         <span aria-hidden="true">✓</span> Standalone reader (Round 1)
         <span className="font-normal">· uncalibrated</span>
@@ -347,7 +390,7 @@ function SourceChip({ source, inFusion }: { source: ModalitySource; inFusion: bo
     return (
       <span
         title={source.model ?? undefined}
-        className="mt-1 inline-flex items-center gap-1 rounded-full bg-[var(--series-mortality)]/12 px-2 py-0.5 text-[10px] font-semibold text-[var(--series-mortality)]"
+        className="chip-accent mt-1 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold"
       >
         <span aria-hidden="true">✓</span> Trained
         <span className="tnum font-normal">
@@ -369,7 +412,7 @@ function ConfidenceTag({ level }: { level: 'calibrated' | 'uncalibrated' | null 
           ? 'Trained confidence head with temperature calibration (Round 2b)'
           : 'Trained confidence head, not yet calibrated (Round 2)'
       }
-      className="inline-flex items-center justify-center gap-1 rounded-full bg-[var(--series-mortality)]/12 px-2 py-0.5 text-[10px] font-semibold text-[var(--series-mortality)]"
+      className="inline-flex items-center justify-center gap-1 rounded-full chip-accent px-2 py-0.5 text-[10px] font-semibold text-accent-ink"
     >
       <span aria-hidden="true">✓</span>
       {level === 'calibrated' ? 'Calibrated' : 'Uncalibrated'}
@@ -381,7 +424,7 @@ function FusionChip({ runId }: { runId: string }) {
   return (
     <span
       title="The trained MedPatch confidence-guided fusion (c-msma), Round 3"
-      className="inline-flex items-center gap-1 rounded-full bg-[var(--series-mortality)]/12 px-2 py-0.5 text-[10px] font-semibold text-[var(--series-mortality)]"
+      className="inline-flex items-center gap-1 rounded-full chip-accent px-2 py-0.5 text-[10px] font-semibold text-accent-ink"
     >
       <span aria-hidden="true">✓</span> MedPatch fusion (Round 3, run {runId})
     </span>
@@ -400,7 +443,7 @@ const HEAD_LABELS: Record<string, string> = {
 function FusionDetails({ model }: { model: FusionModelInfo }) {
   return (
     <details className="w-full text-xs text-ink-secondary">
-      <summary className="cursor-pointer select-none text-center text-ink">Model details</summary>
+      <summary className="cursor-pointer select-none font-medium text-ink">Model details</summary>
       <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
         <dt className="text-ink-muted">Run</dt>
         <dd className="tnum">
@@ -501,7 +544,7 @@ function AverageChip() {
   return (
     <span
       title="The plain mean of the trained models' scores. Not the MedPatch fusion."
-      className="inline-flex items-center gap-1 rounded-full bg-[var(--series-mortality)]/12 px-2 py-0.5 text-[10px] font-semibold text-[var(--series-mortality)]"
+      className="inline-flex items-center gap-1 rounded-full chip-accent px-2 py-0.5 text-[10px] font-semibold text-accent-ink"
     >
       <span aria-hidden="true">=</span> Average
     </span>

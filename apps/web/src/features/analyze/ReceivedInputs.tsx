@@ -34,11 +34,11 @@ export function ReceivedInputs({ prediction }: { prediction: Prediction }) {
       title="Inputs the model received"
       actions={
         received?.mode === 'mock' ? (
-          <span className="inline-flex items-center gap-1 rounded-full border border-status-warning/60 bg-status-warning/15 px-2 py-0.5 text-[11px] font-semibold text-ink">
+          <span className="chip-moderate inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-semibold">
             <span aria-hidden="true">◆</span> Mock model
           </span>
         ) : received?.mode === 'readers' ? (
-          <span className="inline-flex items-center gap-1 rounded-full border border-[var(--series-mortality)]/50 bg-[var(--series-mortality)]/10 px-2 py-0.5 text-[11px] font-semibold text-ink">
+          <span className="chip-accent inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-semibold">
             <span aria-hidden="true">✓</span> Trained models
           </span>
         ) : null

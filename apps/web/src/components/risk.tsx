@@ -91,7 +91,7 @@ export function RiskGauge({
         ) : (
           <div
             className="mt-0.5 flex items-center justify-center gap-1 text-xs"
-            style={{ color: band.cssVar }}
+            style={{ color: band.inkVar }}
           >
             <span aria-hidden="true">{band.icon}</span>
             <span className="font-medium">{band.label}</span>

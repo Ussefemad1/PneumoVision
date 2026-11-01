@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="PneumoVision">
+  <title>PneumoVision</title>
+  <rect width="64" height="64" rx="14" fill="#2F4156"/>
+  <g transform="translate(5 5) scale(0.84)">
+    <path d="M30 20C23 16 14 23 11.5 36C9.5 47 13 55 21 55C26.5 55 30 51.5 30 46Z" fill="#C8D9E6"/>
+    <path d="M32 6V20M32 20L27.5 25.5M32 20L36.5 25.5" fill="none" stroke="#FFFFFF" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="39" cy="24" r="2.3" fill="#C8D9E6"/><circle cx="45" cy="24" r="2.3" fill="#C8D9E6"/>
+    <circle cx="39" cy="30" r="2.3" fill="#C8D9E6"/><circle cx="45" cy="30" r="2.3" fill="#C8D9E6"/><circle cx="51" cy="30" r="2.3" fill="#C8D9E6"/>
+    <circle cx="39" cy="36" r="2.3" fill="#C8D9E6"/><circle cx="45" cy="36" r="2.3" fill="#C8D9E6"/><circle cx="51" cy="36" r="2.3" fill="#C8D9E6"/>
+    <circle cx="39" cy="42" r="2.3" fill="#C8D9E6"/><circle cx="45" cy="42" r="2.8" fill="#9FE3F5"/><circle cx="51" cy="42" r="2.8" fill="#9FE3F5"/>
+    <circle cx="39" cy="48" r="2.3" fill="#C8D9E6"/><circle cx="45" cy="48" r="2.3" fill="#C8D9E6"/>
+  </g>
+</svg>
