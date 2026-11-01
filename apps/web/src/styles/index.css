@@ -52,6 +52,8 @@
   --sidebar-ink: #ffffff;
   --sidebar-muted: #c8d9e6;
   --sidebar-active: rgba(200, 217, 230, 0.18);
+  --cta: #c8d9e6;
+  --cta-ink: #2f4156;
 
   /* Login backdrop */
   --glow: rgba(200, 217, 230, 0.55);
@@ -142,6 +144,8 @@
     --sidebar-ink: #e8eef3;
     --sidebar-muted: #a9b7c4;
     --sidebar-active: rgba(143, 179, 196, 0.16);
+    --cta: #8fb3c4;
+    --cta-ink: #0f1821;
 
     --glow: rgba(86, 124, 141, 0.3);
     --halo: rgba(15, 24, 33, 0.92);
@@ -201,6 +205,8 @@
   --sidebar-ink: #e8eef3;
   --sidebar-muted: #a9b7c4;
   --sidebar-active: rgba(143, 179, 196, 0.16);
+  --cta: #8fb3c4;
+  --cta-ink: #0f1821;
 
   --glow: rgba(86, 124, 141, 0.3);
   --halo: rgba(15, 24, 33, 0.92);
@@ -265,6 +271,7 @@ body {
   background-color: var(--surface-2);
   color: var(--text-primary);
   font-family:
+    'Inter Variable',
     Inter,
     system-ui,
     -apple-system,

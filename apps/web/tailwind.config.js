@@ -39,6 +39,12 @@ export default {
           muted: 'var(--sidebar-muted)',
           active: 'var(--sidebar-active)',
         },
+        // Sidebar call-to-action: its own pair because --soft is translucent in
+        // dark mode, where navy ink on it would be unreadable.
+        cta: {
+          DEFAULT: 'var(--cta)',
+          ink: 'var(--cta-ink)',
+        },
         // Reserved status ramp — risk bands and alert severity only, never a
         // series colour, and never the sole signal (always icon + label).
         status: {
@@ -81,7 +87,7 @@ export default {
       // list Tailwind builds would invalidate the declaration and any ring.
       boxShadow: { card: 'var(--shadow-card)' },
       fontFamily: {
-        sans: ['Inter', 'system-ui', '-apple-system', 'Segoe UI', 'sans-serif'],
+        sans: ['Inter Variable', 'Inter', 'system-ui', '-apple-system', 'Segoe UI', 'sans-serif'],
       },
     },
   },
