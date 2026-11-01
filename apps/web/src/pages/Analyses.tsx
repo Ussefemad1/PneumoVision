@@ -104,7 +104,7 @@ export function AnalysesPage() {
         </Card>
       ) : (
         <Card bodyClassName="p-0">
-          <div className="overflow-x-auto">
+          <div className="w-full min-w-0 overflow-x-auto">
             <table className="w-full min-w-[860px] text-sm">
               <thead>
                 <tr className="bg-surface-3 text-left">

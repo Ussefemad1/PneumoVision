@@ -135,7 +135,7 @@ export function Layout() {
       </nav>
 
       <main className="flex w-full min-w-0 max-w-[1440px] flex-1 flex-col gap-[22px] px-4 py-6 min-[900px]:px-10 min-[900px]:py-7">
-        <div className="flex-1">
+        <div className="min-w-0 flex-1">
           <Outlet />
         </div>
         {/*

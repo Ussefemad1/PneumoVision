@@ -6,7 +6,7 @@ import { Link } from 'react-router-dom';
 import { apiErrorMessage, getData } from '../lib/api.js';
 import { cn } from '../lib/cn.js';
 import { percent, relativeTime } from '../lib/format.js';
-import { riskBand } from '../lib/risk.js';
+
 import { ModalityBadges, RiskBadge, Sparkline } from '../components/risk.jsx';
 import { Card, EmptyState, ErrorState, Kpi, Segmented, SkeletonRows } from '../components/ui.jsx';
 
@@ -63,8 +63,8 @@ export function DashboardPage() {
           <Kpi label="Open alerts" value={openAlerts} hint="Across all shown stays" />
           <Kpi
             label="Complete inputs"
-            value={complete}
-            hint={`${all.length - complete} scored on partial data`}
+            value={`${complete} of ${all.length}`}
+            hint="All three modalities present"
           />
         </div>
       )}
@@ -102,7 +102,7 @@ export function DashboardPage() {
             title={all.length ? 'No stays match these filters' : 'No active stays'}
           />
         ) : (
-          <div className="overflow-x-auto">
+          <div className="w-full min-w-0 overflow-x-auto">
             <table className="w-full min-w-[880px] text-sm">
               <thead>
                 <tr className="bg-surface-3 text-left">
@@ -126,65 +126,61 @@ export function DashboardPage() {
                 </tr>
               </thead>
               <tbody>
-                {rows.map((row) => {
-                  const band = riskBand(row.mortality);
-                  return (
-                    <tr key={row.stayId} className="border-t border-hairline hover:bg-softer">
-                      <td className="px-3.5 py-3 pl-5">
-                        <Link
-                          to={`/stays/${row.stayId}`}
-                          className="font-semibold text-ink hover:underline"
-                        >
-                          {row.pseudoId}
-                        </Link>
-                        <div className="text-xs text-ink-secondary">
-                          {row.age}y · {row.sex}
-                        </div>
-                      </td>
-                      <td className="px-3.5 py-3 text-ink-secondary">
-                        {row.ward}
-                        <span className="text-ink-muted"> · {row.bedLabel}</span>
-                      </td>
-                      <td className="px-3.5 py-3">
-                        <RiskBadge probability={row.mortality} />
-                      </td>
-                      <td className="px-3.5 py-3">
-                        <Sparkline
-                          values={row.sparkline}
-                          ariaLabel={`Mortality trend for ${row.pseudoId}, latest ${percent(row.mortality)}`}
-                        />
-                      </td>
-                      <td
-                        className={cn(
-                          'tnum px-3.5 py-3',
-                          row.pneumonia === null ? 'text-ink-muted' : 'font-medium text-ink',
-                        )}
+                {rows.map((row) => (
+                  <tr key={row.stayId} className="border-t border-hairline hover:bg-softer">
+                    <td className="px-3.5 py-3 pl-5">
+                      <Link
+                        to={`/stays/${row.stayId}`}
+                        className="font-semibold text-ink hover:underline"
                       >
-                        {percent(row.pneumonia)}
-                      </td>
-                      <td className="px-3.5 py-3">
-                        <ModalityBadges availability={row.availability} />
-                      </td>
-                      <td className="px-3.5 py-3">
-                        {row.openAlerts > 0 ? (
-                          <Link
-                            to={`/alerts?stayId=${row.stayId}`}
-                            className="chip-critical tnum inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold"
-                          >
-                            <span aria-hidden="true">■</span>
-                            {row.openAlerts}
-                          </Link>
-                        ) : (
-                          <span className="text-xs text-ink-muted">—</span>
-                        )}
-                      </td>
-                      <td className="whitespace-nowrap px-3.5 py-3 pr-5 text-xs text-ink-secondary">
-                        {relativeTime(row.lastScoredAt)}
-                      </td>
-                      <td className="sr-only">{band.label}</td>
-                    </tr>
-                  );
-                })}
+                        {row.pseudoId}
+                      </Link>
+                      <div className="text-xs text-ink-secondary">
+                        {row.age}y · {row.sex}
+                      </div>
+                    </td>
+                    <td className="px-3.5 py-3 text-ink-secondary">
+                      {row.ward}
+                      <span className="text-ink-muted"> · {row.bedLabel}</span>
+                    </td>
+                    <td className="px-3.5 py-3">
+                      <RiskBadge probability={row.mortality} />
+                    </td>
+                    <td className="px-3.5 py-3">
+                      <Sparkline
+                        values={row.sparkline}
+                        ariaLabel={`Mortality trend for ${row.pseudoId}, latest ${percent(row.mortality)}`}
+                      />
+                    </td>
+                    <td
+                      className={cn(
+                        'tnum px-3.5 py-3',
+                        row.pneumonia === null ? 'text-ink-muted' : 'font-medium text-ink',
+                      )}
+                    >
+                      {percent(row.pneumonia)}
+                    </td>
+                    <td className="px-3.5 py-3">
+                      <ModalityBadges availability={row.availability} />
+                    </td>
+                    <td className="px-3.5 py-3">
+                      {row.openAlerts > 0 ? (
+                        <Link
+                          to={`/alerts?stayId=${row.stayId}`}
+                          className="chip-critical tnum inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold"
+                        >
+                          <span aria-hidden="true">■</span>
+                          {row.openAlerts}
+                        </Link>
+                      ) : (
+                        <span className="text-xs text-ink-muted">—</span>
+                      )}
+                    </td>
+                    <td className="whitespace-nowrap px-3.5 py-3 pr-5 text-xs text-ink-secondary">
+                      {relativeTime(row.lastScoredAt)}
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
