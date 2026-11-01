@@ -8,7 +8,21 @@ import { cn } from '../lib/cn.js';
 import { percent, relativeTime } from '../lib/format.js';
 import { SEVERITY_INFO } from '../lib/risk.js';
 import { getSocket } from '../lib/socket.js';
-import { Button, Card, EmptyState, ErrorState, SkeletonRows } from '../components/ui.jsx';
+import {
+  Button,
+  Card,
+  EmptyState,
+  ErrorState,
+  Segmented,
+  SkeletonRows,
+} from '../components/ui.jsx';
+
+const STATUS_FILTERS = [
+  { value: 'open', label: 'Open' },
+  { value: 'acknowledged', label: 'Acknowledged' },
+  { value: 'resolved', label: 'Resolved' },
+  { value: '', label: 'Any' },
+] as const;
 
 /** P3: alerts centre — filter, acknowledge, resolve, live. */
 export function AlertsPage() {
@@ -76,29 +90,33 @@ export function AlertsPage() {
   };
 
   return (
-    <div className="space-y-4">
-      <header className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-lg font-semibold text-ink">Alerts</h1>
-        </div>
+    <div className="flex flex-col gap-[22px]">
+      <header>
+        <h1 className="text-[28px] font-bold tracking-[-0.02em] text-ink">Alerts</h1>
+        <p className="mt-1.5 text-ink-secondary">
+          Threshold crossings from the alert engine, live. Acknowledge to claim one.
+        </p>
+      </header>
 
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        {/*
+         * Segmented rather than the underline tabs in the design: these are
+         * filters over one list, not tabpanel switchers, and the response is
+         * already filtered server-side so per-status counts are not available
+         * without extra requests.
+         */}
+        <Segmented
+          value={status}
+          onChange={(value) => setFilter('status', value)}
+          options={STATUS_FILTERS}
+          ariaLabel="Filter by status"
+        />
         <div className="flex flex-wrap items-center gap-2">
-          <select
-            value={status}
-            onChange={(e) => setFilter('status', e.target.value)}
-            aria-label="Filter by status"
-            className="rounded-md border border-hairline bg-surface-1 px-2.5 py-1.5 text-sm text-ink"
-          >
-            <option value="">Any status</option>
-            <option value="open">Open</option>
-            <option value="acknowledged">Acknowledged</option>
-            <option value="resolved">Resolved</option>
-          </select>
           <select
             value={severity}
             onChange={(e) => setFilter('severity', e.target.value)}
             aria-label="Filter by severity"
-            className="rounded-md border border-hairline bg-surface-1 px-2.5 py-1.5 text-sm text-ink"
+            className="field-input"
           >
             <option value="">Any severity</option>
             <option value="critical">Critical</option>
@@ -111,27 +129,35 @@ export function AlertsPage() {
             </Button>
           )}
         </div>
-      </header>
+      </div>
 
       {query.isLoading ? (
-        <SkeletonRows rows={6} />
+        <Card bodyClassName="p-5">
+          <SkeletonRows rows={6} />
+        </Card>
       ) : query.error ? (
-        <ErrorState message={apiErrorMessage(query.error)} onRetry={() => void query.refetch()} />
+        <Card>
+          <ErrorState message={apiErrorMessage(query.error)} onRetry={() => void query.refetch()} />
+        </Card>
       ) : (query.data?.length ?? 0) === 0 ? (
         <Card>
-          <EmptyState icon="✓" title="Nothing to action" />
+          <EmptyState
+            icon="✓"
+            title="Nothing to action"
+            description="No alerts match these filters."
+          />
         </Card>
       ) : (
-        <ul className="space-y-2">
+        <ul className="flex flex-col gap-3">
           {query.data?.map((alert) => {
             const info = SEVERITY_INFO[alert.severity];
             return (
               <li key={alert.id}>
-                <Card bodyClassName="p-3">
+                <Card bodyClassName="p-4">
                   <div className="flex flex-wrap items-center gap-3">
                     <span
                       className={cn(
-                        'inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium',
+                        'inline-flex h-7 items-center gap-1.5 rounded-full px-3 text-xs font-semibold',
                         info.chipClass,
                       )}
                     >
@@ -141,7 +167,7 @@ export function AlertsPage() {
 
                     <div className="min-w-0 flex-1">
                       <div className="text-sm text-ink">{alert.rule}</div>
-                      <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-ink-muted">
+                      <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-ink-secondary">
                         <Link
                           to={`/stays/${alert.stay.id}`}
                           className="font-medium text-ink-secondary hover:underline"
@@ -162,8 +188,8 @@ export function AlertsPage() {
                     <div className="flex items-center gap-2">
                       <span
                         className={cn(
-                          'rounded-full px-2 py-0.5 text-[11px] capitalize',
-                          alert.status === 'open' && 'bg-surface-3 text-ink-secondary',
+                          'inline-flex h-6 items-center rounded-full px-2.5 text-xs font-semibold capitalize',
+                          alert.status === 'open' && 'chip-neutral',
                           alert.status === 'acknowledged' && 'chip-moderate',
                           alert.status === 'resolved' && 'chip-low',
                         )}
@@ -184,7 +210,7 @@ export function AlertsPage() {
                       {alert.predictionId && (
                         <Link
                           to={`/predictions/${alert.predictionId}`}
-                          className="text-xs font-medium text-[var(--series-mortality)] hover:underline"
+                          className="whitespace-nowrap text-xs font-semibold text-accent-ink hover:underline"
                         >
                           Report →
                         </Link>
