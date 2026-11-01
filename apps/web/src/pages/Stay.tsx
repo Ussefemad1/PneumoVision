@@ -254,18 +254,13 @@ function OverviewTab({ stay }: { stay: StayDetail }) {
         </div>
       </Card>
 
-      <Card
-        title="Risk trajectory"
-      >
+      <Card title="Risk trajectory">
         {mortalityTrajectory.isLoading || pneumoniaTrajectory.isLoading ? (
           <Skeleton className="h-60 w-full" />
         ) : (mortalityTrajectory.data?.points.length ?? 0) +
             (pneumoniaTrajectory.data?.points.length ?? 0) ===
           0 ? (
-          <EmptyState
-            icon="◠"
-            title="No predictions yet"
-          />
+          <EmptyState icon="◠" title="No predictions yet" />
         ) : (
           <>
             <RiskTrajectoryChart
@@ -333,10 +328,7 @@ function VitalsTab({ stayId }: { stayId: string }) {
   if (!data || data.length === 0) {
     return (
       <Card>
-        <EmptyState
-          icon="▤"
-          title="No vitals recorded"
-        />
+        <EmptyState icon="▤" title="No vitals recorded" />
       </Card>
     );
   }
@@ -347,10 +339,7 @@ function VitalsTab({ stayId }: { stayId: string }) {
   return (
     <div className="space-y-4">
       {confidence?.ehrTimesteps && (
-        <Card
-          title="Per-hour EHR confidence"
-          actions={<ConfidenceScaleLegend />}
-        >
+        <Card title="Per-hour EHR confidence" actions={<ConfidenceScaleLegend />}>
           <EhrConfidenceBand values={confidence.ehrTimesteps} theta={confidence.theta} />
         </Card>
       )}
@@ -410,7 +399,6 @@ function VitalsTab({ stayId }: { stayId: string }) {
           </div>
         </Card>
       ))}
-
     </div>
   );
 }
@@ -438,10 +426,7 @@ function ImagingTab({ stayId }: { stayId: string }) {
   if (!data || data.length === 0) {
     return (
       <Card>
-        <EmptyState
-          icon="▣"
-          title="No radiographs for this stay"
-        />
+        <EmptyState icon="▣" title="No radiographs for this stay" />
       </Card>
     );
   }
@@ -485,16 +470,10 @@ function ImagingTab({ stayId }: { stayId: string }) {
               {Math.round(overlay * 100)}%
             </span>
           </div>
-        ) : (
-          null
-        )}
-
+        ) : null}
       </Card>
 
-      <Card
-        title="Series"
-        bodyClassName="p-2"
-      >
+      <Card title="Series" bodyClassName="p-2">
         <ul className="space-y-1">
           {data.map((item, index) => (
             <li key={item.id}>
@@ -562,10 +541,7 @@ function NotesTab({ stayId }: { stayId: string }) {
   if (!data || data.length === 0) {
     return (
       <Card>
-        <EmptyState
-          icon="▤"
-          title="No notes for this stay"
-        />
+        <EmptyState icon="▤" title="No notes for this stay" />
       </Card>
     );
   }
@@ -593,9 +569,7 @@ function NotesTab({ stayId }: { stayId: string }) {
                 {note.type}
               </span>
               {note.type === 'discharge' && (
-                <span
-                  className="rounded bg-status-warning/20 px-2 py-0.5 text-[11px] font-medium text-[#8a5d00] dark:text-status-warning"
-                >
+                <span className="chip-moderate rounded px-2 py-0.5 text-[11px] font-medium">
                   <span aria-hidden="true">◆</span> not used for mortality
                 </span>
               )}
@@ -630,10 +604,7 @@ function PredictionsTab({ stayId }: { stayId: string }) {
   if (!data || data.length === 0) {
     return (
       <Card>
-        <EmptyState
-          icon="◷"
-          title="No predictions yet"
-        />
+        <EmptyState icon="◷" title="No predictions yet" />
       </Card>
     );
   }

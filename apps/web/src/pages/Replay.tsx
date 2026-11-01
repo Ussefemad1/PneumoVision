@@ -223,10 +223,7 @@ export function ReplayPage() {
 
       {!stayId ? (
         <Card>
-          <EmptyState
-            icon="▷"
-            title="Pick a patient to replay"
-          />
+          <EmptyState icon="▷" title="Pick a patient to replay" />
         </Card>
       ) : (
         <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
@@ -243,10 +240,7 @@ export function ReplayPage() {
 
           <Card title="Live vitals">
             {ticks.length === 0 ? (
-              <EmptyState
-                icon="◷"
-                title={running ? 'Waiting for the next hour…' : 'Not running'}
-              />
+              <EmptyState icon="◷" title={running ? 'Waiting for the next hour…' : 'Not running'} />
             ) : (
               <ul className="space-y-2">
                 {[...ticks].reverse().map((tick, index) => (
@@ -292,7 +286,7 @@ export function ReplayPage() {
               role="alert"
               className="pointer-events-auto card flex items-start gap-2 p-3 shadow-xl"
             >
-              <span aria-hidden="true" style={{ color: info.cssVar }}>
+              <span aria-hidden="true" style={{ color: info.inkVar }}>
                 {info.icon}
               </span>
               <div className="min-w-0 flex-1">

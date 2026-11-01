@@ -119,10 +119,7 @@ export function AlertsPage() {
         <ErrorState message={apiErrorMessage(query.error)} onRetry={() => void query.refetch()} />
       ) : (query.data?.length ?? 0) === 0 ? (
         <Card>
-          <EmptyState
-            icon="✓"
-            title="Nothing to action"
-          />
+          <EmptyState icon="✓" title="Nothing to action" />
         </Card>
       ) : (
         <ul className="space-y-2">
@@ -167,9 +164,8 @@ export function AlertsPage() {
                         className={cn(
                           'rounded-full px-2 py-0.5 text-[11px] capitalize',
                           alert.status === 'open' && 'bg-surface-3 text-ink-secondary',
-                          alert.status === 'acknowledged' &&
-                            'bg-status-warning/15 text-[#8a5d00] dark:text-status-warning',
-                          alert.status === 'resolved' && 'bg-status-good/15 text-status-good',
+                          alert.status === 'acknowledged' && 'chip-moderate',
+                          alert.status === 'resolved' && 'chip-low',
                         )}
                       >
                         {alert.status}

@@ -118,11 +118,8 @@ export function PredictionReportPage() {
 
       {/* F5: reduced-input banner */}
       {missing.length > 0 && (
-        <div
-          role="note"
-          className="flex items-start gap-2 rounded-lg border border-status-warning/40 bg-status-warning/10 px-4 py-3 text-sm"
-        >
-          <span aria-hidden="true" className="text-[#8a5d00] dark:text-status-warning">
+        <div role="note" className="note-warning flex items-start gap-2 px-4 py-3 text-sm">
+          <span aria-hidden="true" className="text-status-ink-warning">
             ◆
           </span>
           <p>
@@ -172,7 +169,7 @@ export function PredictionReportPage() {
                       <div className="tnum text-sm font-semibold text-ink">{percent(value)}</div>
                       <div
                         className="flex items-center justify-end gap-1 text-[11px]"
-                        style={{ color: itemBand.cssVar }}
+                        style={{ color: itemBand.inkVar }}
                       >
                         <span aria-hidden="true">{itemBand.icon}</span>
                         {itemBand.label}

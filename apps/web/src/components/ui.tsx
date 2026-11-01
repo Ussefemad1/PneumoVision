@@ -47,13 +47,13 @@ export function Button({
     <button
       {...props}
       className={cn(
-        'inline-flex items-center justify-center gap-1.5 rounded-md font-medium transition',
+        'inline-flex items-center justify-center gap-1.5 rounded-control font-medium transition',
         'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2',
-        'focus-visible:outline-[var(--series-mortality)]',
+        'focus-visible:outline-accent',
         'disabled:cursor-not-allowed disabled:opacity-50',
         size === 'sm' ? 'px-2.5 py-1 text-xs' : 'px-3.5 py-2 text-sm',
         variant === 'primary' &&
-          'bg-[var(--series-mortality)] text-white hover:brightness-110 active:brightness-95',
+          'bg-accent text-accent-on hover:brightness-110 active:brightness-95',
         variant === 'secondary' &&
           'border border-hairline bg-surface-1 text-ink hover:bg-surface-3',
         variant === 'ghost' && 'text-ink-secondary hover:bg-surface-3 hover:text-ink',

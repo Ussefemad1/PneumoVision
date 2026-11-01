@@ -5,6 +5,11 @@
  * and a text label, so the four levels remain distinguishable in greyscale,
  * under any colour-vision deficiency, and in forced-colours mode. The hexes
  * come from the reserved status ramp and are not used for any data series.
+ *
+ * Two colours per band, and they are not interchangeable. `cssVar` is the
+ * validated *fill* ramp — for strokes, gauge arcs and chart marks only. It is
+ * deliberately sub-3:1 on a light surface, so it must never colour type;
+ * `inkVar` is the text-safe companion. See index.css.
  */
 
 export type RiskBand = 'low' | 'moderate' | 'high' | 'critical';
@@ -14,10 +19,12 @@ export interface RiskBandInfo {
   label: string;
   /** Distinct shape per band — the non-colour channel. */
   icon: string;
-  /** Tailwind classes for a filled chip. */
+  /** Colour-only chip class: fill, text and hairline, theme-aware in CSS. */
   chipClass: string;
-  /** The status token, for chart marks and gauges. */
+  /** The status token, for chart marks and gauges. Strokes and fills only. */
   cssVar: string;
+  /** Text-safe companion of cssVar — use this wherever the band colours type. */
+  inkVar: string;
 }
 
 const BANDS: Record<RiskBand, RiskBandInfo> = {
@@ -25,31 +32,33 @@ const BANDS: Record<RiskBand, RiskBandInfo> = {
     band: 'low',
     label: 'Low',
     icon: '●',
-    chipClass: 'bg-status-good/15 text-status-good ring-1 ring-status-good/40',
+    chipClass: 'chip-low',
     cssVar: 'var(--status-good)',
+    inkVar: 'var(--status-good-ink)',
   },
   moderate: {
     band: 'moderate',
     label: 'Moderate',
     icon: '◆',
-    chipClass:
-      'bg-status-warning/20 text-[#8a5d00] dark:text-status-warning ring-1 ring-status-warning/50',
+    chipClass: 'chip-moderate',
     cssVar: 'var(--status-warning)',
+    inkVar: 'var(--status-warning-ink)',
   },
   high: {
     band: 'high',
     label: 'High',
     icon: '▲',
-    chipClass:
-      'bg-status-serious/20 text-[#a2482a] dark:text-status-serious ring-1 ring-status-serious/50',
+    chipClass: 'chip-high',
     cssVar: 'var(--status-serious)',
+    inkVar: 'var(--status-serious-ink)',
   },
   critical: {
     band: 'critical',
     label: 'Critical',
     icon: '■',
-    chipClass: 'bg-status-critical/15 text-status-critical ring-1 ring-status-critical/50',
+    chipClass: 'chip-critical',
     cssVar: 'var(--status-critical)',
+    inkVar: 'var(--status-critical-ink)',
   },
 };
 
@@ -63,17 +72,25 @@ export function riskBand(probability: number | null | undefined): RiskBandInfo {
 }
 
 export const SEVERITY_INFO = {
-  info: { label: 'Info', icon: '●', cssVar: 'var(--status-good)', chipClass: BANDS.low.chipClass },
+  info: {
+    label: 'Info',
+    icon: '●',
+    cssVar: 'var(--status-good)',
+    inkVar: 'var(--status-good-ink)',
+    chipClass: BANDS.low.chipClass,
+  },
   warning: {
     label: 'Warning',
     icon: '◆',
     cssVar: 'var(--status-warning)',
+    inkVar: 'var(--status-warning-ink)',
     chipClass: BANDS.moderate.chipClass,
   },
   critical: {
     label: 'Critical',
     icon: '■',
     cssVar: 'var(--status-critical)',
+    inkVar: 'var(--status-critical-ink)',
     chipClass: BANDS.critical.chipClass,
   },
 } as const;
