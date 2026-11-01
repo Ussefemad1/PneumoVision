@@ -107,14 +107,9 @@ export function AnalysesPage() {
           <div className="w-full min-w-0 overflow-x-auto">
             <table className="w-full min-w-[860px] text-sm">
               <thead>
-                <tr className="bg-surface-3 text-left">
+                <tr className="table-head">
                   {columns.map((heading, i) => (
-                    <th
-                      key={heading || `spacer-${i}`}
-                      className="eyebrow whitespace-nowrap px-3.5 py-3 first:pl-5 last:pr-5"
-                    >
-                      {heading}
-                    </th>
+                    <th key={heading || `spacer-${i}`}>{heading}</th>
                   ))}
                 </tr>
               </thead>

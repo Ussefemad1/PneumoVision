@@ -68,7 +68,7 @@ export function StayPage() {
 
   if (stayQuery.isLoading) {
     return (
-      <div className="space-y-4">
+      <div className="flex flex-col gap-[22px]">
         <Skeleton className="h-24 w-full" />
         <Skeleton className="h-64 w-full" />
       </div>
@@ -87,10 +87,10 @@ export function StayPage() {
   const stay = stayQuery.data;
 
   return (
-    <div className="space-y-4">
+    <div className="flex flex-col gap-[22px]">
       <StayHeader stay={stay} />
 
-      <nav className="flex gap-1 border-b border-hairline" role="tablist">
+      <nav className="flex flex-wrap gap-1 border-b border-hairline" role="tablist">
         {TABS.map((item) => (
           <button
             key={item}
@@ -98,9 +98,9 @@ export function StayPage() {
             aria-selected={tab === item}
             onClick={() => setParams(item === 'overview' ? {} : { tab: item })}
             className={cn(
-              '-mb-px border-b-2 px-3 py-2 text-sm capitalize transition',
+              '-mb-px h-[46px] border-b-2 px-3.5 text-sm capitalize transition',
               tab === item
-                ? 'border-[var(--series-mortality)] font-medium text-ink'
+                ? 'border-accent font-semibold text-ink'
                 : 'border-transparent text-ink-secondary hover:text-ink',
             )}
           >
@@ -131,7 +131,9 @@ function StayHeader({ stay }: { stay: StayDetail }) {
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <div className="flex items-center gap-2">
-            <h1 className="text-lg font-semibold text-ink">{stay.patient.pseudoId}</h1>
+            <h1 className="text-[26px] font-bold tracking-[-0.02em] text-ink">
+              {stay.patient.pseudoId}
+            </h1>
             <span className="rounded-full bg-surface-3 px-2 py-0.5 text-[11px] capitalize text-ink-secondary">
               {adhoc ? 'Analysis' : stay.status}
             </span>
@@ -152,9 +154,7 @@ function StayHeader({ stay }: { stay: StayDetail }) {
             </Field>
           )}
           <div>
-            <dt className="text-[11px] uppercase tracking-wide text-ink-muted">
-              {adhoc ? 'Inputs' : 'Modalities'}
-            </dt>
+            <dt className="eyebrow">{adhoc ? 'Inputs' : 'Modalities'}</dt>
             <dd className="mt-1">
               <ModalityBadges availability={stay.availability} />
             </dd>
@@ -200,22 +200,26 @@ function OverviewTab({ stay }: { stay: StayDetail }) {
 
   return (
     <div className="grid gap-4 lg:grid-cols-[320px_1fr]">
-      <Card title="Current risk">
-        <div className="flex justify-around gap-2">
-          <RiskGauge
-            probability={stay.latestPredictions.mortality ?? null}
-            label="Mortality"
-            sublabel="48-hour"
-          />
-          <RiskGauge
-            probability={stay.latestPredictions.pneumonia ?? null}
-            label="Pneumonia"
-            sublabel="phenotype"
-          />
+      <div className="flex flex-col gap-4">
+        <div className="grid grid-cols-2 gap-4">
+          <Card bodyClassName="grid place-items-center p-4">
+            <RiskGauge
+              probability={stay.latestPredictions.mortality ?? null}
+              label="Mortality"
+              sublabel="48-hour"
+            />
+          </Card>
+          <Card bodyClassName="grid place-items-center p-4">
+            <RiskGauge
+              probability={stay.latestPredictions.pneumonia ?? null}
+              label="Pneumonia"
+              sublabel="phenotype"
+            />
+          </Card>
         </div>
 
-        <div className="mt-5 space-y-2 border-t border-hairline pt-4">
-          <label htmlFor="cutoff" className="block text-xs font-medium text-ink-secondary">
+        <Card title="Run a prediction">
+          <label htmlFor="cutoff" className="eyebrow mb-1.5 block">
             Cut-off time
           </label>
           <input
@@ -223,10 +227,10 @@ function OverviewTab({ stay }: { stay: StayDetail }) {
             type="datetime-local"
             value={cutoff}
             onChange={(e) => setCutoff(e.target.value)}
-            className="w-full rounded-md border border-hairline bg-surface-2 px-2.5 py-1.5 text-sm text-ink"
+            className="field-input w-full text-sm"
           />
 
-          <div className="flex gap-2 pt-1">
+          <div className="mt-3 flex gap-2">
             <Button
               variant="primary"
               size="sm"
@@ -247,12 +251,12 @@ function OverviewTab({ stay }: { stay: StayDetail }) {
           </div>
 
           {runError && (
-            <p role="alert" className="text-xs text-status-critical">
+            <p role="alert" className="note-critical mt-3 px-3 py-2 text-xs">
               {runError}
             </p>
           )}
-        </div>
-      </Card>
+        </Card>
+      </div>
 
       <Card title="Risk trajectory">
         {mortalityTrajectory.isLoading || pneumoniaTrajectory.isLoading ? (
@@ -337,7 +341,7 @@ function VitalsTab({ stayId }: { stayId: string }) {
   const window = data.slice(-48);
 
   return (
-    <div className="space-y-4">
+    <div className="flex flex-col gap-[22px]">
       {confidence?.ehrTimesteps && (
         <Card title="Per-hour EHR confidence" actions={<ConfidenceScaleLegend />}>
           <EhrConfidenceBand values={confidence.ehrTimesteps} theta={confidence.theta} />
@@ -349,8 +353,8 @@ function VitalsTab({ stayId }: { stayId: string }) {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-hairline bg-surface-3/60 text-left text-[11px] uppercase tracking-wide text-ink-muted">
-                  <th className="sticky left-0 bg-surface-3 px-3 py-2 font-medium">Variable</th>
+                <tr className="table-head">
+                  <th className="sticky left-0">Variable</th>
                   {window.map((point) => (
                     <th key={point.ts} className="px-2 py-2 text-center font-normal">
                       {new Date(point.ts).getHours()}h
@@ -378,9 +382,7 @@ function VitalsTab({ stayId }: { stayId: string }) {
                           key={point.ts}
                           className={cn(
                             'tnum px-2 py-1.5 text-center text-xs',
-                            value === null || value === undefined
-                              ? 'text-ink-muted/40'
-                              : 'text-ink',
+                            value === null || value === undefined ? 'text-ink-muted' : 'text-ink',
                           )}
                           title={value === null || value === undefined ? 'Not charted' : undefined}
                         >
@@ -464,7 +466,7 @@ function ImagingTab({ stayId }: { stayId: string }) {
               step={0.05}
               value={overlay}
               onChange={(e) => setOverlay(Number(e.target.value))}
-              className="flex-1 accent-[var(--series-mortality)]"
+              className="flex-1"
             />
             <span className="tnum w-10 text-right text-xs text-ink-muted">
               {Math.round(overlay * 100)}%
@@ -481,7 +483,7 @@ function ImagingTab({ stayId }: { stayId: string }) {
                 onClick={() => setSelected(index)}
                 className={cn(
                   'flex w-full items-center gap-3 rounded-md p-2 text-left transition',
-                  index === selected ? 'bg-surface-3' : 'hover:bg-surface-3/60',
+                  index === selected ? 'bg-surface-3' : 'hover:bg-surface-3',
                 )}
               >
                 <img
@@ -562,7 +564,7 @@ function NotesTab({ stayId }: { stayId: string }) {
           <Card key={note.id} bodyClassName="p-0">
             <button
               onClick={() => setOpenId(isOpen ? null : note.id)}
-              className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-surface-3/50"
+              className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-softer"
               aria-expanded={isOpen}
             >
               <span className="rounded bg-surface-3 px-2 py-0.5 text-[11px] font-medium capitalize text-ink-secondary">
@@ -580,7 +582,7 @@ function NotesTab({ stayId }: { stayId: string }) {
             </button>
 
             {isOpen && (
-              <div className="border-t border-hairline bg-surface-2/40 px-4 py-3">
+              <div className="border-t border-hairline bg-surface-2 px-4 py-3">
                 <NoteReader text={note.text} spans={spans} theta={confidence?.theta ?? 0.75} />
               </div>
             )}
@@ -614,20 +616,20 @@ function PredictionsTab({ stayId }: { stayId: string }) {
       <div className="overflow-x-auto">
         <table className="w-full min-w-[720px] text-sm">
           <thead>
-            <tr className="border-b border-hairline bg-surface-3/60 text-left text-[11px] uppercase tracking-wide text-ink-muted">
-              <th className="px-4 py-2 font-medium">Cut-off</th>
-              <th className="px-4 py-2 font-medium">Task</th>
-              <th className="px-4 py-2 font-medium">Risk</th>
-              <th className="px-4 py-2 font-medium">Status</th>
-              <th className="px-4 py-2 font-medium">Latency</th>
-              <th className="px-4 py-2 font-medium" />
+            <tr className="table-head">
+              <th>Cut-off</th>
+              <th>Task</th>
+              <th>Risk</th>
+              <th>Status</th>
+              <th>Latency</th>
+              <th />
             </tr>
           </thead>
           <tbody>
             {data.map((prediction) => (
               <tr
                 key={prediction.id}
-                className="border-b border-hairline last:border-0 hover:bg-surface-3/50"
+                className="border-b border-hairline last:border-0 hover:bg-softer"
               >
                 <td className="px-4 py-2 text-ink-secondary">
                   {shortDateTime(prediction.cutoffTime)}
@@ -640,9 +642,8 @@ function PredictionsTab({ stayId }: { stayId: string }) {
                   <span
                     className={cn(
                       'rounded-full px-2 py-0.5 text-[11px] font-medium',
-                      prediction.status === 'done' && 'bg-status-good/15 text-status-good',
-                      prediction.status === 'failed' &&
-                        'bg-status-critical/15 text-status-critical',
+                      prediction.status === 'done' && 'chip-low',
+                      prediction.status === 'failed' && 'chip-critical',
                       (prediction.status === 'queued' || prediction.status === 'running') &&
                         'bg-surface-3 text-ink-secondary',
                     )}
@@ -657,7 +658,7 @@ function PredictionsTab({ stayId }: { stayId: string }) {
                   {prediction.status === 'done' && (
                     <Link
                       to={`/predictions/${prediction.id}`}
-                      className="text-xs font-medium text-[var(--series-mortality)] hover:underline"
+                      className="text-xs font-medium text-accent-ink hover:underline"
                     >
                       Report →
                     </Link>

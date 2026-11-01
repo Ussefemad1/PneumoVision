@@ -105,7 +105,7 @@ export function RiskTrajectoryChart({
       </div>
 
       <ResponsiveContainer width="100%" height={height}>
-        <LineChart data={data} margin={{ top: 6, right: 10, bottom: 0, left: -18 }}>
+        <LineChart data={data} margin={{ top: 6, right: 10, bottom: 0, left: 0 }}>
           <CartesianGrid stroke="var(--grid)" strokeDasharray="3 3" vertical={false} />
           <XAxis
             dataKey="t"
@@ -122,7 +122,7 @@ export function RiskTrajectoryChart({
             tickFormatter={percentTerse}
             tick={AXIS_STYLE}
             stroke="var(--axis)"
-            width={52}
+            width={46}
           />
           {threshold !== undefined && (
             <ReferenceLine y={threshold} stroke="var(--axis)" strokeDasharray="4 3" />
@@ -131,18 +131,18 @@ export function RiskTrajectoryChart({
             const eventTime = new Date(event.at).getTime();
             if (!Number.isFinite(eventTime)) return null;
             return (
-            <ReferenceLine
-              key={`${event.at}-${i}`}
-              x={eventTime}
-              stroke="var(--grid)"
-              strokeWidth={1}
-              label={{
-                value: event.kind === 'cxr' ? '▣' : '▤',
-                position: 'top',
-                fontSize: 10,
-                fill: 'var(--text-muted)',
-              }}
-            />
+              <ReferenceLine
+                key={`${event.at}-${i}`}
+                x={eventTime}
+                stroke="var(--grid)"
+                strokeWidth={1}
+                label={{
+                  value: event.kind === 'cxr' ? '▣' : '▤',
+                  position: 'top',
+                  fontSize: 10,
+                  fill: 'var(--text-muted)',
+                }}
+              />
             );
           })}
           <Tooltip

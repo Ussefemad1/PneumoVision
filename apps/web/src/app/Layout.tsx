@@ -57,8 +57,9 @@ export function Layout() {
       <nav
         aria-label="Main"
         className={cn(
-          'flex flex-wrap items-center gap-2 bg-sidebar p-3',
+          'flex flex-wrap items-center gap-2 border-b border-white/[0.08] bg-sidebar p-3',
           'min-[900px]:sticky min-[900px]:top-0 min-[900px]:h-screen min-[900px]:w-[248px]',
+          'min-[900px]:border-b-0 min-[900px]:border-r min-[900px]:border-r-white/[0.08]',
           'min-[900px]:flex-none min-[900px]:flex-col min-[900px]:flex-nowrap',
           'min-[900px]:items-stretch min-[900px]:gap-0 min-[900px]:overflow-y-auto min-[900px]:px-4 min-[900px]:py-5',
         )}

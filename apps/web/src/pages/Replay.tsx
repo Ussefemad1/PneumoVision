@@ -16,7 +16,7 @@ import {
 } from '../lib/socket.js';
 import { RiskTrajectoryChart } from '../components/charts.jsx';
 import { RiskBadge } from '../components/risk.jsx';
-import { Button, Card, EmptyState, Field } from '../components/ui.jsx';
+import { Button, Card, EmptyState, Field, Kpi, Segmented } from '../components/ui.jsx';
 
 /** Vitals worth watching tick past during a replay. */
 const WATCHED = [
@@ -137,15 +137,18 @@ export function ReplayPage() {
   const selected = dashboard?.rows.find((r) => r.stayId === stayId);
 
   return (
-    <div className="space-y-4">
+    <div className="flex flex-col gap-[22px]">
       <header>
-        <h1 className="text-lg font-semibold text-ink">ICU Replay</h1>
+        <h1 className="text-[28px] font-bold tracking-[-0.02em] text-ink">ICU Replay</h1>
+        <p className="mt-1.5 text-ink-secondary">
+          Step a past stay forward hour by hour and watch the risk move. Demo only.
+        </p>
       </header>
 
       <Card>
         <div className="flex flex-wrap items-end gap-3">
           <div className="min-w-[220px] flex-1">
-            <label htmlFor="stay" className="mb-1 block text-xs font-medium text-ink-secondary">
+            <label htmlFor="stay" className="eyebrow mb-1.5 block">
               Patient
             </label>
             <select
@@ -156,7 +159,7 @@ export function ReplayPage() {
                 setStatus(null);
                 setTicks([]);
               }}
-              className="w-full rounded-md border border-hairline bg-surface-2 px-2.5 py-1.5 text-sm text-ink"
+              className="field-input w-full text-sm"
             >
               <option value="">Select a stay…</option>
               {dashboard?.rows.map((row) => (
@@ -168,24 +171,16 @@ export function ReplayPage() {
           </div>
 
           <div>
-            <span className="mb-1 block text-xs font-medium text-ink-secondary">Speed</span>
-            <div className="flex rounded-md border border-hairline p-0.5">
-              {REPLAY_SPEEDS.map((option) => (
-                <button
-                  key={option}
-                  onClick={() => setSpeed(option)}
-                  disabled={running}
-                  className={cn(
-                    'rounded px-2.5 py-1 text-xs transition disabled:opacity-50',
-                    speed === option
-                      ? 'bg-surface-3 font-medium text-ink'
-                      : 'text-ink-muted hover:text-ink',
-                  )}
-                >
-                  ×{option}
-                </button>
-              ))}
-            </div>
+            <span className="eyebrow mb-1.5 block">Speed</span>
+            <Segmented
+              value={String(speed)}
+              onChange={(value) => setSpeed(Number(value))}
+              options={REPLAY_SPEEDS.map((option) => ({
+                value: String(option),
+                label: `×${option}`,
+              }))}
+              ariaLabel="Replay speed"
+            />
           </div>
 
           <Button
@@ -198,22 +193,22 @@ export function ReplayPage() {
         </div>
 
         {error && (
-          <p role="alert" className="mt-2 text-xs text-status-critical">
+          <p role="alert" className="note-critical mt-3 px-3 py-2 text-xs">
             {error}
           </p>
         )}
 
         {status && (
           <div className="mt-4">
-            <div className="mb-1 flex items-center justify-between text-[11px] text-ink-muted">
+            <div className="mb-1.5 flex items-center justify-between text-xs text-ink-secondary">
               <span>
                 Hour {status.cursorHour} of {status.totalHours}
               </span>
               <span>{running ? `running at ×${status.speed}` : 'stopped'}</span>
             </div>
-            <div className="h-1.5 overflow-hidden rounded-full bg-surface-3">
+            <div className="h-2 overflow-hidden rounded-full bg-softer">
               <div
-                className="h-full rounded-full bg-[var(--series-mortality)] transition-all"
+                className="h-full rounded-full bg-accent transition-all"
                 style={{ width: `${Math.min(100, progress * 100)}%` }}
               />
             </div>
@@ -223,57 +218,86 @@ export function ReplayPage() {
 
       {!stayId ? (
         <Card>
-          <EmptyState icon="▷" title="Pick a patient to replay" />
+          <EmptyState
+            icon="▷"
+            title="Pick a patient to replay"
+            description="Their recorded hours are fed back through the model in order."
+          />
         </Card>
       ) : (
-        <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
-          <Card
-            title="Risk trajectory"
-            actions={selected ? <RiskBadge probability={selected.mortality} /> : undefined}
-          >
-            <RiskTrajectoryChart
-              mortality={trajectory.data?.points ?? []}
-              threshold={trajectory.data?.threshold}
-              height={260}
-            />
-          </Card>
+        <>
+          {/* All three come from state the page already holds. */}
+          {status && (
+            <div className="grid grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-4">
+              <Kpi
+                label="Hour"
+                value={`${status.cursorHour} of ${status.totalHours}`}
+                hint={running ? `Running at ×${status.speed}` : 'Stopped'}
+              />
+              <Kpi
+                label="Current risk"
+                value={percent(selected?.mortality ?? null)}
+                hint="In-hospital mortality"
+              />
+              <Kpi
+                label="Hours replayed"
+                value={ticks.length}
+                hint="Vitals received this session"
+              />
+            </div>
+          )}
+          <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
+            <Card
+              title="Risk trajectory"
+              actions={selected ? <RiskBadge probability={selected.mortality} /> : undefined}
+            >
+              <RiskTrajectoryChart
+                mortality={trajectory.data?.points ?? []}
+                threshold={trajectory.data?.threshold}
+                height={260}
+              />
+            </Card>
 
-          <Card title="Live vitals">
-            {ticks.length === 0 ? (
-              <EmptyState icon="◷" title={running ? 'Waiting for the next hour…' : 'Not running'} />
-            ) : (
-              <ul className="space-y-2">
-                {[...ticks].reverse().map((tick, index) => (
-                  <li
-                    key={`${tick.ts}-${index}`}
-                    className={cn(
-                      'rounded-lg border border-hairline p-2.5 transition',
-                      index === 0 && 'border-[var(--series-mortality)]/50 bg-surface-3/40',
-                    )}
-                  >
-                    <div className="mb-1 text-[11px] font-medium text-ink-muted">
-                      {timeOnly(tick.ts)}
-                    </div>
-                    <dl className="grid grid-cols-2 gap-x-3 gap-y-1">
-                      {WATCHED.map((key) => {
-                        const value = tick.values[key];
-                        if (value === null || value === undefined) return null;
-                        return (
-                          <div key={key} className="flex items-baseline justify-between gap-2">
-                            <dt className="truncate text-[11px] text-ink-muted">
-                              {key.replace(' blood pressure', ' BP')}
-                            </dt>
-                            <dd className="tnum text-xs font-medium text-ink">{String(value)}</dd>
-                          </div>
-                        );
-                      })}
-                    </dl>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Card>
-        </div>
+            <Card title="Live vitals">
+              {ticks.length === 0 ? (
+                <EmptyState
+                  icon="◷"
+                  title={running ? 'Waiting for the next hour…' : 'Not running'}
+                />
+              ) : (
+                <ul className="space-y-2">
+                  {[...ticks].reverse().map((tick, index) => (
+                    <li
+                      key={`${tick.ts}-${index}`}
+                      className={cn(
+                        'rounded-lg border border-hairline p-2.5 transition',
+                        index === 0 && 'border-accent bg-softer',
+                      )}
+                    >
+                      <div className="mb-1 text-[11px] font-medium text-ink-muted">
+                        {timeOnly(tick.ts)}
+                      </div>
+                      <dl className="grid grid-cols-2 gap-x-3 gap-y-1">
+                        {WATCHED.map((key) => {
+                          const value = tick.values[key];
+                          if (value === null || value === undefined) return null;
+                          return (
+                            <div key={key} className="flex items-baseline justify-between gap-2">
+                              <dt className="truncate text-[11px] text-ink-muted">
+                                {key.replace(' blood pressure', ' BP')}
+                              </dt>
+                              <dd className="tnum text-xs font-medium text-ink">{String(value)}</dd>
+                            </div>
+                          );
+                        })}
+                      </dl>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Card>
+          </div>
+        </>
       )}
 
       {/* Alert toasts */}

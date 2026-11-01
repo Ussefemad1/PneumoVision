@@ -185,18 +185,18 @@ export function AlertsPage() {
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-2">
-                      <span
-                        className={cn(
-                          'inline-flex h-6 items-center rounded-full px-2.5 text-xs font-semibold capitalize',
-                          alert.status === 'open' && 'chip-neutral',
-                          alert.status === 'acknowledged' && 'chip-moderate',
-                          alert.status === 'resolved' && 'chip-low',
-                        )}
-                      >
-                        {alert.status}
-                      </span>
+                    <span
+                      className={cn(
+                        'inline-flex h-6 shrink-0 items-center rounded-full px-2.5 text-xs font-semibold capitalize',
+                        alert.status === 'open' && 'chip-neutral',
+                        alert.status === 'acknowledged' && 'chip-moderate',
+                        alert.status === 'resolved' && 'chip-low',
+                      )}
+                    >
+                      {alert.status}
+                    </span>
 
+                    <div className="flex items-center gap-2 border-l border-hairline pl-3">
                       {alert.status === 'open' && (
                         <Button size="sm" onClick={() => acknowledge.mutate(alert.id)}>
                           Acknowledge
