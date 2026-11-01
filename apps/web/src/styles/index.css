@@ -471,6 +471,16 @@ select {
     border-color: var(--accent);
   }
 
+  /*
+   * The rule above sets outline: none, which would otherwise leave inputs and
+   * selects with no keyboard focus indicator at all — a border tint is too
+   * weak to be the only one.
+   */
+  .field-input:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
   /* Selects are denser than text inputs in the demo. */
   select.field-input {
     height: 38px;

@@ -19,7 +19,7 @@ import { AlphaContributionChart } from '../components/charts.jsx';
 import { Disclaimer } from '../components/Disclaimer.jsx';
 import { ReceivedInputs } from '../features/analyze/ReceivedInputs.jsx';
 import { RiskGauge } from '../components/risk.jsx';
-import { Button, Card, ErrorState, Skeleton } from '../components/ui.jsx';
+import { Button, Card, Chip, ErrorState, Skeleton } from '../components/ui.jsx';
 
 const MODALITY_LABELS: Record<string, string> = {
   ehr: 'EHR (vitals)',
@@ -152,9 +152,25 @@ export function PredictionReportPage() {
           <div className="eyebrow">
             {data.task === 'mortality' ? '48-hour mortality' : 'Pneumonia phenotype'}
           </div>
-          <p className="mt-1 text-[26px] font-bold tracking-[-0.02em] text-ink">
-            {riskBand(result.probability).label} risk
-          </p>
+          <div className="mt-1 flex flex-wrap items-center gap-3">
+            <p className="text-[26px] font-bold tracking-[-0.02em] text-ink">
+              {riskBand(result.probability).label} risk
+            </p>
+            {/*
+             * Level only, never the percentage: PredictionReport.test.tsx does
+             * getByText on a probability string, which throws on a second
+             * match. RiskBadge would render exactly that.
+             */}
+            <Chip
+              className={cn(
+                riskBand(result.probability).chipClass,
+                'h-7 px-3 text-[13px] font-semibold',
+              )}
+            >
+              <span aria-hidden="true">{riskBand(result.probability).icon}</span>
+              {riskBand(result.probability).label}
+            </Chip>
+          </div>
           {fusionKind === 'average' ? (
             <p className="tnum mt-3 rounded-control bg-surface-3 px-3 py-2 text-xs text-ink">
               ({averaged.map((key) => percent(result.unimodal[key])).join(' + ')}) ÷{' '}

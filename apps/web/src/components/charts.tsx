@@ -376,9 +376,14 @@ export function EhrConfidenceBand({
               key={hour}
               className="relative flex-1 cursor-default rounded-sm"
               style={{
+                // Below θ is a lighter *fill*, not an outline: hollow bars read
+                // as "no data" when they actually mean "charted, low
+                // confidence". Height still carries the value, so the fill is
+                // a second channel rather than the only one.
                 height: `${Math.max(6, value * 100)}%`,
-                background: above ? sequentialBlue(value) : 'transparent',
-                border: above ? 'none' : `1px solid ${sequentialBlue(value)}`,
+                background: above
+                  ? sequentialBlue(value)
+                  : `color-mix(in srgb, ${sequentialBlue(value)} 45%, transparent)`,
               }}
               onMouseEnter={() => setHover(hour)}
               onMouseLeave={() => setHover(null)}

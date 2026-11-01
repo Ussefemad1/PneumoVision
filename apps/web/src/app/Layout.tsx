@@ -6,6 +6,7 @@ import { getData } from '../lib/api.js';
 import { cn } from '../lib/cn.js';
 import { useTheme, type ThemeChoice } from '../lib/theme.js';
 import { Icon, type IconName } from '../components/icons.jsx';
+import { DisclaimerScope } from '../components/Disclaimer.jsx';
 import { LogoMark, Wordmark } from '../components/Logo.jsx';
 import { useAuth } from './auth.jsx';
 
@@ -136,17 +137,27 @@ export function Layout() {
       </nav>
 
       <main className="flex w-full min-w-0 max-w-[1440px] flex-1 flex-col gap-[22px] px-4 py-6 min-[900px]:px-10 min-[900px]:py-7">
-        <div className="min-w-0 flex-1">
-          <Outlet />
-        </div>
-        {/*
-         * Deliberately NOT role="note": the Disclaimer component owns that
-         * role, and a bare getByRole('note') must stay unambiguous.
-         */}
-        <div className="note-info flex items-center gap-2.5 px-4 py-3 text-xs">
-          <Icon name="info" size={16} className="flex-none" />
-          Research prototype · decision support only · not for clinical use · synthetic data
-        </div>
+        <DisclaimerScope>
+          {(hasPageDisclaimer) => (
+            <>
+              <div className="min-w-0 flex-1">
+                <Outlet />
+              </div>
+              {/*
+               * Deliberately NOT role="note": the Disclaimer component owns
+               * that role, and a bare getByRole('note') must stay
+               * unambiguous. Stands down when the page shows the full one,
+               * so the two never stack.
+               */}
+              {!hasPageDisclaimer && (
+                <div className="note-info flex items-center gap-2.5 px-4 py-3 text-xs">
+                  <Icon name="info" size={16} className="flex-none" />
+                  Research prototype · decision support only · not for clinical use · synthetic data
+                </div>
+              )}
+            </>
+          )}
+        </DisclaimerScope>
       </main>
     </div>
   );
