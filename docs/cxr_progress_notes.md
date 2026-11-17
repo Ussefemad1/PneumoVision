@@ -18,14 +18,14 @@ Settled 2026-09-27. Supersedes any earlier assumption that a combined
 reference scripts under `medpatch/scripts/*/Unimodal/CXR.sh` run as-is once the
 data-dir flags are filled in.
 
-| | `--task in-hospital-mortality` | `--task phenotyping` |
-|---|---|---|
-| Window | `intime + 48h` (`DataFusion.py:251`) | `outtime`, whole stay (`DataFusion.py:276`) |
-| Predicts | death | all 25 conditions |
-| `--num_classes` | 1 | 25 |
-| `--labels_set` | `mortality` | `pheno` |
-| We report | the task score | **the pneumonia column only**, of the 25 |
-| Images | **6,683** | **11,236** |
+|                 | `--task in-hospital-mortality`       | `--task phenotyping`                        |
+| --------------- | ------------------------------------ | ------------------------------------------- |
+| Window          | `intime + 48h` (`DataFusion.py:251`) | `outtime`, whole stay (`DataFusion.py:276`) |
+| Predicts        | death                                | all 25 conditions                           |
+| `--num_classes` | 1                                    | 25                                          |
+| `--labels_set`  | `mortality`                          | `pheno`                                     |
+| We report       | the task score                       | **the pneumonia column only**, of the 25    |
+| Images          | **6,683**                            | **11,236**                                  |
 
 **Purpose:** confirm the pipeline reproduces the paper before building anything
 new. If both match the published numbers, the cohort, data pipeline and
@@ -87,7 +87,7 @@ not reconcile — I would have images for patients absent from your data.
 
 Related: in MIMIC-IV, `first_careunit` always equals `last_careunit`
 (0 rows differ), so `remove_icustays_with_transfers` is a no-op here. That is
-expected — a ward transfer creates a *separate* icustay row in MIMIC-IV,
+expected — a ward transfer creates a _separate_ icustay row in MIMIC-IV,
 unlike MIMIC-III which the benchmark code was originally written for.
 
 ---
@@ -173,12 +173,12 @@ Filters, in order (all sourced from the repo, not the paper text):
 `StudyDateTime` is built with the same expression as `DataFusion.py`
 (lines ~189-190), not reimplemented.
 
-| | Mine | Paper (Fig 1a / Table 1) | Diff |
-|---|---|---|---|
-| Task A (48h) | 6,683 | 6,215 | +7.5% |
-| Task B (full stay) | 11,237 | 10,804 | +4.0% |
-| Overlap | 2,739 | — | — |
-| **Union to download** | **15,181** | — | — |
+|                       | Mine       | Paper (Fig 1a / Table 1) | Diff  |
+| --------------------- | ---------- | ------------------------ | ----- |
+| Task A (48h)          | 6,683      | 6,215                    | +7.5% |
+| Task B (full stay)    | 11,237     | 10,804                   | +4.0% |
+| Overlap               | 2,739      | —                        | —     |
+| **Union to download** | **15,181** | —                        | —     |
 
 ---
 
@@ -204,8 +204,8 @@ corruption.
 
 Consequences for everyone:
 
-- Time gaps *within* one patient are real and usable.
-- Absolute dates are fiction. **Never** compare timestamps *between* patients,
+- Time gaps _within_ one patient are real and usable.
+- Absolute dates are fiction. **Never** compare timestamps _between_ patients,
   sort patients by admission date, split train/test by time, or count
   "patients admitted in 2015". All meaningless.
 
@@ -247,10 +247,10 @@ for a given input, but neither chronological nor semantic. Truncation keeps an
 Both options below cover the same **36,648** Task A stays. They differ only in
 how much text each stay carries — these are **report** counts, not stay counts:
 
-| | Reports | Per stay | Est. tokens | Under the 512 cap? |
-|---|---|---|---|---|
-| Chest-filtered | 52,930 | ~1.44 | ~430 | probably fits |
-| Unfiltered | 179,003 | ~4.88 | ~1,460 | ~35% survives, arbitrarily chosen |
+|                | Reports | Per stay | Est. tokens | Under the 512 cap?                |
+| -------------- | ------- | -------- | ----------- | --------------------------------- |
+| Chest-filtered | 52,930  | ~1.44    | ~430        | probably fits                     |
+| Unfiltered     | 179,003 | ~4.88    | ~1,460      | ~35% survives, arbitrarily chosen |
 
 **Token figures assume ~300 tokens/report and are unmeasured estimates.**
 
@@ -277,7 +277,6 @@ one to get wrong silently.
 
 ---
 
-<<<<<<< HEAD
 ## Checkpoint durability for multi-account training (2026-09-27)
 
 Training runs across **three free Colab accounts** (~30 h/week each, ~90 h/week
@@ -301,7 +300,7 @@ not an edge case. Two weaknesses mattered once checkpoints became load-bearing:
 
 **1. Writes were not atomic.** `save_checkpoint` wrote straight to the final
 filename. A 285 MB save to a Drive mount takes seconds, so a session killed
-mid-write left a *truncated file at the real checkpoint name*. With an epoch at
+mid-write left a _truncated file at the real checkpoint name_. With an epoch at
 ~20 min and a ~30 s write, roughly 2.5% of wall-clock time sat inside that
 window — near-certain to hit at least once across days of handoffs.
 
@@ -315,7 +314,7 @@ person's run — and the file they depended on was already destroyed.
 
 It now tries each candidate in turn, and on an unreadable one prints the real
 error and falls back to `best`, noting that progress since the last
-*improving* epoch is lost. If **every** checkpoint is unreadable it raises
+_improving_ epoch is lost. If **every** checkpoint is unreadable it raises
 rather than silently starting from scratch, which would discard the run.
 
 Verified against a deliberately truncated checkpoint:
@@ -332,7 +331,7 @@ Happy path is unchanged: with both files intact it still uses `last`.
 Deliberately **not** done: staging to local disk before copying to Drive. It
 would shrink the window further, but the fallback already converts this from
 "the next person is stuck" into "the next person continues, loudly warned".
-=======
+
 ## Image selection is ambiguous when a study has two frontal films
 
 Found when the first real training run crashed during validation:
@@ -340,7 +339,7 @@ Found when the first real training run crashed during validation:
     KeyError: '96a7eec6-1d80e8ae-8ebcac87-dfecac3e-780f61f4'
     cxr_dataset.py:46  img = Image.open(self.filenames_to_path[index])
 
-**MIMIC-CXR timestamps a *study*, not an individual image.** A single trip to
+**MIMIC-CXR timestamps a _study_, not an individual image.** A single trip to
 the x-ray room can produce several images sharing one `StudyDateTime` —
 **125,160 of 227,835 studies contain more than one image** (up to 11). So
 whenever the selected study holds two AP films, "keep the latest CXR per stay"
@@ -362,12 +361,12 @@ another machine, can pick the other twin.
 `scripts/build_cxr_download_list.py` broke the tie the other way, so the
 download list and the pipeline disagreed on ~10% of stays:
 
-| Task | Stays with an image | Latest tied | Image not on disk |
-|---|---|---|---|
-| in-hospital-mortality | 6,677 | 706 | 660 |
-| pneumonia-48h | 6,677 | 706 | 660 |
-| phenotyping | 11,230 | 1,092 | 1,088 |
-| **union** | | | **1,586** |
+| Task                  | Stays with an image | Latest tied | Image not on disk |
+| --------------------- | ------------------- | ----------- | ----------------- |
+| in-hospital-mortality | 6,677               | 706         | 660               |
+| pneumonia-48h         | 6,677               | 706         | 660               |
+| phenotyping           | 11,230              | 1,092       | 1,088             |
+| **union**             |                     |             | **1,586**         |
 
 Counts matched (6,677 either way) while membership did not, which is why this
 surfaced only at runtime.
@@ -375,8 +374,8 @@ surfaced only at runtime.
 **Resolution: download all tie candidates (1,586 extra, ~3 GB)** rather than
 changing the selection. Two options were rejected:
 
-- *Match the pipeline's tie-break in our list* — depends on pandas version.
-- *Add a deterministic secondary sort to the code* — deviates from the paper's
+- _Match the pipeline's tie-break in our list_ — depends on pandas version.
+- _Add a deterministic secondary sort to the code_ — deviates from the paper's
   implementation, and buys no accuracy since the tied images are the same study
   at the same moment.
 
@@ -388,7 +387,6 @@ originally-downloaded one goes unused. One image per stay still holds.
 "latest image per stay" is ambiguous whenever a study contains two frontal
 films — a genuine source of non-reproducibility in the original pipeline, and
 common rather than rare.
->>>>>>> ad71c31 (Record Phase 1 results and open items for the CXR track)
 
 ---
 
@@ -469,7 +467,7 @@ from scratch:
 - `self.start_epoch = 0` hardcoded in `MSMA_trainer.py`, with the loop
   `for self.epoch in range(self.start_epoch, self.args.epochs)`.
 - `save_checkpoint()` only called on improvement, so a session dying during a
-  flat stretch lost back to the last *improving* epoch.
+  flat stretch lost back to the last _improving_ epoch.
 - `--resume` existed in `arguments.py` but **nothing read it**.
 
 Consequence at 384px across multiple Colab sessions: every reconnect restarted
@@ -497,7 +495,7 @@ it looked like it had worked.
 
 **Side effect worth knowing:** `frozen_trainer.py:426` already called
 `save_checkpoint(prefix='last')` and inherits the base method, so under the old
-code it was overwriting its own *best* checkpoint every epoch. That trainer is
+code it was overwriting its own _best_ checkpoint every epoch. That trainer is
 now correct too.
 
 ### 4. `DataFusion.py` loaded notes unconditionally — FIXED
@@ -551,10 +549,10 @@ The string is discarded. `CXR_encoder` is an alias for `CXRModels`, which builds
 `getattr(torchvision.models, args.vision_backbone)` — and `--vision-backbone`
 defaults to **densenet121**, a flag the reference script never passes.
 
-| Intended | Actually built |
-|---|---|
-| timm `vit_small_patch16_384` | torchvision `densenet121` |
-| `[B, 577, D]` patch tokens | `[B, 1024]` pooled vector |
+| Intended                          | Actually built                              |
+| --------------------------------- | ------------------------------------------- |
+| timm `vit_small_patch16_384`      | torchvision `densenet121`                   |
+| `[B, 577, D]` patch tokens        | `[B, 1024]` pooled vector                   |
 | `CXRTransformer` → `(v_cxr, cls)` | `CXRModels` → `(preds, loss, visual_feats)` |
 
 Consequences:
@@ -638,14 +636,14 @@ until defect 6 is fully fixed.**
 ### 7. Off-by-one in loss averaging — FIXED
 
 Both training and validation loops used `enumerate(dl)`, which starts at **0**,
-then divided the accumulated loss by `i` — the last *index* rather than the
-batch *count*. Six locations in `MSMA_trainer.py`: 186, 212, 218, 319, 327, 364.
+then divided the accumulated loss by `i` — the last _index_ rather than the
+batch _count_. Six locations in `MSMA_trainer.py`: 186, 212, 218, 319, 327, 364.
 
-| Batches | Divided by | Should be | Effect |
-|---|---|---|---|
-| 1 | 0 | 1 | **ZeroDivisionError** |
-| 2 | 1 | 2 | loss 100% too high |
-| 31 (our real val set: 490 imgs @ bs 16) | 30 | 31 | loss ~3% too high |
+| Batches                                 | Divided by | Should be | Effect                |
+| --------------------------------------- | ---------- | --------- | --------------------- |
+| 1                                       | 0          | 1         | **ZeroDivisionError** |
+| 2                                       | 1          | 2         | loss 100% too high    |
+| 31 (our real val set: 490 imgs @ bs 16) | 30         | 31        | loss ~3% too high     |
 
 Found when the 50-image dry run gave 10 validation images at `batch_size 16` —
 exactly one batch, so `i` stayed 0 and validation crashed.
@@ -672,8 +670,9 @@ Fixed by `enumerate(dl, 1)` in both loops, so `i` counts batches.
   `if self.best_auroc > avg_loss` picked the same epoch either way, and the
   patience counter behaved identically. **No previously selected checkpoint was
   the wrong epoch.**
+
 - One genuine inconsistency it caused: the LR scheduler at line 316 used
-  `epoch_loss/len(self.val_dl)` — the *correct* divisor — while selection used
+  `epoch_loss/len(self.val_dl)` — the _correct_ divisor — while selection used
   `epoch_loss/i`. Both are now the same.
 
 **Note on loss comparability:** post-fix loss values are slightly lower than any
@@ -746,7 +745,7 @@ would have converted a loud crash into exactly that silent failure.
   empty.
 - The filter uses `not np.isnan(...)`; discarded draws are counted and reported
   per column, e.g. `22/200 bootstrap samples discarded (resample had only one
-  class); CI computed from 178 samples`.
+class); CI computed from 178 samples`.
 - Undefined columns print a named warning, e.g.
   `[metrics] Rare condition A: AUROC/AUPRC undefined (0 positives out of 60)`.
   Column names come from the listfile header via `Trainer.set_class_names()`,
@@ -786,8 +785,8 @@ condition needs only a handful of positives to be at risk:
 - Pneumonia itself (~62 positives at 12.7%) is comfortable.
 
 The benchmark's rarer conditions are the candidates — things like
-*Pleurisy; pneumothorax; pulmonary collapse*, *Other liver diseases*,
-*Conduction disorders* and *Shock* sit well below the common cardiac and renal
+_Pleurisy; pneumothorax; pulmonary collapse_, _Other liver diseases_,
+_Conduction disorders_ and _Shock_ sit well below the common cardiac and renal
 categories. **Check the actual per-column positive counts once Caroll's
 listfile arrives** rather than trusting this ordering.
 
@@ -814,7 +813,7 @@ for an image we never downloaded?
 
 **The listfile join, not the metadata.** In the fused path the images are
 indexed **by `dicom_id` string**, and those ids come from `metadata_with_labels`
-*after* it has been inner-joined with the EHR listfile on `stay_id`. That join
+_after_ it has been inner-joined with the EHR listfile on `stay_id`. That join
 is what restricts requests to our cohort.
 
 The practical consequence:
@@ -838,11 +837,11 @@ debug the CXR encoder in isolation, filter the metadata to your cohort first.
 
 ## Other repo gotchas
 
-| Finding | Consequence |
-|---|---|
-| `--resize` and `--crop` are dead arguments | `get_transforms()` hardcodes `(384, 384)` and ignores them. |
-| Training augmentation uses `RandomAffine(degrees=45)` | Far more rotation than real chest x-rays vary. Reproduce as-is first, test 10-15° later as an ablation. |
-| Labels do **not** come from the images | `--data_pairs paired` routes through `DataFusion.py`, which pulls phenotype labels from the **EHR listfile**. `chexpert.csv` must exist for the loader but its Pneumonia column is not the training label. |
+| Finding                                               | Consequence                                                                                                                                                                                                |
+| ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--resize` and `--crop` are dead arguments            | `get_transforms()` hardcodes `(384, 384)` and ignores them.                                                                                                                                                |
+| Training augmentation uses `RandomAffine(degrees=45)` | Far more rotation than real chest x-rays vary. Reproduce as-is first, test 10-15° later as an ablation.                                                                                                    |
+| Labels do **not** come from the images                | `--data_pairs paired` routes through `DataFusion.py`, which pulls phenotype labels from the **EHR listfile**. `chexpert.csv` must exist for the loader but its Pneumonia column is not the training label. |
 
 ---
 
