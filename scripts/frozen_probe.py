@@ -304,6 +304,43 @@ def bootstrap_ci(y: np.ndarray, p: np.ndarray, iters: int, seed: int):
     )
 
 
+def paired_bootstrap(y: np.ndarray, p_a: np.ndarray, p_b: np.ndarray,
+                     iters: int, seed: int):
+    """CI on the AUROC *difference*, both encoders scored on one resample.
+
+    Two separately estimated intervals each carry the noise of which patients
+    landed in the test set, so they overlap even when one encoder is reliably
+    ahead. Here each draw scores both encoders on the same resampled patients
+    and subtracts, so that shared noise cancels inside the draw. This is the
+    comparison the design supports: the two runs differ only in the backbone.
+    """
+    from sklearn.metrics import roc_auc_score
+
+    rng = np.random.default_rng(seed)
+    n = len(y)
+    draws = []
+    for _ in range(iters):
+        idx = rng.integers(0, n, n)
+        if len(np.unique(y[idx])) < 2:
+            continue
+        draws.append(roc_auc_score(y[idx], p_b[idx]) - roc_auc_score(y[idx], p_a[idx]))
+    draws = np.asarray(draws, dtype=float)
+    lo, hi = np.percentile(draws, [2.5, 97.5])
+    # Both sides count the zeros, so two identical encoders give p = 1 rather
+    # than the p = 0 that `1 - below` would report.
+    below = float((draws <= 0).mean())
+    above = float((draws >= 0).mean())
+    return {
+        "delta": float(roc_auc_score(y, p_b) - roc_auc_score(y, p_a)),
+        "lo": float(lo),
+        "hi": float(hi),
+        # Two-sided bootstrap p: how often the draws fall on the other side.
+        "p": min(1.0, float(2 * min(below, above))),
+        "n_draws": int(len(draws)),
+        "wins": float((draws > 0).mean()),
+    }
+
+
 # --------------------------------------------------------------------------
 
 POOLING_LABEL = {
@@ -388,6 +425,10 @@ def evaluate(encoder: str, args, device):
             "pneumonia_auroc": auroc, "ci_low": lo, "ci_high": hi,
             "pneumonia_auprc": auprc, "mean_auroc_25": mean_auroc(test_y, pred),
             "n_test": int(len(test_y)),
+            # Underscored keys are arrays kept for the paired test; they are
+            # stripped before the result is written as JSON.
+            "_pred": pred[:, c].astype(float),
+            "_y": test_y[:, c].astype(float),
         }
 
     if not args.sweep:
@@ -457,7 +498,7 @@ def print_result(best: dict, rows: list) -> None:
     print("=" * 68)
 
 
-def print_comparison(results: dict) -> None:
+def print_comparison(results: dict, paired: dict | None = None) -> None:
     """The one page to show someone: same everything, different encoder."""
     a, b = results["imagenet"], results["rad-dino"]
     delta = b["pneumonia_auroc"] - a["pneumonia_auroc"]
@@ -489,11 +530,35 @@ def print_comparison(results: dict) -> None:
     else:
         print("   The two encoders performed about the same. On this evidence")
         print("   the chest-X-ray pretraining did not help.")
-    overlap = b["ci_low"] < a["ci_high"]
-    if abs(delta) >= 0.02 and overlap:
+    if paired is not None:
         print()
-        print("   Note: the two confidence intervals overlap, so this is")
-        print("   suggestive rather than conclusive.")
+        print("-" * 68)
+        print("   IS THE GAIN REAL? -- the two encoders raced side by side")
+        print("-" * 68)
+        print(f"   The ranges above overlap ({a['ci_low']:.3f}-{a['ci_high']:.3f} "
+              f"against {b['ci_low']:.3f}-{b['ci_high']:.3f}),")
+        print("   because each was measured on its own. But both encoders were")
+        print("   scored on the SAME patients, so that shared luck cancels if")
+        print("   the difference is measured directly.")
+        print()
+        print(f"   Re-drawing the {a['n_test']:,} test patients {paired['n_draws']:,} times "
+              "and scoring")
+        print("   both encoders on each draw:")
+        print()
+        print(f"       difference   {paired['delta']:+.3f}"
+              f"   (95% CI {paired['lo']:+.3f} to {paired['hi']:+.3f})")
+        print(f"       RAD-DINO ahead in {paired['wins'] * 100:.1f}% of draws"
+              f"   (p = {paired['p']:.3f})")
+        print()
+        if paired["lo"] > 0:
+            print("   The interval does not cross zero. The gain is NOT explained")
+            print("   by which patients happened to be in the test set.")
+        elif paired["hi"] < 0:
+            print("   The interval sits below zero -- the chest-X-ray encoder is")
+            print("   reliably WORSE here. Check this before reporting it.")
+        else:
+            print("   The interval crosses zero, so even paired the difference is")
+            print("   not established. Report it as suggestive.")
     print()
     print("   Caveat: RAD-DINO was pretrained on MIMIC-CXR, which probably")
     print("   includes these test patients, so treat this as an upper bound.")
@@ -548,10 +613,22 @@ def main() -> None:
         print_result(best, rows)
         results[encoder] = best
         out = args.cache_dir / f"result_{encoder}_{args.task}.json"
-        out.write_text(json.dumps({"task": args.task, **best}, indent=2))
+        public = {k: v for k, v in best.items() if not k.startswith("_")}
+        out.write_text(json.dumps({"task": args.task, **public}, indent=2))
 
     if args.compare:
-        print_comparison(results)
+        a, b = results["imagenet"], results["rad-dino"]
+        paired = None
+        if np.array_equal(a["_y"], b["_y"]):
+            paired = paired_bootstrap(a["_y"], a["_pred"], b["_pred"],
+                                      args.bootstrap_iters, args.seed)
+            (args.cache_dir / f"paired_{args.task}.json").write_text(
+                json.dumps({"task": args.task, "a": "imagenet",
+                            "b": "rad-dino", **paired}, indent=2))
+        else:
+            print("[paired] test labels differ between the two runs -- "
+                  "skipping the paired test")
+        print_comparison(results, paired)
     else:
         print()
         if args.encoder == "rad-dino":
