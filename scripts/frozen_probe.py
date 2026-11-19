@@ -306,42 +306,25 @@ def bootstrap_ci(y: np.ndarray, p: np.ndarray, iters: int, seed: int):
 
 # --------------------------------------------------------------------------
 
-def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--encoder", required=True, choices=sorted(ENCODERS))
-    ap.add_argument("--medpatch-dir", type=Path, default=Path("/content/PneumoVision/medpatch"))
-    ap.add_argument("--ehr-data-dir", default="/content/ehr")
-    ap.add_argument("--cxr-data-dir", default="/content/cxr")
-    ap.add_argument("--task", default="pneumonia-48h")
-    ap.add_argument("--labels-set", default="pheno")
-    ap.add_argument("--num-classes", type=int, default=25)
-    ap.add_argument("--batch-size", type=int, default=16)
-    ap.add_argument("--num-workers", type=int, default=2)
-    ap.add_argument("--cache-dir", type=Path, default=Path("/content/probe_cache"))
-    ap.add_argument("--head-epochs", type=int, default=200)
-    ap.add_argument("--head-lr", type=float, default=1e-3)
-    ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--bootstrap-iters", type=int, default=1000)
-    ap.add_argument("--pneumonia-index", type=int, default=PNEUMONIA_INDEX)
-    ap.add_argument("--force-extract", action="store_true",
-                    help="ignore cached features and recompute them")
-    ap.add_argument("--pooling", default="cls", choices=["cls", "mean", "cls+mean"],
-                    help="which part of the encoder output the head reads")
-    ap.add_argument("--hidden", type=int, default=0,
-                    help="hidden width of the head; 0 = medpatch's LayerNorm+Linear")
-    ap.add_argument("--weight-decay", type=float, default=0.0)
-    ap.add_argument("--sweep", action="store_true",
-                    help="try every pooling x weight-decay x head size and print a table")
-    args = ap.parse_args()
+POOLING_LABEL = {
+    "cls": "one summary of the whole film",
+    "mean": "average of the lung regions",
+    "cls+mean": "summary + regional average",
+}
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"[probe] device {device}")
+SHORT_NAME = {
+    "imagenet": "Encoder trained on ordinary photographs (ImageNet)",
+    "rad-dino": "Encoder trained on chest X-rays (RAD-DINO)",
+}
 
-    args.cache_dir.mkdir(parents=True, exist_ok=True)
-    # v2 stores CLS *and* the patch-token mean. A v1 cache holds only CLS, so
-    # the name is bumped rather than silently reused.
-    cache = args.cache_dir / f"{args.encoder}_{args.task}_v2.pt"
+
+def evaluate(encoder: str, args, device):
+    """(best result, all rows, feature blob) for one encoder.
+
+    Extracts features only if they are not already cached, so a second call
+    for the same encoder costs nothing.
+    """
+    cache = args.cache_dir / f"{encoder}_{args.task}_v2.pt"
 
     if cache.exists() and not args.force_extract:
         print(f"[cache] reusing {cache}")
@@ -372,8 +355,8 @@ def main() -> None:
         (args.cache_dir / "_unused").mkdir(parents=True, exist_ok=True)
         train_dl, val_dl, test_dl, _ = build_dataloaders(args.medpatch_dir, argv)
 
-        model, forward, width = build_encoder(args.encoder, device)
-        blob = {"width": width, "encoder": args.encoder}
+        model, forward, width = build_encoder(encoder, device)
+        blob = {"width": width, "encoder": encoder}
         for split, dl in (("train", train_dl), ("val", val_dl), ("test", test_dl)):
             cls, mean, y = extract(dl, forward, device, split)
             blob[f"{split}_cls"] = cls
@@ -400,118 +383,185 @@ def main() -> None:
         auroc, lo, hi, auprc = bootstrap_ci(
             test_y[:, c], pred[:, c], args.bootstrap_iters, args.seed)
         return {
-            "pooling": pooling, "hidden": hidden, "weight_decay": wd,
-            "val_mean_auroc": val_score, "head_epoch": epoch,
+            "encoder": encoder, "pooling": pooling, "hidden": hidden,
+            "weight_decay": wd, "val_mean_auroc": val_score, "head_epoch": epoch,
             "pneumonia_auroc": auroc, "ci_low": lo, "ci_high": hi,
             "pneumonia_auprc": auprc, "mean_auroc_25": mean_auroc(test_y, pred),
+            "n_test": int(len(test_y)),
         }
-
-    if args.sweep:
-        grid = [(p, h, w)
-                for p in ("cls", "mean", "cls+mean")
-                for h in (0, 512)
-                for w in (0.0, 1e-4, 1e-2)]
-        print(f"\n[sweep] {len(grid)} head configurations on cached features "
-              f"-- the encoder does not run again\n")
-        rows = []
-        for n, (p, h, w) in enumerate(grid, 1):
-            print(f"  [{n:2d}/{len(grid)}] pooling={p:<9} hidden={h:<4} wd={w:<6g}",
-                  end="", flush=True)
-            r = run_one(p, h, w, quiet=True)
-            rows.append(r)
-            print(f"  val {r['val_mean_auroc']:.4f}   test pneumonia {r['pneumonia_auroc']:.3f}")
-
-        rows.sort(key=lambda r: r["val_mean_auroc"], reverse=True)
-        best = rows[0]
-
-        # "Did each option help?" is measured on VALIDATION only. Ranking the
-        # options by their test scores would be choosing a result on the test
-        # set, which is the one thing the test set exists to prevent.
-        def best_where(predicate):
-            vals = [r["val_mean_auroc"] for r in rows if predicate(r)]
-            return max(vals) if vals else float("nan")
-
-        questions = [
-            ("Using regional detail, not just one summary",
-             best_where(lambda r: r["pooling"] != "cls")
-             - best_where(lambda r: r["pooling"] == "cls")),
-            ("A bigger classifier (512 hidden units)",
-             best_where(lambda r: r["hidden"] == 512)
-             - best_where(lambda r: r["hidden"] == 0)),
-            ("Weight decay (penalising large weights)",
-             best_where(lambda r: r["weight_decay"] > 0)
-             - best_where(lambda r: r["weight_decay"] == 0)),
-        ]
-
-        pooling_label = {
-            "cls": "one summary of the whole film",
-            "mean": "average of the lung regions",
-            "cls+mean": "summary + regional average",
-        }
-
-        print("\n" + "=" * 60)
-        print(f"  RESULT -- {args.encoder}")
-        print("=" * 60)
-        print(f"  Pneumonia AUROC     {best['pneumonia_auroc']:.3f}"
-              f"   ({best['ci_low']:.3f} - {best['ci_high']:.3f})")
-        print(f"  Pneumonia AUPRC     {best['pneumonia_auprc']:.3f}")
-        print(f"  25-condition mean   {best['mean_auroc_25']:.3f}")
-        print()
-        print("  Best settings, chosen on the validation set:")
-        print(f"    image features    {pooling_label[best['pooling']]}")
-        print(f"    classifier        "
-              f"{'simple (1 layer)' if best['hidden'] == 0 else '512 hidden units'}")
-        print(f"    weight decay      {best['weight_decay']:g}")
-        print()
-        print("=" * 60)
-        print("  DID EACH IDEA HELP?")
-        print("=" * 60)
-        for label, delta in questions:
-            if delta > 0.005:
-                verdict = f"HELPED    +{delta:.3f}"
-            elif delta < -0.005:
-                verdict = f"HURT      {delta:.3f}"
-            else:
-                verdict = f"no effect {delta:+.3f}"
-            print(f"  {label:<46} {verdict}")
-        print()
-        print("  Measured on the validation set, not the test set.")
-        print(f"  ({len(rows)} settings tried in total; the top 3 by validation:)")
-        for r in rows[:3]:
-            print(f"    {pooling_label[r['pooling']]:<30}"
-                  f" {'1 layer' if r['hidden'] == 0 else '512 units':<10}"
-                  f" wd {r['weight_decay']:<7g} val {r['val_mean_auroc']:.4f}")
-        print("=" * 60)
-        result = best
-    else:
-        result = run_one(args.pooling, args.hidden, args.weight_decay, quiet=False)
 
     if not args.sweep:
-        print("\n" + "=" * 60)
-        print(f"  RESULT -- {args.encoder}  ({ENCODERS[args.encoder]})")
-        print("=" * 60)
-        print(f"  test stays          {len(test_y):,}")
-        print(f"  Pneumonia AUROC     {result['pneumonia_auroc']:.3f}   "
-              f"({result['ci_low']:.3f} - {result['ci_high']:.3f})")
-        print(f"  Pneumonia AUPRC     {result['pneumonia_auprc']:.3f}")
-        print(f"  25-condition mean   {result['mean_auroc_25']:.3f}")
-        print("=" * 60)
+        return run_one(args.pooling, args.hidden, args.weight_decay, quiet=False), [], blob
 
+    grid = [(p, h, w)
+            for p in ("cls", "mean", "cls+mean")
+            for h in (0, 512)
+            for w in (0.0, 1e-4, 1e-2)]
+    print(f"[sweep] trying {len(grid)} classifier settings on the cached features "
+          f"(the encoder does not run again)")
+    rows = []
+    for n, (p, h, w) in enumerate(grid, 1):
+        rows.append(run_one(p, h, w, quiet=True))
+        print(f"  {n:2d}/{len(grid)} done", end="\r", flush=True)
+    print(" " * 30, end="\r")
+    rows.sort(key=lambda r: r["val_mean_auroc"], reverse=True)
+    return rows[0], rows, blob
+
+
+def print_result(best: dict, rows: list) -> None:
+    """One encoder's answer, in words."""
+    print("\n" + "=" * 68)
+    print(f"  {SHORT_NAME[best['encoder']]}")
+    print("=" * 68)
+    print(f"  Pneumonia detected with AUROC   {best['pneumonia_auroc']:.3f}"
+          f"   (95% CI {best['ci_low']:.3f} - {best['ci_high']:.3f})")
+    print(f"  Precision-recall (AUPRC)        {best['pneumonia_auprc']:.3f}")
+    print(f"  Average over all 25 conditions  {best['mean_auroc_25']:.3f}")
+
+    if not rows:
+        print("=" * 68)
+        return
+
+    def best_where(predicate):
+        vals = [r["val_mean_auroc"] for r in rows if predicate(r)]
+        return max(vals) if vals else float("nan")
+
+    # Measured on validation. Ranking these by their test scores would be
+    # choosing a result on the test set, which is what it exists to prevent.
+    questions = [
+        ("Reading regional detail, not just one summary",
+         best_where(lambda r: r["pooling"] != "cls")
+         - best_where(lambda r: r["pooling"] == "cls")),
+        ("A larger classifier on top",
+         best_where(lambda r: r["hidden"] == 512)
+         - best_where(lambda r: r["hidden"] == 0)),
+        ("Weight decay",
+         best_where(lambda r: r["weight_decay"] > 0)
+         - best_where(lambda r: r["weight_decay"] == 0)),
+    ]
     print()
-    if args.encoder == "rad-dino":
-        print("NOTE: RAD-DINO was pretrained on MIMIC-CXR's official training split,")
-        print("      which very likely contains these test patients. Report this as an")
-        print("      upper bound with that caveat, not as a clean comparison.")
-    print("Compare against the `imagenet` row of this same script, not against the")
-    print("fine-tuned baseline -- a frozen probe and a fine-tune are different setups.")
+    print(f"  Tried {len(rows)} classifier settings. Did each idea help?")
+    for label, delta in questions:
+        if delta > 0.005:
+            verdict = f"helped,  +{delta:.3f}"
+        elif delta < -0.005:
+            verdict = f"hurt,    {delta:.3f}"
+        else:
+            verdict = "no real difference"
+        print(f"    {label:<46} {verdict}")
+    print()
+    print(f"  Best setting: {POOLING_LABEL[best['pooling']]}, "
+          f"{'simple' if best['hidden'] == 0 else 'larger'} classifier, "
+          f"weight decay {best['weight_decay']:g}")
+    print("  (chosen on the validation patients, never on the test patients)")
+    print("=" * 68)
 
-    out = args.cache_dir / f"result_{args.encoder}_{args.task}.json"
-    out.write_text(json.dumps({
-        "encoder": args.encoder, "task": args.task,
-        "encoder_width": blob["width"], "n_test": int(len(test_y)),
-        **result,
-    }, indent=2))
-    print(f"wrote {out}")
+
+def print_comparison(results: dict) -> None:
+    """The one page to show someone: same everything, different encoder."""
+    a, b = results["imagenet"], results["rad-dino"]
+    delta = b["pneumonia_auroc"] - a["pneumonia_auroc"]
+
+    print("\n\n" + "=" * 68)
+    print("   CHEST X-RAY MODEL -- early pneumonia detection (first 48 hours)")
+    print("=" * 68)
+    print(f"   {a['n_test']:,} patients tested. Same patients, same images, same")
+    print("   classifier. The only difference is which image encoder was used.")
+    print()
+    for r in (a, b):
+        print(f"   {SHORT_NAME[r['encoder']]}")
+        print(f"       pneumonia AUROC   {r['pneumonia_auroc']:.3f}"
+              f"   (95% CI {r['ci_low']:.3f} - {r['ci_high']:.3f})")
+        print()
+    print(f"   DIFFERENCE                {delta:+.3f}")
+    print()
+    print("=" * 68)
+    # The conclusion is read off the measured difference. Printing a fixed
+    # sentence would state a finding the run may not support.
+    if delta >= 0.02:
+        print("   An encoder that has seen chest X-rays before detects early")
+        print("   pneumonia better than one trained on ordinary photographs,")
+        print("   with everything else held identical.")
+    elif delta <= -0.02:
+        print("   The chest-X-ray encoder did WORSE than the general-purpose")
+        print("   one here. That is an unexpected result -- check it before")
+        print("   reporting it.")
+    else:
+        print("   The two encoders performed about the same. On this evidence")
+        print("   the chest-X-ray pretraining did not help.")
+    overlap = b["ci_low"] < a["ci_high"]
+    if abs(delta) >= 0.02 and overlap:
+        print()
+        print("   Note: the two confidence intervals overlap, so this is")
+        print("   suggestive rather than conclusive.")
+    print()
+    print("   Caveat: RAD-DINO was pretrained on MIMIC-CXR, which probably")
+    print("   includes these test patients, so treat this as an upper bound.")
+    print("=" * 68)
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--encoder", choices=sorted(ENCODERS))
+    ap.add_argument("--compare", action="store_true",
+                    help="run both encoders and print one comparison page")
+    ap.add_argument("--medpatch-dir", type=Path, default=Path("/content/PneumoVision/medpatch"))
+    ap.add_argument("--ehr-data-dir", default="/content/ehr")
+    ap.add_argument("--cxr-data-dir", default="/content/cxr")
+    ap.add_argument("--task", default="pneumonia-48h")
+    ap.add_argument("--labels-set", default="pheno")
+    ap.add_argument("--num-classes", type=int, default=25)
+    ap.add_argument("--batch-size", type=int, default=16)
+    ap.add_argument("--num-workers", type=int, default=2)
+    ap.add_argument("--cache-dir", type=Path, default=Path("/content/probe_cache"))
+    ap.add_argument("--head-epochs", type=int, default=200)
+    ap.add_argument("--head-lr", type=float, default=1e-3)
+    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--bootstrap-iters", type=int, default=1000)
+    ap.add_argument("--pneumonia-index", type=int, default=PNEUMONIA_INDEX)
+    ap.add_argument("--force-extract", action="store_true",
+                    help="ignore cached features and recompute them")
+    ap.add_argument("--pooling", default="cls", choices=["cls", "mean", "cls+mean"],
+                    help="which part of the encoder output the head reads")
+    ap.add_argument("--hidden", type=int, default=0,
+                    help="hidden width of the head; 0 = medpatch's LayerNorm+Linear")
+    ap.add_argument("--weight-decay", type=float, default=0.0)
+    ap.add_argument("--sweep", action="store_true",
+                    help="try every pooling x weight-decay x head size and print a table")
+    args = ap.parse_args()
+
+    if args.compare and args.encoder:
+        raise SystemExit("pass either --encoder or --compare, not both")
+    if not args.compare and not args.encoder:
+        raise SystemExit("pass --encoder <name>, or --compare to run both")
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"[probe] device {device}")
+    args.cache_dir.mkdir(parents=True, exist_ok=True)
+
+    targets = ["imagenet", "rad-dino"] if args.compare else [args.encoder]
+    results = {}
+    for encoder in targets:
+        print(f"\n----- {encoder} -----")
+        best, rows, _blob = evaluate(encoder, args, device)
+        print_result(best, rows)
+        results[encoder] = best
+        out = args.cache_dir / f"result_{encoder}_{args.task}.json"
+        out.write_text(json.dumps({"task": args.task, **best}, indent=2))
+
+    if args.compare:
+        print_comparison(results)
+    else:
+        print()
+        if args.encoder == "rad-dino":
+            print("NOTE: RAD-DINO was pretrained on MIMIC-CXR's official training split,")
+            print("      which very likely contains these test patients. Report this as")
+            print("      an upper bound, not a clean comparison.")
+        print("These are frozen-encoder numbers. Compare them with each other, not")
+        print("with the fine-tuned baseline -- they are different setups.")
+
+    print(f"\nJSON written to {args.cache_dir}")
 
 
 if __name__ == "__main__":
