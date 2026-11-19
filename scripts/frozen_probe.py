@@ -58,6 +58,14 @@ import sys
 import time
 from pathlib import Path
 
+# fusion_main.py imports the trainers, which import matplotlib at module level.
+# Colab exports MPLBACKEND=module://matplotlib_inline.backend_inline, which a
+# venv without matplotlib-inline rejects at import time with
+# "Key backend: ... is not a valid value". The notebook's own training commands
+# prefix MPLBACKEND=Agg; set it here too so this script does not depend on the
+# caller remembering. Must happen before the exec in build_dataloaders.
+os.environ["MPLBACKEND"] = "Agg"
+
 import numpy as np
 import torch
 import torch.nn as nn
