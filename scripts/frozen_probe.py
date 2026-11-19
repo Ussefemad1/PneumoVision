@@ -135,7 +135,7 @@ def build_encoder(kind: str, device: torch.device):
         width = model.num_features
 
         def forward(img):
-            return model.forward_features(img)[:, 0]
+            return model.forward_features(img)  # [B, 1 + patches, D], CLS first
 
     elif kind == "rad-dino":
         from transformers import AutoModel
@@ -147,7 +147,7 @@ def build_encoder(kind: str, device: torch.device):
             # Dinov2 interpolates its position embeddings, so a 384px input
             # (27x27 patches of 14, + CLS) is accepted even though the
             # checkpoint was trained at 518.
-            return model(pixel_values=img).last_hidden_state[:, 0]
+            return model(pixel_values=img).last_hidden_state
 
     else:
         raise SystemExit(f"unknown --encoder {kind!r}; choose from {sorted(ENCODERS)}")
@@ -163,21 +163,42 @@ def build_encoder(kind: str, device: torch.device):
 
 @torch.no_grad()
 def extract(dl, forward, device, split: str):
-    """One CLS vector and one label row per stay."""
-    feats, labels = [], []
+    """Per stay: the CLS vector, the mean of the patch tokens, and the labels.
+
+    Both poolings are saved so the head sweep can compare them without paying
+    for the encoder twice. CLS is one global summary of the film; the patch
+    mean keeps regional evidence, which matters for a lobar finding like
+    consolidation that occupies a small part of the image.
+    """
+    cls_feats, mean_feats, labels = [], [], []
     started = time.time()
     for i, batch in enumerate(dl, 1):
         # Same unpacking as MSMA_Trainer.batch_outputs.
         _x, img, _dn, _rr, y_ehr, _y_cxr, _seq, _pairs = batch[:8]
-        feats.append(forward(img.to(device)).float().cpu())
+        tokens = forward(img.to(device)).float()
+        cls_feats.append(tokens[:, 0].cpu())
+        mean_feats.append(tokens[:, 1:].mean(dim=1).cpu())
         labels.append(torch.from_numpy(np.asarray(y_ehr)).float())
         if i % 50 == 0:
             print(f"  {split}: {i} batches, {time.time()-started:.0f}s", flush=True)
-    f = torch.cat(feats)
+    cls = torch.cat(cls_feats)
+    mean = torch.cat(mean_feats)
     y = torch.cat(labels)
-    print(f"[extract] {split}: {tuple(f.shape)} features, {tuple(y.shape)} labels "
-          f"in {time.time()-started:.0f}s")
-    return f, y
+    print(f"[extract] {split}: {tuple(cls.shape)} cls + patch-mean, "
+          f"{tuple(y.shape)} labels in {time.time()-started:.0f}s")
+    return cls, mean, y
+
+
+def pooled(blob: dict, split: str, pooling: str) -> torch.Tensor:
+    """Assemble the feature matrix for one pooling choice."""
+    cls, mean = blob[f"{split}_cls"], blob[f"{split}_mean"]
+    if pooling == "cls":
+        return cls
+    if pooling == "mean":
+        return mean
+    if pooling == "cls+mean":
+        return torch.cat([cls, mean], dim=1)
+    raise ValueError(f"unknown pooling {pooling!r}")
 
 
 # --------------------------------------------------------------------------
@@ -195,17 +216,33 @@ def mean_auroc(y: np.ndarray, p: np.ndarray) -> float:
     return float(np.mean(scores)) if scores else float("nan")
 
 
-def train_head(f_tr, y_tr, f_va, y_va, *, num_classes, epochs, lr, device, seed):
-    """Train LayerNorm+Linear on cached features; keep the best val epoch.
-
-    The head is medpatch's own MLPClassifier, so the only thing that differs
-    from the baseline is which encoder produced the input vector.
-    """
+def build_head(width: int, num_classes: int, hidden: int) -> nn.Module:
+    """hidden=0 reproduces medpatch's own MLPClassifier (LayerNorm + Linear)."""
     from models.classifier import MLPClassifier
 
+    if hidden == 0:
+        return MLPClassifier(input_dim=width, output_dim=num_classes)
+    return nn.Sequential(
+        nn.LayerNorm(width),
+        nn.Linear(width, hidden),
+        nn.GELU(),
+        nn.Dropout(0.2),
+        nn.Linear(hidden, num_classes),
+    )
+
+
+def train_head(f_tr, y_tr, f_va, y_va, *, num_classes, epochs, lr, device, seed,
+               hidden=0, weight_decay=0.0, quiet=False):
+    """Train the head on cached features; keep the best validation epoch.
+
+    With hidden=0 and weight_decay=0 the head is medpatch's own MLPClassifier,
+    so the only thing that differs from the baseline is which encoder produced
+    the input vector.
+    """
     torch.manual_seed(seed)
-    head = MLPClassifier(input_dim=f_tr.shape[1], output_dim=num_classes).to(device)
-    opt = torch.optim.Adam(head.parameters(), lr=lr, betas=(0.9, 0.9))
+    head = build_head(f_tr.shape[1], num_classes, hidden).to(device)
+    opt = torch.optim.Adam(head.parameters(), lr=lr, betas=(0.9, 0.9),
+                           weight_decay=weight_decay)
     loss_fn = nn.BCEWithLogitsLoss()
 
     f_tr, y_tr = f_tr.to(device), y_tr.to(device)
@@ -232,13 +269,14 @@ def train_head(f_tr, y_tr, f_va, y_va, *, num_classes, epochs, lr, device, seed)
         if score > best_score:
             best_score, best_epoch = score, epoch
             best_state = {k: v.detach().clone() for k, v in head.state_dict().items()}
-        if epoch % 25 == 0 or epoch == epochs - 1:
+        if not quiet and (epoch % 25 == 0 or epoch == epochs - 1):
             print(f"  head epoch {epoch:3d}  val mean auroc {score:.4f}"
                   f"   (best {best_score:.4f} @ {best_epoch})", flush=True)
 
     head.load_state_dict(best_state)
-    print(f"[head] best val mean auroc {best_score:.4f} at epoch {best_epoch}")
-    return head, best_epoch
+    if not quiet:
+        print(f"[head] best val mean auroc {best_score:.4f} at epoch {best_epoch}")
+    return head, best_epoch, best_score
 
 
 # --------------------------------------------------------------------------
@@ -288,17 +326,31 @@ def main() -> None:
     ap.add_argument("--pneumonia-index", type=int, default=PNEUMONIA_INDEX)
     ap.add_argument("--force-extract", action="store_true",
                     help="ignore cached features and recompute them")
+    ap.add_argument("--pooling", default="cls", choices=["cls", "mean", "cls+mean"],
+                    help="which part of the encoder output the head reads")
+    ap.add_argument("--hidden", type=int, default=0,
+                    help="hidden width of the head; 0 = medpatch's LayerNorm+Linear")
+    ap.add_argument("--weight-decay", type=float, default=0.0)
+    ap.add_argument("--sweep", action="store_true",
+                    help="try every pooling x weight-decay x head size and print a table")
     args = ap.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[probe] device {device}")
 
     args.cache_dir.mkdir(parents=True, exist_ok=True)
-    cache = args.cache_dir / f"{args.encoder}_{args.task}.pt"
+    # v2 stores CLS *and* the patch-token mean. A v1 cache holds only CLS, so
+    # the name is bumped rather than silently reused.
+    cache = args.cache_dir / f"{args.encoder}_{args.task}_v2.pt"
 
     if cache.exists() and not args.force_extract:
         print(f"[cache] reusing {cache}")
         blob = torch.load(cache)
+        # build_dataloaders() is what normally puts medpatch on sys.path, and it
+        # is skipped on a cache hit -- but the head still imports
+        # models.classifier from there.
+        if str(args.medpatch_dir) not in sys.path:
+            sys.path.insert(0, str(args.medpatch_dir))
     else:
         argv = [
             "--mode", "train", "--epochs", "1",
@@ -323,37 +375,92 @@ def main() -> None:
         model, forward, width = build_encoder(args.encoder, device)
         blob = {"width": width, "encoder": args.encoder}
         for split, dl in (("train", train_dl), ("val", val_dl), ("test", test_dl)):
-            f, y = extract(dl, forward, device, split)
-            blob[f"{split}_f"], blob[f"{split}_y"] = f, y
+            cls, mean, y = extract(dl, forward, device, split)
+            blob[f"{split}_cls"] = cls
+            blob[f"{split}_mean"] = mean
+            blob[f"{split}_y"] = y
         del model
         torch.save(blob, cache)
         print(f"[cache] wrote {cache}")
 
-    head, best_epoch = train_head(
-        blob["train_f"], blob["train_y"], blob["val_f"], blob["val_y"],
-        num_classes=args.num_classes, epochs=args.head_epochs,
-        lr=args.head_lr, device=device, seed=args.seed,
-    )
-
-    head.eval()
-    with torch.no_grad():
-        test_pred = torch.sigmoid(head(blob["test_f"].to(device))).cpu().numpy()
     test_y = blob["test_y"].numpy()
-
     c = args.pneumonia_index
-    auroc, lo, hi, auprc = bootstrap_ci(
-        test_y[:, c], test_pred[:, c], args.bootstrap_iters, args.seed)
-    mean = mean_auroc(test_y, test_pred)
+
+    def run_one(pooling: str, hidden: int, wd: float, quiet: bool):
+        head, epoch, val_score = train_head(
+            pooled(blob, "train", pooling), blob["train_y"],
+            pooled(blob, "val", pooling), blob["val_y"],
+            num_classes=args.num_classes, epochs=args.head_epochs,
+            lr=args.head_lr, device=device, seed=args.seed,
+            hidden=hidden, weight_decay=wd, quiet=quiet,
+        )
+        head.eval()
+        with torch.no_grad():
+            pred = torch.sigmoid(head(pooled(blob, "test", pooling).to(device))).cpu().numpy()
+        auroc, lo, hi, auprc = bootstrap_ci(
+            test_y[:, c], pred[:, c], args.bootstrap_iters, args.seed)
+        return {
+            "pooling": pooling, "hidden": hidden, "weight_decay": wd,
+            "val_mean_auroc": val_score, "head_epoch": epoch,
+            "pneumonia_auroc": auroc, "ci_low": lo, "ci_high": hi,
+            "pneumonia_auprc": auprc, "mean_auroc_25": mean_auroc(test_y, pred),
+        }
+
+    if args.sweep:
+        grid = [(p, h, w)
+                for p in ("cls", "mean", "cls+mean")
+                for h in (0, 512)
+                for w in (0.0, 1e-4, 1e-2)]
+        print(f"\n[sweep] {len(grid)} head configurations on cached features "
+              f"-- the encoder does not run again\n")
+        rows = []
+        for n, (p, h, w) in enumerate(grid, 1):
+            print(f"  [{n:2d}/{len(grid)}] pooling={p:<9} hidden={h:<4} wd={w:<6g}",
+                  end="", flush=True)
+            r = run_one(p, h, w, quiet=True)
+            rows.append(r)
+            print(f"  val {r['val_mean_auroc']:.4f}   test pneumonia {r['pneumonia_auroc']:.3f}")
+
+        rows.sort(key=lambda r: r["val_mean_auroc"], reverse=True)
+        best = rows[0]
+
+        print("\n" + "=" * 78)
+        print(f"HEAD SWEEP -- {args.encoder}   (sorted by VALIDATION score)")
+        print("=" * 78)
+        print(f"{'':2} {'pooling':<9} {'hidden':>6} {'wd':>7} {'ep':>4} "
+              f"{'VAL mean':>9} | {'test pneum':>10} {'95% CI':>16} {'AUPRC':>7}")
+        print("-" * 78)
+        for i, r in enumerate(rows):
+            mark = "->" if i == 0 else "  "
+            ci = "({:.3f}, {:.3f})".format(r["ci_low"], r["ci_high"])
+            print(f"{mark} {r['pooling']:<9} {r['hidden']:>6} {r['weight_decay']:>7g} "
+                  f"{r['head_epoch']:>4} {r['val_mean_auroc']:>9.4f} | "
+                  f"{r['pneumonia_auroc']:>10.3f} {ci:>16} "
+                  f"{r['pneumonia_auprc']:>7.3f}")
+        print("-" * 78)
+        print("The arrow marks the configuration chosen on VALIDATION. That is the only")
+        print("row you may report. The other test columns are printed for transparency;")
+        print("picking the best of them would be choosing a result on the test set.")
+        print("=" * 78)
+        result = best
+    else:
+        result = run_one(args.pooling, args.hidden, args.weight_decay, quiet=False)
 
     print("\n" + "=" * 66)
     print(f"FROZEN PROBE -- {args.encoder}  ({ENCODERS[args.encoder]})")
     print(f"  task                : {args.task}")
     print(f"  test stays          : {len(test_y):,}")
-    print(f"  feature width       : {blob['width']}")
-    print(f"  head epoch chosen   : {best_epoch} (on validation, 25-class mean)")
-    print(f"  PNEUMONIA AUROC     : {auroc:.3f}  ({lo:.3f}, {hi:.3f})")
-    print(f"  PNEUMONIA AUPRC     : {auprc:.3f}")
-    print(f"  25-class mean AUROC : {mean:.3f}")
+    print(f"  encoder width       : {blob['width']}")
+    print(f"  pooling             : {result['pooling']}")
+    head_desc = ("LayerNorm+Linear" if result["hidden"] == 0
+                 else "LayerNorm+Linear({})+GELU+Linear".format(result["hidden"]))
+    print(f"  head                : {head_desc}, "
+          f"weight decay {result['weight_decay']:g}")
+    print(f"  head epoch chosen   : {result['head_epoch']} (on validation, 25-class mean)")
+    print(f"  PNEUMONIA AUROC     : {result['pneumonia_auroc']:.3f}  "
+          f"({result['ci_low']:.3f}, {result['ci_high']:.3f})")
+    print(f"  PNEUMONIA AUPRC     : {result['pneumonia_auprc']:.3f}")
+    print(f"  25-class mean AUROC : {result['mean_auroc_25']:.3f}")
     print("=" * 66)
     if args.encoder == "rad-dino":
         print("NOTE: RAD-DINO was pretrained on MIMIC-CXR's official training split,")
@@ -365,10 +472,8 @@ def main() -> None:
     out = args.cache_dir / f"result_{args.encoder}_{args.task}.json"
     out.write_text(json.dumps({
         "encoder": args.encoder, "task": args.task,
-        "pneumonia_auroc": auroc, "ci_low": lo, "ci_high": hi,
-        "pneumonia_auprc": auprc, "mean_auroc_25": mean,
-        "feature_width": blob["width"], "head_epoch": best_epoch,
-        "n_test": int(len(test_y)),
+        "encoder_width": blob["width"], "n_test": int(len(test_y)),
+        **result,
     }, indent=2))
     print(f"wrote {out}")
 
