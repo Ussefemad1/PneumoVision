@@ -424,44 +424,80 @@ def main() -> None:
         rows.sort(key=lambda r: r["val_mean_auroc"], reverse=True)
         best = rows[0]
 
-        print("\n" + "=" * 78)
-        print(f"HEAD SWEEP -- {args.encoder}   (sorted by VALIDATION score)")
-        print("=" * 78)
-        print(f"{'':2} {'pooling':<9} {'hidden':>6} {'wd':>7} {'ep':>4} "
-              f"{'VAL mean':>9} | {'test pneum':>10} {'95% CI':>16} {'AUPRC':>7}")
-        print("-" * 78)
-        for i, r in enumerate(rows):
-            mark = "->" if i == 0 else "  "
-            ci = "({:.3f}, {:.3f})".format(r["ci_low"], r["ci_high"])
-            print(f"{mark} {r['pooling']:<9} {r['hidden']:>6} {r['weight_decay']:>7g} "
-                  f"{r['head_epoch']:>4} {r['val_mean_auroc']:>9.4f} | "
-                  f"{r['pneumonia_auroc']:>10.3f} {ci:>16} "
-                  f"{r['pneumonia_auprc']:>7.3f}")
-        print("-" * 78)
-        print("The arrow marks the configuration chosen on VALIDATION. That is the only")
-        print("row you may report. The other test columns are printed for transparency;")
-        print("picking the best of them would be choosing a result on the test set.")
-        print("=" * 78)
+        # "Did each option help?" is measured on VALIDATION only. Ranking the
+        # options by their test scores would be choosing a result on the test
+        # set, which is the one thing the test set exists to prevent.
+        def best_where(predicate):
+            vals = [r["val_mean_auroc"] for r in rows if predicate(r)]
+            return max(vals) if vals else float("nan")
+
+        questions = [
+            ("Using regional detail, not just one summary",
+             best_where(lambda r: r["pooling"] != "cls")
+             - best_where(lambda r: r["pooling"] == "cls")),
+            ("A bigger classifier (512 hidden units)",
+             best_where(lambda r: r["hidden"] == 512)
+             - best_where(lambda r: r["hidden"] == 0)),
+            ("Weight decay (penalising large weights)",
+             best_where(lambda r: r["weight_decay"] > 0)
+             - best_where(lambda r: r["weight_decay"] == 0)),
+        ]
+
+        pooling_label = {
+            "cls": "one summary of the whole film",
+            "mean": "average of the lung regions",
+            "cls+mean": "summary + regional average",
+        }
+
+        print("\n" + "=" * 60)
+        print(f"  RESULT -- {args.encoder}")
+        print("=" * 60)
+        print(f"  Pneumonia AUROC     {best['pneumonia_auroc']:.3f}"
+              f"   ({best['ci_low']:.3f} - {best['ci_high']:.3f})")
+        print(f"  Pneumonia AUPRC     {best['pneumonia_auprc']:.3f}")
+        print(f"  25-condition mean   {best['mean_auroc_25']:.3f}")
+        print()
+        print("  Best settings, chosen on the validation set:")
+        print(f"    image features    {pooling_label[best['pooling']]}")
+        print(f"    classifier        "
+              f"{'simple (1 layer)' if best['hidden'] == 0 else '512 hidden units'}")
+        print(f"    weight decay      {best['weight_decay']:g}")
+        print()
+        print("=" * 60)
+        print("  DID EACH IDEA HELP?")
+        print("=" * 60)
+        for label, delta in questions:
+            if delta > 0.005:
+                verdict = f"HELPED    +{delta:.3f}"
+            elif delta < -0.005:
+                verdict = f"HURT      {delta:.3f}"
+            else:
+                verdict = f"no effect {delta:+.3f}"
+            print(f"  {label:<46} {verdict}")
+        print()
+        print("  Measured on the validation set, not the test set.")
+        print(f"  ({len(rows)} settings tried in total; the top 3 by validation:)")
+        for r in rows[:3]:
+            print(f"    {pooling_label[r['pooling']]:<30}"
+                  f" {'1 layer' if r['hidden'] == 0 else '512 units':<10}"
+                  f" wd {r['weight_decay']:<7g} val {r['val_mean_auroc']:.4f}")
+        print("=" * 60)
         result = best
     else:
         result = run_one(args.pooling, args.hidden, args.weight_decay, quiet=False)
 
-    print("\n" + "=" * 66)
-    print(f"FROZEN PROBE -- {args.encoder}  ({ENCODERS[args.encoder]})")
-    print(f"  task                : {args.task}")
-    print(f"  test stays          : {len(test_y):,}")
-    print(f"  encoder width       : {blob['width']}")
-    print(f"  pooling             : {result['pooling']}")
-    head_desc = ("LayerNorm+Linear" if result["hidden"] == 0
-                 else "LayerNorm+Linear({})+GELU+Linear".format(result["hidden"]))
-    print(f"  head                : {head_desc}, "
-          f"weight decay {result['weight_decay']:g}")
-    print(f"  head epoch chosen   : {result['head_epoch']} (on validation, 25-class mean)")
-    print(f"  PNEUMONIA AUROC     : {result['pneumonia_auroc']:.3f}  "
-          f"({result['ci_low']:.3f}, {result['ci_high']:.3f})")
-    print(f"  PNEUMONIA AUPRC     : {result['pneumonia_auprc']:.3f}")
-    print(f"  25-class mean AUROC : {result['mean_auroc_25']:.3f}")
-    print("=" * 66)
+    if not args.sweep:
+        print("\n" + "=" * 60)
+        print(f"  RESULT -- {args.encoder}  ({ENCODERS[args.encoder]})")
+        print("=" * 60)
+        print(f"  test stays          {len(test_y):,}")
+        print(f"  Pneumonia AUROC     {result['pneumonia_auroc']:.3f}   "
+              f"({result['ci_low']:.3f} - {result['ci_high']:.3f})")
+        print(f"  Pneumonia AUPRC     {result['pneumonia_auprc']:.3f}")
+        print(f"  25-condition mean   {result['mean_auroc_25']:.3f}")
+        print("=" * 60)
+
+    print()
     if args.encoder == "rad-dino":
         print("NOTE: RAD-DINO was pretrained on MIMIC-CXR's official training split,")
         print("      which very likely contains these test patients. Report this as an")
