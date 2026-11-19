@@ -38,6 +38,18 @@ PATCH 1 -- augmentation (ablation for the CXR track)
 Run the baseline first and keep the number, then run this and compare. Change
 nothing else, so the comparison has one variable.
 
+RESULT (18 Nov 2026, pneumonia-48h, unimodal_cxr, lr 3e-5): **no improvement**.
+Test pneumonia AUROC 0.692 (0.660-0.726) against a baseline of 0.703
+(0.672-0.740) -- inside the margin of error, slightly down.
+
+Why it failed is the useful part. The gentler augmentation ended at train AUROC
+0.9758 / val 0.6568, a *wider* gap than the baseline's 0.9325 / 0.6518. The
+upstream 45-degree rotation and mirror flip were not teaching anatomy; they were
+regularising a 27.6M-parameter model against 4,956 training images. Removing
+them removed the brake. The bottleneck is the training-set size, not the
+augmentation -- so the remaining runs attack overfitting directly and keep the
+paper's augmentation. Do not apply this patch in later runs.
+
 ----------------------------------------------------------------------------
 PATCH 2 -- the pneumonia-48h task (Phase 2)
 ----------------------------------------------------------------------------
@@ -83,4 +95,56 @@ every task (fusion_main.py:112). pneumonia-48h uses 48-hour windows, so the
 `ihm_` file is the matching one. It does not affect a `unimodal_cxr` run, whose
 predictions never touch the EHR tensor, but it matters as soon as the branch is
 fused -- so pass it from the start and the fused run inherits a correct setting.
+
+----------------------------------------------------------------------------
+PATCH 3 -- split learning rate: backbone 10x slower than the head
+----------------------------------------------------------------------------
+
+`unimodal_cxr` is routed to MSMA_Trainer (fusion_main.py:175, the else branch),
+which puts every parameter in one Adam at `args.lr` (MSMA_trainer.py:67). So the
+ImageNet-pretrained ViT and the randomly initialised MLP head move at the same
+speed: the head needs that speed, the backbone is destroyed by it and memorises
+instead. This is the standard fine-tuning fix and the direct answer to the
+overfitting PATCH 1 exposed.
+
+Apply this one WITHOUT patch 1 -- keep the paper's augmentation, so the only
+change from baseline is the learning rate.
+
+The split is by parameter name, not by module path, so it survives a wrapper
+change: only `cxr_classifier` contains "classifier" (checked -- the CXR encoder
+has `heads`/`feats_dim`, no `classifier`).
+
+    from pathlib import Path
+
+    f = Path("/content/PneumoVision/medpatch/trainers/MSMA_trainer.py")
+    s = f.read_text()
+    before = s
+
+    old = """        else:
+            self.optimizer = optim.Adam(self.model.parameters(), args.lr, betas=(0.9, self.args.beta_1))"""
+
+    new = """        else:
+            _head, _back = [], []
+            for _n, _p in self.model.named_parameters():
+                (_head if 'classifier' in _n else _back).append(_p)
+            assert _head and _back, "lr-split: an empty group -- parameter names changed"
+            print(f"[lr-split] backbone {len(_back)} tensors @ {args.lr * 0.1:.2e}"
+                  f"  |  head {len(_head)} tensors @ {args.lr:.2e}")
+            self.optimizer = optim.Adam(
+                [{'params': _back, 'lr': args.lr * 0.1},
+                 {'params': _head, 'lr': args.lr}],
+                args.lr, betas=(0.9, self.args.beta_1))"""
+
+    assert s.count(old) == 1, f"expected 1 match, found {s.count(old)}"
+    s = s.replace(old, new)
+    f.write_text(s)
+    print("lr split:", "patched" if s != before else "NO CHANGE")
+
+ReduceLROnPlateau scales every group by the same factor, so the 10x ratio holds
+for the whole run. Verify it took effect from the `[lr-split]` line and from the
+per-step `lr:` column, which prints the FIRST group -- it will read 3.0000E-06,
+not 3.0000E-05. That is the backbone; the head is still at 3e-5.
+
+Train into a fresh --save_dir (e.g. .../pneumonia48h-lrsplit) so the baseline
+and the PATCH 1 run are both kept.
 """
